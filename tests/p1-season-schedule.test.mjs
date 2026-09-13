@@ -177,6 +177,11 @@ test("public members reuse one ten-minute snapshot and a sync advances the roste
 
 test("a private week and a private additional practice stay hidden until their own publish actions", async () => {
   const backend = await createBackend();
+  const now = Date.parse("2026-09-04T12:00:00Z");
+  backend.context.Date = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  };
   const fixture = backend.createFormBinding({
     rows: [["2026-09-01T12:00:00Z", "Alice"]]
   });
