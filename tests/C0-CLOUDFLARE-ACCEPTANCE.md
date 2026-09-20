@@ -38,6 +38,7 @@ Cloudflare 测试插件在当前 Windows 环境中执行 `evictDurableObject` �
 - 重新部署同一 Worker 后，计数仍为 9，请求、审计、outbox 和任务仍各 1，alarm 仍指向保存的到期时间。加入真实负向桥接场景并再次部署后，schema 仍为 v1、上述数量不变，SQLite `databaseSize` 为 73,728 bytes。这证明 staging Durable Object SQLite、不可变请求结果和任务跨 Worker deployment 保留。
 - 当前 Wrangler 明确拒绝用 `wrangler dev --remote` 访问 Durable Objects SQLite；该失败未作为 DO 证据，最终结论使用上述已部署公网端点。
 - 没有部署 production Worker，没有把新 URL写入 GitHub Pages，也没有给 staging 配置生产 Google 文件或业务 secret。
+- C0 源码与文档提交为 `4a55bb0`。GitHub Pages run `35486989400` 的 build／deploy 均成功；随后队员页、Coach Mode、过往赛季页和 staging health 均返回 HTTP 200。Pages 仍使用现行生产 Apps Script，本次发布没有切换 API。
 
 ## 真实 Google 桥接证据
 

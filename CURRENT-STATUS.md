@@ -24,6 +24,7 @@
 - [队员页面](https://jeoker.github.io/dragon-boat-training/)、[过往赛季](https://jeoker.github.io/dragon-boat-training/history/)和 [Coach Mode](https://jeoker.github.io/dragon-boat-training/coach/) 使用同一个 Apps Script 后端。旧 Portfolio 子路径只保留跳转兼容。GitHub Pages 只提供静态网页，Google Sheets 仍是唯一业务数据源，没有十分钟延迟写回或独立实时数据库。
 - 线上 Apps Script 沿用原 Web App URL，当前为 **Version 14、服务 `0.9.0-p5-performance`**，契约保持 `2026-09-02.p2.1`。生产 `setupDragonBoatP4` 已幂等执行完成，`PublicHistorySeasons` 紧凑索引及维护触发器已建立或迁移。
 - P5 功能提交 **`38c9361`** 的 [Pages run 33999868687](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33999868687) 成功；三个正式页面均返回 HTTP 200，线上 HTML 与本地 P5 构建 SHA-256 一致。正式 health 返回 Version 14 的 `0.9.0-p5-performance`；公开历史空目录返回成功及分页字段。P4 的 [Pages run 33989665856](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33989665856) 继续作为上一阶段历史证据。
+- C0 源码与文档提交 **`4a55bb0`** 的 [Pages run 35486989400](https://github.com/Jeoker/dragon-boat-training/actions/runs/35486989400) 成功；队员页、Coach Mode、过往赛季页和 Cloudflare staging health 均返回 HTTP 200。该发布只保存 C0 代码与文档，没有改变三个页面的生产 API。
 - 本地现行应用与桥接 **162／162** 测试通过，Cloudflare Workers／DO **11／11** 测试通过；Cloudflare 类型检查、dry-run、Astro 检查与静态构建、Apps Script 单文件构建均通过。Astro 与 Workers 的 TypeScript 全局类型已隔离，避免 Worker 运行时声明污染浏览器 DOM 检查。
 - Script ID、私有 Spreadsheet ID、Coach Code、会话令牌和服务端 secret 均不写入仓库。
 
