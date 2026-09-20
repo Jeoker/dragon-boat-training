@@ -285,6 +285,7 @@ export async function createBackend(options = {}) {
     },
     Utilities: {
       Charset: { UTF_8: "UTF-8" },
+      DigestAlgorithm: { SHA_256: "SHA-256" },
       base64DecodeWebSafe(value) {
         return byteArray(Buffer.from(value, "base64url"));
       },
@@ -293,6 +294,9 @@ export async function createBackend(options = {}) {
       },
       computeHmacSha256Signature(value, key) {
         return byteArray(crypto.createHmac("sha256", key).update(value, "utf8").digest());
+      },
+      computeDigest(_algorithm, value) {
+        return byteArray(crypto.createHash("sha256").update(value, "utf8").digest());
       },
       getUuid() {
         uuidSequence += 1;

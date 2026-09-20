@@ -1,6 +1,6 @@
-# Google Sheets 后端规格
+# Apps Script 现行实现规格
 
-产品规则和待定事项以 [项目说明](README.md) 为准；页面行为见 [前端规格](frontend-spec.md)。本文同时定义已实现与待实现功能，包括 P1 剩余能力和 P4 归档／历史，不以规格描述代替验收。实际交付范围、部署版本和验证边界统一见[当前进度](CURRENT-STATUS.md)。
+产品规则和待定事项以 [项目说明](README.md) 为准；页面行为见 [前端规格](frontend-spec.md)。本文描述切换前仍运行的 Apps Script 存储、锁及 Google 实现协议，供维护和迁移适配使用，不再作为目标架构。已确认的 Cloudflare 主数据、同步和迁移规范统一见[Cloudflare 计划](cloudflare-migration-plan.md)。下文的 Sheet 权威读取、脚本锁和触发器仅适用于旧运行环境；切换后由 SQLite 事务和持久任务接替，Apps Script 收敛为 Google 桥接。实际交付范围、部署版本和验证边界统一见[当前进度](CURRENT-STATUS.md)。
 
 ## 架构与存储
 
@@ -146,7 +146,7 @@ P1 排期管理使用 `P1M:` 请求范围及 `P1_MANAGEMENT` 确定计划。默�
 
 ## P2.1 提交结果与读取优化
 
-本节已纳入 [API 契约](contracts/api-v1.json) 的可选 `current_view` 扩展，自服务 `0.5.0-p2.1` 提供，契约版本保持兼容。部署及验收状态见[当前进度](CURRENT-STATUS.md)。Google Sheets 保持唯一业务数据源，所有成功确认均在可靠提交后产生；不增加延迟写回队列，也不以缩短等待为由移除脚本锁、恢复屏障或写入校验。
+本节已纳入 [API 契约](contracts/api-v1.json) 的可选 `current_view` 扩展，自服务 `0.5.0-p2.1` 提供，契约版本保持兼容。部署及验收状态见[当前进度](CURRENT-STATUS.md)。现行 Apps Script 环境在 Sheet 可靠提交后确认；Cloudflare 迁移保留结果／当前视图语义，改为 SQLite 提交后确认并通过 outbox 同步 Google，见迁移计划。
 
 1. 扩展报名及队员维护响应，为当前操作返回足够渲染的训练状态、受影响成员、计数、相关版本与视图生成时间；字段按公开／管理身份分别投影，私人字段不进入公开响应或缓存。优先利用锁内已有数据，名单版本不变时不要求客户端再拉全量名册。
 2. 不可变的操作结果继续用于幂等重放；请求 `include_current_view=true` 时另附同次锁内生成的 `current_view`，不存入请求日志。重放时不得把保存的旧结果或旧快照包装成当前状态，也不得重新执行业务写入。若视图生成失败，写入仍明确成功，返回 `view_status=refresh_required`，客户端只补读；旧服务没有可选视图时同样回读。`getMemberWorkspace` 仅供已登录管理员按需读取合并工作区，名单版本相同时省略全量成员，始终提供当前报名关联。

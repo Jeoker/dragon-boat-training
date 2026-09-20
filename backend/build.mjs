@@ -6,6 +6,7 @@ const outputFile = new URL("./.build/Code.gs", import.meta.url);
 const sourceOrder = [
   "Config.gs",
   "Security.gs",
+  "BridgeSecurity.gs",
   "SystemStore.gs",
   "TimeUtils.gs",
   "SeasonStore.gs",

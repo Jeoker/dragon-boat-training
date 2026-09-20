@@ -1,21 +1,33 @@
 # 当前进度与接续入口
 
-> 更新：2026-09-05
+> 更新：2026-09-19
 
-本文件记录当前交付状态、验证边界和下一步。产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
+> 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。下方产品状态仍以 2026-09-05 的验证记录为准，仓库拆分不等同于 Cloudflare 迁移或新的生产功能验收。
+
+> Cloudflare C0 更新：2026-09-19。C0 全部门槛已通过：隔离 staging 的 Worker／Durable Object、SQLite 持久化、真实 Apps Script 签名往返、负向范围、重复操作和 Free 计划用量入口均已验收。生产 Worker、GitHub Pages API 配置和 Apps Script 业务写入归属均未改变；下一阶段是 C1 业务迁移。
+
+本文件记录当前交付状态、验证边界和下一步。第一次接手项目先读[项目总览](PROJECT-OVERVIEW.md)；产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
+
+## 已确认的下一阶段
+
+采用 **Cloudflare Workers + Durable Objects（SQLite）** 保存在线业务主数据，GitHub Pages 保留现有网页，Apps Script 收敛为 Google Form／Sheets 桥接。支持偶尔直接修改 Sheet，通过基线对比、业务校验和 Coach Mode 冲突处理导入；有变化时默认十分钟批量导出，网页保存不等待 Google。
+
+目标架构、C0–C4 顺序、三个 Epic 的新增工作包、真实 Google 边界及切换／回退门槛已整理到[Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md)。**C0.1–C0.6 已完成，下一阶段按 C1 的赛季／成员与权限、排期、报名候补、排座、冻结历史顺序迁移，并只接隔离测试端点。** 下方仍是实际运行中的 Apps Script 生产基线，不代表新架构已经上线。
+
+2026-09-19 已按 [C0 可执行工作清单](cloudflare-migration-plan.md#c0-可执行工作清单)建立 Worker、SQLite schema v1、不可变请求结果、事务审计／outbox／任务、alarm 租约与应用级重试、旧摘要兼容向量和签名桥接协议。真实本地 Wrangler 进程重启后数据、请求去重结果和待执行任务仍在；并发、回滚、闹钟修复及超过六次失败后的继续续排已有专项测试。独立 Apps Script Web App 的真实往返、重放及过期／篡改／错团队／错 binding／错代次拒绝均通过；实际 Free 计划和 Worker／DO 用量入口已核对。详细证据和观察边界见 [C0 验收记录](tests/C0-CLOUDFLARE-ACCEPTANCE.md)。
 
 ## 当前基线
 
 - **P1 管理补齐验收通过**：赛季日期／默认值、当周单场预览编辑与取消、开放前后加场、预约开放及精确完成状态已完成。真实 Google 触发器、页面内确认、双季公开结果与最终退出已验证；时间边界使用可控时钟。细节、验收中的修正和工具限制见[P1 管理补齐验收](tests/P1-MANAGEMENT-ACCEPTANCE.md)。P1 不再保留开发欠项。
 
 - P0、P1、P2“报名与维护”及 P2.1 等待体验优化已完成对应验收。**P3 阶段验收通过**：核心真实 API、页面流程及双窗口版本冲突恢复通过，用户已在正式 Coach Mode 人工确认鼠标拖动成功。**P4 阶段实现与当前可执行线上验收通过**：归档状态、取消过滤、公开历史空状态、受保护读取和退出已验证；尚未到期的测试赛季不能证明真实年度文件创建，留待首个隔离结束赛季补验。**P5 第一批性能与稳定性改进已部署并通过基础生产冒烟测试**；长期 Google 负载、非空分页、Safari、实体手机和管理员交接仍未验收，三个 Epic 的整体交付尚未结束。
-- [队员页面](https://jeoker.github.io/hey-yang-liu.github.io/dragon-boat-training/)、[过往赛季](https://jeoker.github.io/hey-yang-liu.github.io/dragon-boat-training/history/)和 [Coach Mode](https://jeoker.github.io/hey-yang-liu.github.io/dragon-boat-training/coach/) 使用同一个 Apps Script 后端。GitHub Pages 只提供静态网页，Google Sheets 仍是唯一业务数据源，没有十分钟延迟写回或独立实时数据库。
+- [队员页面](https://jeoker.github.io/dragon-boat-training/)、[过往赛季](https://jeoker.github.io/dragon-boat-training/history/)和 [Coach Mode](https://jeoker.github.io/dragon-boat-training/coach/) 使用同一个 Apps Script 后端。旧 Portfolio 子路径只保留跳转兼容。GitHub Pages 只提供静态网页，Google Sheets 仍是唯一业务数据源，没有十分钟延迟写回或独立实时数据库。
 - 线上 Apps Script 沿用原 Web App URL，当前为 **Version 14、服务 `0.9.0-p5-performance`**，契约保持 `2026-09-02.p2.1`。生产 `setupDragonBoatP4` 已幂等执行完成，`PublicHistorySeasons` 紧凑索引及维护触发器已建立或迁移。
 - P5 功能提交 **`38c9361`** 的 [Pages run 33999868687](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33999868687) 成功；三个正式页面均返回 HTTP 200，线上 HTML 与本地 P5 构建 SHA-256 一致。正式 health 返回 Version 14 的 `0.9.0-p5-performance`；公开历史空目录返回成功及分页字段。P4 的 [Pages run 33989665856](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33989665856) 继续作为上一阶段历史证据。
-- 本地 **159／159** 测试通过，Astro 检查为零诊断、静态构建生成四个页面，后端单文件构建通过。新增回归覆盖两秒合并保存、开放赛季单场按时冻结、归档工作量上限与断点续跑、审计分页的有界读取、历史分页与缓存、旧历史索引迁移、按行读取详情及批量投影写入。
+- 本地现行应用与桥接 **162／162** 测试通过，Cloudflare Workers／DO **11／11** 测试通过；Cloudflare 类型检查、dry-run、Astro 检查与静态构建、Apps Script 单文件构建均通过。Astro 与 Workers 的 TypeScript 全局类型已隔离，避免 Worker 运行时声明污染浏览器 DOM 检查。
 - Script ID、私有 Spreadsheet ID、Coach Code、会话令牌和服务端 secret 均不写入仓库。
 
-## 写入与恢复约束
+## 运行中 Apps Script 的写入与恢复约束
 
 1. 服务端持同一把脚本锁，先保存确定计划和不可变结果，再写业务、审计及完成标记；持锁刷新后释放。请求内复用表格句柄及已读记录，写后失效，不跨请求缓存权威业务状态。
 2. 未完成的报名和排座操作按原计划恢复，不重新生成排队时间、递补或 revision；已完成请求重放不重复写入。报名、取消、换侧与船位共用 BE-05 的唯一分配逻辑，不建立第二套排队算法，系统 revision 不夹带未发布草稿。
@@ -43,6 +55,7 @@
 | P4 后端与恢复 | 精确结束后 24 小时冻结、单场及整季私有归档、年度文件复用、公开字段隔离、更正说明、取消排除和两个中断恢复路径由可控时间与故障注入验证；Apps Script Version 13 的 health 和空历史目录真实读取通过 |
 | P4 正式页面 | Pages run 33989665856 成功；过往赛季空状态、Coach 归档控制台、当前开放赛季三场“尚未到期”状态、100 条受保护操作记录、退出和已取消测试赛季的公开空列表通过。未到期环境不等同于真实年度文件创建通过，见[P4 报告](tests/P4-ACCEPTANCE.md) |
 | P5 性能与部署 | 159／159 回归及双构建通过；连续排座两秒合并、开放赛季按时冻结、审计与历史分页、公开历史缓存、紧凑索引、批量写入、归档工作量上限和断点续跑均有专项测试。Apps Script Version 14、生产初始化、health、公开历史空状态和 Pages 三页产物已验证；非空分页、长期 Google 延迟／配额及 Safari／实体手机仍待验收，见[P5 性能报告](tests/P5-PERFORMANCE-ACCEPTANCE.md) |
+| C0 Cloudflare 基础 | 阶段通过。本地 Worker／DO 事务、请求去重、回滚、持久任务、alarm 修复、应用级重试和桥接拒绝路径通过；真实本地进程重启与远端重新部署均保持状态。隔离 staging 公网 health、原子提交、跨部署保持、真实 Apps Script 签名往返／重放／负向范围和 Free 计划用量入口均已验证，见[C0 验收记录](tests/C0-CLOUDFLARE-ACCEPTANCE.md) |
 
 完整 P3 场景、版本和验证层次见[P3 验收报告](tests/P3-ACCEPTANCE.md)。[P2](tests/live-p2-acceptance.mjs)和[P3](tests/live-p3-acceptance.mjs)真实脚本均为显式手动运行，不随 `npm test` 执行，不修改真实训练时间。运行限制见[后端说明](backend/README.md#验证边界)。
 
@@ -65,8 +78,9 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 
 ## 未完成范围与下一步
 
-1. **P5 生产后续验收**：在不改动正式训练安排的前提下，用隔离数据补验非空历史“加载更多”、超过一页的 Coach 审计记录和一次跨轮归档维护；采集真实响应耗时、缓存命中和 Apps Script 配额趋势。两秒连续排座的人工作业验收应使用测试场次，结束后恢复其原草稿且不发布。
-2. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；该边界不阻塞 P4 当前功能交付。
-3. **P5 其余发布准备**：Safari、实体手机、真实 Google 长期配额／负载和管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。没有在 Google 表格中刻意制造断电；本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，本轮新建测试 Form 的文件绑定检查不替代这一配置验收。
+1. **开始 C1 业务迁移**：先冻结 C1 数据模型和迁移顺序，把赛季／成员与权限、排期、报名候补、排座、冻结历史逐层迁入团队 Durable Object，并接入已有事务、请求结果和 outbox。复用现行 Apps Script 测试场景，但只连接隔离测试端点；C1 不改生产 Pages API 或写入归属。
+2. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
+3. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
+4. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。
 
-重新开始时先检查 Git 分支和未提交改动，再运行 `npm test`、`npm run build`、`npm run build:dragon-boat-backend`；受限环境设置 `ASTRO_TELEMETRY_DISABLED=1`。当前仓库命令可使用 `git -c safe.directory=D:/agents/dev-master ...`。
+重新开始时先检查 Git 分支和未提交改动，再运行 `npm test`、`npm run cf:test`、`npm run cf:check`、`npm run build`、`npm run build:backend` 和 `npm run cf:dry-run`；受限环境设置 `ASTRO_TELEMETRY_DISABLED=1`。当前仓库命令可使用 `git -c safe.directory=D:/agents/dev-master/dragon-boat-training -C D:/agents/dev-master/dragon-boat-training ...`。

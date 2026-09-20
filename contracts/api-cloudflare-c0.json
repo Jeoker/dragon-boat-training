@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "status": "migration draft; not the production API",
+  "contract_version": "2026-09-19.c0",
+  "service": "dragon-boat-training-cloudflare",
+  "identity": {
+    "backend_instance": "identifies the environment and dataset",
+    "backend_generation": "isolates browser cache, sessions and unknown requests across backend changes",
+    "writer_epoch": "prevents an old service or delayed external task from writing after ownership changes"
+  },
+  "public_endpoints": {
+    "GET /health": {
+      "writes_data": false,
+      "response": [
+        "status",
+        "contract_version",
+        "service_version",
+        "backend_instance",
+        "backend_generation",
+        "writer_epoch",
+        "environment",
+        "server_time"
+      ]
+    }
+  },
+  "c0_test_endpoints": {
+    "availability": "non-production only; requires a separately configured C0_TEST_KEY",
+    "purpose": "verifies SQLite transactions, immutable request results, eviction recovery, outbox and alarm retries",
+    "production_behavior": "always NOT_FOUND",
+    "business_status": "not a signup, scheduling, seating or archive API"
+  },
+  "bridge_probe": {
+    "endpoint": "POST /internal/c0/bridge-probe",
+    "availability": "non-production only; requires C0_TEST_KEY plus server-side GOOGLE_BRIDGE_URL and GOOGLE_BRIDGE_SECRET",
+    "protocol": "2026-09-19.bridge.v1",
+    "c0_scenarios": ["valid", "expired", "tampered_payload", "wrong_team", "wrong_binding", "wrong_epoch"],
+    "signed_scope": ["direction", "team_id", "binding_version", "writer_epoch", "timestamp_ms", "nonce", "operation_id", "payload_digest"],
+    "status": "C0 transport and replay proof only; no Form or Sheet business mutation"
+  },
+  "request_id": {
+    "format": "8 to 128 ASCII letters, numbers, underscores or hyphens",
+    "scope": ["team", "actor_scope", "action", "request_id"],
+    "same_payload": "returns the immutable original result",
+    "different_payload": "IDEMPOTENCY_CONFLICT",
+    "result_lookup": "C1 must expose only through the same public or authenticated actor boundary as the original action"
+  },
+  "errors": {
+    "INVALID_JSON": { "retryable": false },
+    "INVALID_REQUEST": { "retryable": false },
+    "INVALID_REQUEST_ID": { "retryable": false },
+    "IDEMPOTENCY_CONFLICT": { "retryable": false },
+    "C0_ACCESS_DENIED": { "retryable": false },
+    "NOT_FOUND": { "retryable": false },
+    "INTERNAL_ERROR": { "retryable": true }
+  },
+  "migration_rules": {
+    "current_contract": "contracts/api-v1.json remains authoritative for the Apps Script production service",
+    "old_sessions": "do not migrate; every Coach signs in again after cutover",
+    "completed_requests": "migrate request scope, original request ID, parameter digest and immutable result",
+    "old_hmac": "preserve UTF-8 HMAC-SHA256 and unpadded base64url; preserve historical JSON.stringify field order",
+    "new_digests": "carry an explicit algorithm version"
+  }
+}

@@ -5,3 +5,9 @@ dist/
 *.log
 .clasp.json
 backend/.build/
+cloudflare/.dev.vars
+cloudflare/.dev.vars.*
+!cloudflare/.dev.vars.example
+cloudflare/.wrangler/
+**/.wrangler-dry-run/
+cloudflare/coverage/

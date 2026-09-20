@@ -1,0 +1,2 @@
+# Copy to .dev.vars for local manual testing. Never commit the real value.
+C0_TEST_KEY=replace-with-a-local-only-value

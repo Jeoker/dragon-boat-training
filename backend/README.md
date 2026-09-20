@@ -4,6 +4,8 @@
 
 ## 代码与数据
 
+本目录是切换前运行中的 Apps Script 实现。已确认的下一阶段使用 Cloudflare 主数据及 Google 桥接，按[迁移计划](../cloudflare-migration-plan.md)推进；下列锁、触发器、Code 维护和部署步骤仍仅用于当前 Apps Script 环境。C4 切换后按归属代次关闭旧业务写入和到期业务任务，不将旧部署说明直接用于恢复生产写入。
+
 - `src/Code.gs`：Web App 入口、动作路由和统一响应格式。
 - `src/CoachActions.gs`：登录、会话读取、测试写入和退出。
 - `src/Security.gs`：HMAC 摘要、签名令牌、限流和脚本锁。
@@ -49,6 +51,16 @@
 3. 将 `src/` 推送到测试 Apps Script 项目，运行 `setupDragonBoatP4` 并完成 Spreadsheet、Forms 和触发器授权。该函数包含 P0／P1 初始化，幂等建立预约开放触发器和 P4 系统 Tab；临时明文初始 Code 会自动删除。已有管理员且未提供新 Code 时可以安全重跑，不会轮换凭据或重复记录凭据事件。
 4. 将 Web App 设为以部署账号执行，并允许队员无需 Google 登录访问。前端保存当前公开 `/exec` 地址作为默认值，也可以用构建变量 `PUBLIC_DRAGON_BOAT_API_URL` 覆盖。
 5. 从实际 GitHub Pages 测试入口验证健康检查、Code 登录、受保护写入、重复请求、退出和过期会话。
+
+### C0 Cloudflare 桥接小样
+
+`cloudflareBridgeProbe` 是迁移期间的服务间签名读回入口，不是公开报名接口。独立测试 Apps Script 需在 Script Properties 配置 `DRAGON_BOAT_BRIDGE_SECRET`、`DRAGON_BOAT_BRIDGE_TEAM_ID`、`DRAGON_BOAT_BRIDGE_BINDING_VERSION` 和 `DRAGON_BOAT_BRIDGE_WRITER_EPOCH`；四项必须分别与 staging Worker 的 secret／vars 一致，C0 的 binding version 为 `c0`。`DRAGON_BOAT_BRIDGE_REPLAY_STATE` 由脚本私下维护，不应人工填写或复制到仓库。
+
+运行 `npm run build:bridge-probe` 会生成 `backend/.build/bridge-probe/Code.gs` 和测试 Web App manifest，只组合正式源码中的配置、安全、桥接和 Web App 路由，便于用官方 `clasp` 创建独立 C0 deployment。它没有复制第二份签名算法；生成文件与本地 `.clasp.json` 均被忽略，修改必须落在 `src/`。探针项目只配置上述四个属性，不运行 `setupDragonBoatP4`，也不连接任何 Form／Spreadsheet。
+
+探针 manifest 额外声明仅限项目所有者的 Execution API，并提供 `configureC0BridgeProbe` 和不返回 secret 的配置检查函数；匿名 Web App 仍只能依赖签名信封进入 `cloudflareBridgeProbe`。默认 GCP 项目在 C0 实测中不允许 `clasp run`，因此实际初始值通过 Apps Script Project Settings 写入；若未来改用标准 GCP 项目，才可使用该辅助函数。配置函数不进入正式后端构建，不返回或记录 secret。
+
+共享 secret 不出现在请求正文、源码、`wrangler.jsonc`、日志或验收报告中。C0 只验证签名、时间窗、nonce、操作幂等、归属和 Content Service 重定向；Form／Sheet 分段读写、正式回执表及同步恢复属于 C2。生产 Apps Script 在 C4 写入交接前仍是唯一业务后端，不能因为桥接探针存在就关闭旧逻辑。
 
 本地使用 clasp 时，把 `.clasp.json.example` 复制为 `.clasp.json` 并替换测试 Script ID；`rootDir` 已指向 `src`。真实 `.clasp.json`、Code、会话令牌和 Spreadsheet ID 不提交仓库。
 

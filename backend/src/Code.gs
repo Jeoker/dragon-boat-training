@@ -72,6 +72,8 @@ function handleDragonBoatRequest_(method, event) {
         return dragonBoatSuccess_(withDragonBoatScriptLock_(function () { return coachBootstrap_(request); }), requestId);
       case "coachConnectivityWrite":
         return dragonBoatSuccess_(coachConnectivityWrite_(request), requestId);
+      case "cloudflareBridgeProbe":
+        return dragonBoatSuccess_(cloudflareBridgeProbe_(request), requestId);
       case "getSeasonManagement":
         return dragonBoatSuccess_(withDragonBoatScriptLock_(function () { return getSeasonManagement_(request); }), requestId);
       case "createSeason":

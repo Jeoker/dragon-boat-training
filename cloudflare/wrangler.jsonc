@@ -1,0 +1,55 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "dragon-boat-training-api-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-19",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "ENVIRONMENT": "staging",
+    "SERVICE_VERSION": "0.1.0-c0",
+    "CONTRACT_VERSION": "2026-09-19.c0",
+    "BACKEND_INSTANCE": "dragon-boat-training-staging",
+    "BACKEND_GENERATION": "cf-c0-staging-1",
+    "WRITER_EPOCH": "0",
+    "TEAM_ID": "pentasus"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TEAM_STATE",
+        "class_name": "TeamState"
+      }
+    ]
+  },
+  "exports": {
+    "TeamState": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "env": {
+    "production": {
+      "name": "dragon-boat-training-api",
+      "vars": {
+        "ENVIRONMENT": "production",
+        "SERVICE_VERSION": "0.1.0-c0",
+        "CONTRACT_VERSION": "2026-09-19.c0",
+        "BACKEND_INSTANCE": "dragon-boat-training-production",
+        "BACKEND_GENERATION": "cf-c0-production-1",
+        "WRITER_EPOCH": "0",
+        "TEAM_ID": "pentasus"
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "TEAM_STATE",
+            "class_name": "TeamState"
+          }
+        ]
+      }
+    }
+  }
+}
