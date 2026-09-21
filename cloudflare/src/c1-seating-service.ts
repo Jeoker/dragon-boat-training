@@ -6,7 +6,9 @@ import {
 import { canonicalJson } from "../../shared/c1-rules";
 import { ApiError } from "./http";
 import { C1Service } from "./c1-service";
-import { firstRow, operationReceipt, parseContract, type SqlRow } from "./c1-support";
+import {
+  firstRow, operationReceipt, parseContract, queueOrder, signupProjection, type SqlRow
+} from "./c1-support";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -42,9 +44,19 @@ function seatKey(side: unknown, rowNumber: unknown): string {
   return `${String(side)}:${Number(rowNumber)}`;
 }
 
-function queueOrder(left: Record<string, unknown>, right: Record<string, unknown>): number {
-  return Date.parse(String(left.queue_at)) - Date.parse(String(right.queue_at)) ||
-    Number(left.queue_sequence) - Number(right.queue_sequence);
+function practiceKey(row: { season_id: string; practice_id: string }): string {
+  return `${row.season_id}\n${row.practice_id}`;
+}
+
+function groupByPractice<T extends { season_id: string; practice_id: string }>(rows: T[]): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = practiceKey(row);
+    const values = grouped.get(key);
+    if (values) values.push(row);
+    else grouped.set(key, [row]);
+  }
+  return grouped;
 }
 
 function roleValue(value: unknown): string {
@@ -59,13 +71,6 @@ function practiceProjection(row: Record<string, unknown>): Record<string, unknow
     right_capacity: Number(row.right_capacity), signup_cutoff_at: String(row.signup_cutoff_at),
     practice_version: Number(row.practice_version), schedule_published_at: row.schedule_published_at
       ? String(row.schedule_published_at) : null, cancelled: Boolean(row.cancelled_at), updated_at: String(row.updated_at)
-  };
-}
-
-function signupProjection(row: Record<string, unknown>): Record<string, unknown> {
-  return {
-    member_id: String(row.member_id), preference: String(row.preference), status: String(row.status),
-    queue_at: String(row.queue_at), queue_sequence: Number(row.queue_sequence)
   };
 }
 
@@ -692,6 +697,10 @@ export class C1SeatingService {
     unique(input.draft_seats.map((row) => `${row.season_id}\n${row.practice_id}\n${row.side}\n${row.row_number}`), "draft seats");
     unique(input.revisions.map((row) => `${row.season_id}\n${row.practice_id}\n${row.revision_number}`), "seating revisions");
     unique(input.revisions.map((row) => row.revision_id), "revision identifiers");
+    const draftsByPractice = groupByPractice(input.draft_seats);
+    const revisionsByPractice = groupByPractice(input.revisions);
+    const revisionsByNumber = new Map(input.revisions.map((row) =>
+      [`${practiceKey(row)}\n${row.revision_number}`, row]));
     const practices = new Map(this.ctx.storage.sql.exec<SqlRow>(
       `SELECT p.*, pv.seat_plan_version, pv.published_revision FROM practices p
        JOIN practice_versions pv ON pv.season_id=p.season_id AND pv.practice_id=p.practice_id`
@@ -712,7 +721,7 @@ export class C1SeatingService {
           throw new ApiError("IMPORT_REFERENCE_MISSING", "A seating role has an unknown member.", 409);
         }
       }
-      const draft = input.draft_seats.filter((row) => row.season_id === state.season_id && row.practice_id === state.practice_id);
+      const draft = draftsByPractice.get(key) || [];
       if (state.seat_plan_version > 0 && draft.length !== Number(practice.left_capacity) + Number(practice.right_capacity)) {
         throw new ApiError("IMPORT_CONFLICT", "A seating state requires a complete draft snapshot.", 409);
       }
@@ -726,6 +735,9 @@ export class C1SeatingService {
         throw new ApiError("IMPORT_CONFLICT", "A draft contains duplicate or unknown members.", 409);
       }
       const currentState = stateRow(this.ctx.storage.sql, state.season_id, state.practice_id);
+      const storedState = firstRow<SqlRow>(this.ctx.storage.sql,
+        "SELECT updated_by, updated_at FROM seat_plan_states WHERE season_id=? AND practice_id=?",
+        state.season_id, state.practice_id);
       if (state.seat_plan_version === currentState.seat_plan_version) {
         if (state.coach_member_id !== currentState.coach_member_id ||
             state.steerer_member_id !== currentState.steerer_member_id ||
@@ -734,17 +746,32 @@ export class C1SeatingService {
           throw new ApiError("IMPORT_CONFLICT", "The same seating version contains different draft data.", 409);
         }
       }
+      if (storedState && state.seat_plan_version === currentState.seat_plan_version &&
+          state.published_revision === currentState.published_revision &&
+          (state.updated_by !== String(storedState.updated_by) || state.updated_at !== String(storedState.updated_at))) {
+        throw new ApiError("IMPORT_CONFLICT", "The same seating state versions contain different metadata.", 409);
+      }
       this.validateSnapshot(practice, { coach_member_id: state.coach_member_id,
         steerer_member_id: state.steerer_member_id, seats: normalized }, seatingMode(practice), false);
       const mergedRevisions = new Set(this.ctx.storage.sql.exec<SqlRow>(
         "SELECT revision_number FROM seat_plan_revisions WHERE season_id=? AND practice_id=?",
         state.season_id, state.practice_id).toArray().map((row) => Number(row.revision_number)));
-      input.revisions.filter((row) => row.season_id === state.season_id && row.practice_id === state.practice_id)
+      (revisionsByPractice.get(key) || [])
         .forEach((row) => mergedRevisions.add(row.revision_number));
-      for (let revisionNumber = 1; revisionNumber <= state.published_revision; revisionNumber += 1) {
-        if (!mergedRevisions.has(revisionNumber)) {
-          throw new ApiError("IMPORT_CONFLICT", "A published seating revision is missing.", 409);
-        }
+      const continuousRevisionCount = [...mergedRevisions]
+        .filter((revisionNumber) => revisionNumber >= 1 && revisionNumber <= state.published_revision).length;
+      if (continuousRevisionCount !== state.published_revision) {
+        throw new ApiError("IMPORT_CONFLICT", "A published seating revision is missing.", 409);
+      }
+      if (state.published_revision > 0) {
+        const importedLatest = revisionsByNumber.get(`${key}\n${state.published_revision}`);
+        const storedLatest = importedLatest ? null : revisionRow(this.ctx.storage.sql, state.season_id,
+          state.practice_id, state.published_revision);
+        const latest = importedLatest || storedLatest!;
+        const latestSeats = importedLatest ? normalizeSeats(practice, importedLatest.seats) :
+          storedRevisionSeats(this.ctx.storage.sql, practice, state.published_revision);
+        this.validateSnapshot(practice, { coach_member_id: roleValue(latest.coach_member_id),
+          steerer_member_id: roleValue(latest.steerer_member_id), seats: latestSeats }, seatingMode(practice), true);
       }
     }
     for (const row of input.draft_seats) {
@@ -771,9 +798,12 @@ export class C1SeatingService {
       }
       unique(revision.names.map((name) => name.member_id), `revision ${revision.revision_id} names`);
       const names = new Map(revision.names.map((name) => [name.member_id, name.display_name]));
-      if (participants.some((memberId) => !names.has(memberId)) ||
+      const participantIds = new Set(participants);
+      if (revision.names.length !== participantIds.size ||
+          revision.names.some((name) => !participantIds.has(name.member_id)) ||
+          participants.some((memberId) => !names.has(memberId)) ||
           revision.names.some((name) => !members.has(`${revision.season_id}\n${name.member_id}`))) {
-        throw new ApiError("IMPORT_CONFLICT", "A revision is missing a participant name.", 409);
+        throw new ApiError("IMPORT_CONFLICT", "A revision name snapshot must exactly match its participants.", 409);
       }
       const existing = revisionRow(this.ctx.storage.sql, revision.season_id, revision.practice_id, revision.revision_number);
       const revisionOwner = firstRow<SqlRow>(this.ctx.storage.sql,
@@ -812,6 +842,7 @@ export class C1SeatingService {
       throw new ApiError("IMPORT_SNAPSHOT_CONFLICT", "This seating snapshot identifier has different content.", 409);
     }
     const at = new Date().toISOString();
+    const draftsByPractice = groupByPractice(input.draft_seats);
     const response = { operation: operationReceipt("importSeatingSnapshot", input.request_id, at), result: {
       source_snapshot_id: input.source_snapshot_id, states: input.states.length,
       draft_seats: input.draft_seats.length, revisions: input.revisions.length
@@ -825,7 +856,7 @@ export class C1SeatingService {
       }
       for (const state of input.states) {
         const practice = this.requireStoredPractice(state.season_id, state.practice_id);
-        const draft = input.draft_seats.filter((row) => row.season_id === state.season_id && row.practice_id === state.practice_id);
+        const draft = draftsByPractice.get(practiceKey(state)) || [];
         if (state.seat_plan_version > 0) {
           writeDraft(this.ctx.storage.sql, practice, normalizeSeats(practice, draft), state.seat_plan_version,
             state.updated_by, state.updated_at);

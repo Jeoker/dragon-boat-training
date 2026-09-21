@@ -30,6 +30,18 @@ export function operationReceipt(
   return { action, request_id: requestId, committed_at: committedAt };
 }
 
+export function signupProjection(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    member_id: String(row.member_id), preference: String(row.preference), status: String(row.status),
+    queue_at: String(row.queue_at), queue_sequence: Number(row.queue_sequence)
+  };
+}
+
+export function queueOrder(left: Record<string, unknown>, right: Record<string, unknown>): number {
+  return Date.parse(String(left.queue_at)) - Date.parse(String(right.queue_at)) ||
+    Number(left.queue_sequence) - Number(right.queue_sequence);
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

@@ -168,7 +168,8 @@ describe("C1.4 seating migration slice", () => {
       draft: { coach_member_id: fixture.members[2], steerer_member_id: fixture.members[2] } });
     expect((await publicPractice(fixture, "manual_private")).seat_plan).toMatchObject({ status: "UNPUBLISHED", seats: [] });
     const first = await publish(fixture, "manual_first");
-    expect((await ok(first.response)).current_view).toMatchObject({ published_revision: 1 });
+    const firstPublished = await ok(first.response);
+    expect(firstPublished.current_view).toMatchObject({ published_revision: 1 });
     const publicOne = (await publicPractice(fixture, "manual_one")).seat_plan;
     expect(publicOne).toMatchObject({ status: "PUBLISHED", published_revision: 1,
       coach: { display_name: "Member 3" }, steerer: { display_name: "Member 3" } });
@@ -190,6 +191,15 @@ describe("C1.4 seating migration slice", () => {
       { row_number: 2, side: "RIGHT", member_id: fixture.members[1] }
     ])).response);
     expect((await ok((await publish(fixture, "manual_second")).response)).current_view.published_revision).toBe(2);
+    const replayedFirst = await ok(await call("/internal/c1/publish-seat-plan", first.payload, "POST", fixture.testEnv));
+    expect(replayedFirst.result.published_revision).toBe(firstPublished.result.published_revision);
+    expect(replayedFirst.current_view.published_revision).toBe(2);
+    expect(await errorCode(await call("/internal/c1/publish-seat-plan", {
+      ...first.payload, acknowledge_preference_mismatch: true
+    }, "POST", fixture.testEnv))).toBe("IDEMPOTENCY_CONFLICT");
+    expect(await errorCode(await call("/internal/c1/publish-seat-plan", {
+      ...first.payload, request_id: "publish_manual_stale_001"
+    }, "POST", fixture.testEnv))).toBe("VERSION_CONFLICT");
     await runInDurableObject(fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID),
       async (_instance: TeamState, context) => {
         const revisions = context.storage.sql.exec<any>(
@@ -354,6 +364,7 @@ describe("C1.4 seating migration slice", () => {
     const fixture = await setup("import", 1, 1, 5);
     await signup(fixture, 0, "LEFT");
     await signup(fixture, 1, "RIGHT");
+    expect((await signup(fixture, 3, "AMBIENT")).data.result.signup.status).toBe("WAITLISTED");
     const at = "2026-09-21T12:00:00.000Z";
     const allSeats = [
       { season_id: fixture.seasonId, practice_id: fixture.practiceId, seat_plan_version: 1,
@@ -376,6 +387,31 @@ describe("C1.4 seating migration slice", () => {
           { member_id: fixture.members[2], display_name: "Member 3" }],
         published_by: "coach_liu_yang", published_at: at, request_id: "legacy_publish_001" }]
     };
+    const extraName = { ...snapshot, request_id: "import_seating_extra_name_001",
+      source_snapshot_id: "snapshot_seating_extra_name_001", revisions: snapshot.revisions.map((revision: any) => ({
+        ...revision, names: [...revision.names, { member_id: fixture.members[4], display_name: "Member 5" }]
+      })) };
+    expect(await errorCode(await call("/internal/c1/import-seating", extraName, "POST", fixture.testEnv)))
+      .toBe("IMPORT_CONFLICT");
+    const roleConflict = { ...snapshot, request_id: "import_seating_role_conflict_001",
+      source_snapshot_id: "snapshot_seating_role_conflict_001", revisions: snapshot.revisions.map((revision: any) => ({
+        ...revision, coach_member_id: fixture.members[3], names: [...revision.names,
+          { member_id: fixture.members[3], display_name: "Member 4" }]
+      })) };
+    expect(await errorCode(await call("/internal/c1/import-seating", roleConflict, "POST", fixture.testEnv)))
+      .toBe("ROLE_SIGNUP_CONFLICT");
+    const incompleteRevision = { ...snapshot, request_id: "import_seating_incomplete_revision_001",
+      source_snapshot_id: "snapshot_seating_incomplete_revision_001",
+      revisions: snapshot.revisions.map((revision: any) => ({ ...revision,
+        seats: revision.seats.slice(0, 1),
+        names: revision.names.filter((name: any) => name.member_id !== fixture.members[1])
+      })) };
+    expect(await errorCode(await call("/internal/c1/import-seating", incompleteRevision, "POST", fixture.testEnv)))
+      .toBe("SEAT_PLAN_INCOMPLETE");
+    const incompleteDraft = { ...snapshot, request_id: "import_seating_incomplete_001",
+      source_snapshot_id: "snapshot_seating_incomplete_001", draft_seats: snapshot.draft_seats.slice(0, 1) };
+    expect(await errorCode(await call("/internal/c1/import-seating", incompleteDraft, "POST", fixture.testEnv)))
+      .toBe("IMPORT_CONFLICT");
     expect((await ok(await call("/internal/c1/import-seating", snapshot, "POST", fixture.testEnv))).result)
       .toMatchObject({ states: 1, draft_seats: 2, revisions: 1 });
     expect(await workspace(fixture, "import")).toMatchObject({ seat_plan_version: 1, published_revision: 1,
@@ -385,6 +421,20 @@ describe("C1.4 seating migration slice", () => {
     const drift = { ...snapshot, request_id: "import_seating_002", source_snapshot_id: "snapshot_seating_002",
       states: snapshot.states.map((state: any) => ({ ...state, coach_member_id: fixture.members[3] })) };
     expect(await errorCode(await call("/internal/c1/import-seating", drift, "POST", fixture.testEnv))).toBe("IMPORT_CONFLICT");
+    const metadataDrift = { ...snapshot, request_id: "import_seating_metadata_001",
+      source_snapshot_id: "snapshot_seating_metadata_001", states: snapshot.states.map((state: any) => ({
+        ...state, updated_by: "coach_other", updated_at: "2026-09-21T12:01:00.000Z"
+      })) };
+    expect(await errorCode(await call("/internal/c1/import-seating", metadataDrift, "POST", fixture.testEnv)))
+      .toBe("IMPORT_CONFLICT");
+    const reusedRevisionId = { ...snapshot, request_id: "import_seating_reused_revision_001",
+      source_snapshot_id: "snapshot_seating_reused_revision_001",
+      states: snapshot.states.map((state: any) => ({ ...state, published_revision: 2,
+        updated_at: "2026-09-21T12:02:00.000Z" })),
+      revisions: snapshot.revisions.map((revision: any) => ({ ...revision, revision_number: 2,
+        published_at: "2026-09-21T12:02:00.000Z", request_id: "legacy_publish_002" })) };
+    expect(await errorCode(await call("/internal/c1/import-seating", reusedRevisionId, "POST", fixture.testEnv)))
+      .toBe("IMPORT_CONFLICT");
     const regression = { ...snapshot, request_id: "import_seating_003", source_snapshot_id: "snapshot_seating_003",
       states: snapshot.states.map((state: any) => ({ ...state, seat_plan_version: 0 })) };
     expect(await errorCode(await call("/internal/c1/import-seating", regression, "POST", fixture.testEnv)))

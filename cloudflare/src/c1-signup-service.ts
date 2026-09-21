@@ -7,7 +7,7 @@ import { canonicalJson } from "../../shared/c1-rules";
 import { ApiError } from "./http";
 import { C1Service, type AuthenticatedCoach, type C1RequestIdentity } from "./c1-service";
 import { C1SeatingService, publicSeatPlanProjection } from "./c1-seating-service";
-import { firstRow, operationReceipt, parseContract, type SqlRow } from "./c1-support";
+import { firstRow, operationReceipt, parseContract, queueOrder, signupProjection, type SqlRow } from "./c1-support";
 
 type MutationKind = "CREATE" | "UPDATE" | "CANCEL";
 
@@ -36,13 +36,6 @@ function practiceProjection(row: Record<string, unknown>): Record<string, unknow
   };
 }
 
-function signupProjection(row: Record<string, unknown>): Record<string, unknown> {
-  return {
-    member_id: String(row.member_id), preference: String(row.preference), status: String(row.status),
-    queue_at: String(row.queue_at), queue_sequence: Number(row.queue_sequence)
-  };
-}
-
 function signupComparable(row: Record<string, unknown> | SignupSnapshot): Record<string, unknown> {
   return {
     season_id: String(row.season_id), practice_id: String(row.practice_id), member_id: String(row.member_id),
@@ -50,11 +43,6 @@ function signupComparable(row: Record<string, unknown> | SignupSnapshot): Record
     queue_sequence: Number(row.queue_sequence), updated_at: String(row.updated_at),
     last_request_id: String(row.last_request_id || "")
   };
-}
-
-function queueOrder(left: Record<string, unknown>, right: Record<string, unknown>): number {
-  return Date.parse(String(left.queue_at)) - Date.parse(String(right.queue_at)) ||
-    Number(left.queue_sequence) - Number(right.queue_sequence);
 }
 
 function signupCounts(rows: Record<string, unknown>[], practice: Record<string, unknown>): SignupCounts {

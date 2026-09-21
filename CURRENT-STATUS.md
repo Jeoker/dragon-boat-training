@@ -4,7 +4,7 @@
 
 > 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。仓库拆分本身不等同于 Cloudflare 迁移或新的生产功能验收；后续状态按下方各日期记录及“当前基线”判断。
 
-> Cloudflare 迁移现状：2026-09-21。C0 已完整验收；C1.1 核心身份与数据、C1.2 排期、C1.3 报名候补及 C1.4 排座已完成本地实现，下一段为 C1.5 冻结历史与运维。源码标记为 Apps Script `0.9.2-schedule-review`、Cloudflare staging `0.5.0-c1-seating`，均未部署；Pages、Google 同步和生产写入归属没有改变。C1 接口清单、Wrangler 配置、生成的 Worker 类型、服务版本、错误清单、可选字段及文档命令已经对齐并受自动测试约束。当前 Node 回归为 **184／184**、Cloudflare 回归为 **59／59**；证据见 [C0](tests/C0-CLOUDFLARE-ACCEPTANCE.md)、[C1.1](tests/C1-CORE-ACCEPTANCE.md)、[C1.2](tests/C1-SCHEDULE-ACCEPTANCE.md)、[C1.3](tests/C1-SIGNUP-ACCEPTANCE.md)、[C1.4](tests/C1-SEATING-ACCEPTANCE.md)及[C1.2 后代码审查](tests/POST-C1.2-CODE-REVIEW.md)。
+> Cloudflare 迁移现状：2026-09-21。C0 已完整验收；C1.1 核心身份与数据、C1.2 排期、C1.3 报名候补及 C1.4 排座已完成本地实现，下一段为 C1.5 冻结历史与运维。源码标记为 Apps Script `0.9.2-schedule-review`、Cloudflare staging `0.5.0-c1-seating`，均未部署；Pages、Google 同步和生产写入归属没有改变。C1 接口清单、Wrangler 配置、生成的 Worker 类型、服务版本、错误清单、可选字段及文档命令已经对齐并受自动测试约束。当前 Node 回归为 **184／184**、Cloudflare 回归为 **59／59**；证据见 [C0](tests/C0-CLOUDFLARE-ACCEPTANCE.md)、[C1.1](tests/C1-CORE-ACCEPTANCE.md)、[C1.2](tests/C1-SCHEDULE-ACCEPTANCE.md)、[C1.3](tests/C1-SIGNUP-ACCEPTANCE.md)、[C1.4](tests/C1-SEATING-ACCEPTANCE.md)、[C1.2 后代码审查](tests/POST-C1.2-CODE-REVIEW.md)及[C1.4 后代码审查](tests/POST-C1.4-CODE-REVIEW.md)。
 
 本文件记录当前交付状态、验证边界和下一步。第一次接手项目先读[项目总览](PROJECT-OVERVIEW.md)；产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
 
@@ -26,6 +26,7 @@
 - P5 功能提交 **`38c9361`** 的 [Pages run 33999868687](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33999868687) 成功；三个正式页面均返回 HTTP 200，线上 HTML 与本地 P5 构建 SHA-256 一致。正式 health 返回 Version 14 的 `0.9.0-p5-performance`；公开历史空目录返回成功及分页字段。P4 的 [Pages run 33989665856](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33989665856) 继续作为上一阶段历史证据。
 - C0 源码与文档提交 **`4a55bb0`** 的 [Pages run 35486989400](https://github.com/Jeoker/dragon-boat-training/actions/runs/35486989400) 成功；队员页、Coach Mode、过往赛季页和 Cloudflare staging health 均返回 HTTP 200。该发布只保存 C0 代码与文档，没有改变三个页面的生产 API。
 - C1.4 本地验收通过：应用、桥接与文档／契约一致性 **184／184**，Cloudflare Workers／DO **59／59**；Cloudflare 类型检查、类型生成和 dry-run、Astro 检查与三个页面构建、Apps Script 业务及独立桥接构建均通过。私有草稿、角色、人工／系统 revision、报名和船位原子联动、最终更正窗口及精确冻结拒绝已进入隔离新后端。不可变最终快照、公开历史、分页运维与备份导出仍留给 C1.5；这些证据不更新以上生产部署结论。
+- C1.4 完成后的代码健康复核已收紧排座影子导入：相同版本的状态元数据不可漂移，最新正式版重新核对当前角色／报名／完整排座，姓名快照只保存实际参与者；导入分组索引消除按场次重复扫描，共用报名投影与队列排序不再维护两份。发布重放、同编号换参数和旧版本写入已有直接回归。详见 [C1.4 后代码审查](tests/POST-C1.4-CODE-REVIEW.md)。
 - 当前跟踪文件不包含 Script ID、私有 Spreadsheet ID、Coach Code、会话令牌或服务端 secret。早期测试夹具曾复用实际 Coach Code，普通提交不会清除 Git 历史，因此下一次管理后端部署前必须轮换该 Code。
 
 ## 运行中 Apps Script 的写入与恢复约束
