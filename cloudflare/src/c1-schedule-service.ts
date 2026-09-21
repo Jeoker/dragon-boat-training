@@ -800,11 +800,16 @@ export class C1ScheduleService {
       week_version: Number(week.week_version), signup_version: signupVersion, change, values };
     const token = `sha256_v1:${await sha256Base64Url(canonicalJson(fingerprint))}`;
     const next = { ...practice, ...values };
+    const signupCounts = this.ctx.storage.sql.exec<{ status: string; count: number }>(
+      `SELECT status, COUNT(*) AS count FROM signups
+       WHERE season_id=? AND practice_id=? AND status IN ('CONFIRMED', 'WAITLISTED') GROUP BY status`,
+      seasonId, practiceId).toArray();
+    const count = (status: string) => Number(signupCounts.find((row) => row.status === status)?.count ?? 0);
     return { season_id: seasonId, practice_id: practiceId, week_id: String(week.week_id),
       season_version: Number(season.season_version), practice_version: Number(practice.practice_version),
       week_version: Number(week.week_version), signup_version: signupVersion, preview_token: token,
       change, before: practiceProjection(practice), after: { ...practiceProjection(next), cancelled: change === "CANCEL" },
-      confirmed_count: 0, waitlisted_count: 0,
+      confirmed_count: count("CONFIRMED"), waitlisted_count: count("WAITLISTED"),
       cutoff_effect: change === "CANCEL" ? "CLOSE" : next.signup_cutoff_at === practice.signup_cutoff_at ? "UNCHANGED" : "RECALCULATED",
       invalidates_week_confirmation: week.status === "SCHEDULED", values };
   }

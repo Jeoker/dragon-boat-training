@@ -27,6 +27,6 @@ Cloudflare Workers／Durable Object 使用官方本地测试运行时和 SQLite�
 
 ## 尚未完成
 
-C1.2 排期现已完成独立本地切片及[验收记录](C1-SCHEDULE-ACCEPTANCE.md)。C1.3–C1.6 的报名候补、排座、冻结历史、完整迁移回归和远端 staging 验收尚未开始。`update-member` 的停用关联检查将在报名／角色表加入时扩展；当前隔离数据库没有这些关联。默认赛季修改、赛季激活及 Google 绑定属于后续动作。
+C1.2 排期及 C1.3 报名候补现已完成独立本地切片及对应的[排期验收](C1-SCHEDULE-ACCEPTANCE.md)和[报名验收](C1-SIGNUP-ACCEPTANCE.md)。C1.4–C1.6 的排座、冻结历史、完整迁移回归和远端 staging 验收尚未开始。`update-member` 与核心影子导入已阻止停用仍有未来有效报名的成员；角色和排座关联将在 C1.4 继续纳入同一约束。默认赛季修改、赛季激活及 Google 绑定属于后续动作。
 
 本轮没有迁入真实成员或 Code，没有配置 staging 的新 secrets，没有部署 Worker。现有生产 Apps Script、Pages API 和 Google 文件均未改变。

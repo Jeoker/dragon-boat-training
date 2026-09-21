@@ -2,9 +2,10 @@ import { DurableObject } from "cloudflare:workers";
 import { sha256Base64Url } from "./crypto";
 import { ApiError, apiFailure, apiSuccess, optionalBoolean, optionalInteger, readJsonObject, requireRequestId, requireString } from "./http";
 import { APPLICATION_SCHEMA_VERSION, applySchema } from "./schema";
-import { C1_ACTIONS, C1_CONTRACT_VERSION, C1_SCHEDULE_ACTIONS } from "../../shared/c1-actions";
+import { C1_ACTIONS, C1_CONTRACT_VERSION, C1_SCHEDULE_ACTIONS, C1_SIGNUP_ACTIONS } from "../../shared/c1-actions";
 import { C1Service } from "./c1-service";
 import { C1ScheduleService } from "./c1-schedule-service";
+import { C1SignupService } from "./c1-signup-service";
 
 interface C0CommitInput {
   requestId: string;
@@ -100,12 +101,20 @@ export class TeamState extends DurableObject<Env> {
         return apiSuccess(new C1ScheduleService(this.ctx, this.env)
           .publicSchedule(url.searchParams.get("season_id") || ""), this.env, requestId, C1_CONTRACT_VERSION);
       }
+      if (isC1 && request.method === "GET" && url.pathname === "/internal/c1/public-practice") {
+        requestId = requireRequestId({ request_id: url.searchParams.get("request_id") });
+        return apiSuccess(new C1SignupService(this.ctx, this.env).publicPractice(
+          url.searchParams.get("season_id") || "", url.searchParams.get("practice_id") || ""),
+        this.env, requestId, C1_CONTRACT_VERSION);
+      }
       if (isC1 && request.method === "POST") {
         const input = await readJsonObject(request);
         requestId = requireRequestId(input);
         const data = Object.hasOwn(C1_SCHEDULE_ACTIONS, url.pathname)
           ? await new C1ScheduleService(this.ctx, this.env).handle(url.pathname, input)
-          : await new C1Service(this.ctx, this.env).handle(url.pathname, input);
+          : Object.hasOwn(C1_SIGNUP_ACTIONS, url.pathname)
+            ? await new C1SignupService(this.ctx, this.env).handle(url.pathname, input)
+            : await new C1Service(this.ctx, this.env).handle(url.pathname, input);
         await this.ensureNextAlarm();
         return apiSuccess(data, this.env, requestId, C1_CONTRACT_VERSION);
       }

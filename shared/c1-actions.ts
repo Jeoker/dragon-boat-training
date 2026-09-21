@@ -25,4 +25,15 @@ export const C1_SCHEDULE_ACTIONS = {
   "/internal/c1/public-schedule": { method: "GET", authentication: "public", writes: false }
 } as const;
 
-export const C1_ACTIONS = { ...C1_CORE_ACTIONS, ...C1_SCHEDULE_ACTIONS } as const;
+export const C1_SIGNUP_ACTIONS = {
+  "/internal/c1/import-signups": { method: "POST", authentication: "transport_only", writes: true },
+  "/internal/c1/public-practice": { method: "GET", authentication: "public", writes: false },
+  "/internal/c1/signup": { method: "POST", authentication: "public", writes: true },
+  "/internal/c1/update-signup": { method: "POST", authentication: "public", writes: true },
+  "/internal/c1/cancel-signup": { method: "POST", authentication: "public", writes: true },
+  "/internal/c1/signup-by-coach": { method: "POST", authentication: "session_token", writes: true },
+  "/internal/c1/update-signup-by-coach": { method: "POST", authentication: "session_token", writes: true },
+  "/internal/c1/cancel-signup-by-coach": { method: "POST", authentication: "session_token", writes: true }
+} as const;
+
+export const C1_ACTIONS = { ...C1_CORE_ACTIONS, ...C1_SCHEDULE_ACTIONS, ...C1_SIGNUP_ACTIONS } as const;

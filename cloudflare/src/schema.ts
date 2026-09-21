@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 3;
+export const APPLICATION_SCHEMA_VERSION = 4;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -143,6 +143,41 @@ function applyC1ScheduleSchema(sql: SqlStorage): void {
   `).toArray();
 }
 
+function applyC1SignupSchema(sql: SqlStorage): void {
+  const columns = sql.exec<{ name: string }>("PRAGMA table_info(practice_versions)").toArray();
+  if (!columns.some((column) => column.name === "signup_sequence")) {
+    sql.exec(`ALTER TABLE practice_versions ADD COLUMN signup_sequence INTEGER NOT NULL DEFAULT 0
+      CHECK (signup_sequence >= 0);`).toArray();
+  }
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS signups (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL, member_id TEXT NOT NULL,
+      preference TEXT NOT NULL CHECK (preference IN ('LEFT', 'AMBIENT', 'RIGHT')),
+      status TEXT NOT NULL CHECK (status IN ('CONFIRMED', 'WAITLISTED', 'CANCELLED')),
+      queue_at TEXT NOT NULL, queue_sequence INTEGER NOT NULL CHECK (queue_sequence >= 1),
+      updated_at TEXT NOT NULL, last_request_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (season_id, practice_id, member_id),
+      UNIQUE (season_id, practice_id, queue_sequence),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id),
+      FOREIGN KEY (season_id, member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE INDEX IF NOT EXISTS signups_practice_queue_idx
+      ON signups(season_id, practice_id, status, queue_at, queue_sequence);
+    CREATE INDEX IF NOT EXISTS signups_member_active_idx
+      ON signups(season_id, member_id, status, practice_id);
+    CREATE TABLE IF NOT EXISTS signup_rate_limits (
+      season_id TEXT NOT NULL, member_id TEXT NOT NULL, minute_bucket INTEGER NOT NULL,
+      attempt_count INTEGER NOT NULL CHECK (attempt_count >= 1), updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, member_id, minute_bucket)
+    );
+    CREATE TABLE IF NOT EXISTS signup_migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+  `).toArray();
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -156,6 +191,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 1) applyC0Schema(sql);
     if (currentVersion < 2) applyC1CoreSchema(sql);
     if (currentVersion < 3) applyC1ScheduleSchema(sql);
+    if (currentVersion < 4) applyC1SignupSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

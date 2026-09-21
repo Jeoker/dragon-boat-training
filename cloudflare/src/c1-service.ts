@@ -299,6 +299,16 @@ export class C1Service {
     if (sourceOwner && String(sourceOwner.member_id) !== row.member_id) {
       throw new ApiError("IMPORT_CONFLICT", "A member source key already belongs to another member.", 409);
     }
+    if (row.status === "INACTIVE") {
+      const activeLink = firstRow<{ count: number }>(this.ctx.storage.sql,
+        `SELECT COUNT(*) AS count FROM signups sg
+         JOIN practices p ON p.season_id=sg.season_id AND p.practice_id=sg.practice_id
+         WHERE sg.season_id=? AND sg.member_id=? AND sg.status<>'CANCELLED'
+           AND p.cancelled_at IS NULL AND p.end_at>?`, row.season_id, row.member_id, new Date().toISOString());
+      if (Number(activeLink?.count ?? 0) > 0) {
+        throw new ApiError("IMPORT_CONFLICT", "An inactive member still has active training links.", 409);
+      }
+    }
     this.ctx.storage.sql.exec(
       `INSERT INTO members VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(season_id, member_id) DO UPDATE SET source_key=excluded.source_key,
@@ -510,6 +520,16 @@ export class C1Service {
       if (!member) throw new ApiError("MEMBER_NOT_FOUND", "The member does not exist.", 404);
       if (Number(member.member_version) !== input.member_version) {
         throw new ApiError("VERSION_CONFLICT", "The member changed. Refresh and try again.", 409);
+      }
+      if (input.status === "INACTIVE") {
+        const activeLink = firstRow<{ count: number }>(this.ctx.storage.sql,
+          `SELECT COUNT(*) AS count FROM signups sg
+           JOIN practices p ON p.season_id=sg.season_id AND p.practice_id=sg.practice_id
+           WHERE sg.season_id=? AND sg.member_id=? AND sg.status<>'CANCELLED'
+             AND p.cancelled_at IS NULL AND p.end_at>?`, input.season_id, input.member_id, at);
+        if (Number(activeLink?.count ?? 0) > 0) {
+          throw new ApiError("MEMBER_HAS_ACTIVE_LINKS", "Cancel active signups before deactivating this member.", 409);
+        }
       }
       const next = {
         ...member,
