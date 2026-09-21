@@ -1,9 +1,9 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C1.2 core and schedule local implementation; isolated migration API; not production",
+  "status": "C1.1 core and C1.2 schedule local implementation; isolated migration API; not production",
   "contract_version": "2026-09-20.c1",
-  "service_version": "0.3.0-c1-schedule",
+  "service_version": "0.3.1-c1-review",
   "transport_gate": "Every /internal/c1 route is absent in production and requires C1_TEST_KEY in local or staging. This gate is separate from the business authentication declared per action.",
   "response": {
     "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
@@ -114,7 +114,7 @@
       "method": "POST",
       "authentication": "session_token",
       "writes": true,
-      "request": ["request_id", "session_token", "season_id", "week_id", "week_version", "practice_date", "start_time", "end_time", "optional timezone", "location", "address", "map_url"],
+      "request": ["request_id", "session_token", "season_id", "week_id", "week_version", "practice_date", "start_time", "end_time", "optional timezone", "location", "address", "optional map_url"],
       "response_result": ["season_id", "week", "practice"],
       "notes": "Creates a private extra practice. In an opened week it requires a separate publication action."
     },
@@ -137,7 +137,7 @@
       "method": "POST",
       "authentication": "session_token",
       "writes": true,
-      "request": ["request_id", "session_token", "season_id", "week_id", "practice_id", "week_version", "practice_version", "signup_version", "preview_token", "practice_date", "start_time", "end_time", "timezone", "location", "address", "map_url"],
+      "request": ["request_id", "session_token", "season_id", "week_id", "practice_id", "week_version", "practice_version", "signup_version", "preview_token", "practice_date", "start_time", "end_time", "timezone", "location", "address", "optional map_url"],
       "response_result": ["season_id", "week", "practice"]
     },
     "/internal/c1/cancel-practice": {
@@ -158,7 +158,7 @@
     }
   },
   "errors": [
-    "INVALID_REQUEST", "INVALID_REQUEST_ID", "METHOD_NOT_ALLOWED", "NOT_FOUND", "C1_ACCESS_DENIED",
+    "INVALID_JSON", "INVALID_REQUEST", "INVALID_REQUEST_ID", "METHOD_NOT_ALLOWED", "NOT_FOUND", "C1_ACCESS_DENIED",
     "CONFIGURATION_ERROR", "IDEMPOTENCY_CONFLICT", "IMPORT_CONFLICT", "IMPORT_VERSION_REGRESSION",
     "IMPORT_SNAPSHOT_CONFLICT", "IMPORT_REFERENCE_MISSING", "COACH_CODE_INVALID", "SESSION_INVALID",
     "SESSION_EXPIRED", "SESSION_REVOKED", "SEASON_NOT_FOUND", "SEASON_NOT_OPEN", "SEASON_NOT_PUBLIC",
@@ -166,7 +166,7 @@
     "SCHEDULE_TEMPLATES_REQUIRED", "WEEK_EMPTY", "WEEK_ALREADY_OPEN", "WEEK_NOT_DUE", "WEEK_NOT_OPEN",
     "WEEK_NOT_EDITABLE", "OPEN_TIME_TOO_LATE", "PRACTICE_NOT_FOUND", "PRACTICE_OUTSIDE_WEEK",
     "PRACTICE_OUTSIDE_SEASON", "PRACTICE_ALREADY_STARTED", "PRACTICE_CANCELLED",
-    "PRACTICE_NOT_PUBLISHABLE", "INVALID_TIME_RANGE", "PREVIEW_STALE", "INTERNAL_ERROR"
+    "PRACTICE_NOT_PUBLISHABLE", "INVALID_TIME_RANGE", "PREVIEW_STALE", "VERSION_CONFLICT", "INTERNAL_ERROR"
   ],
   "not_yet_in_this_slice": [
     "season activation and Google binding", "default-season mutation", "signup allocation", "seating",

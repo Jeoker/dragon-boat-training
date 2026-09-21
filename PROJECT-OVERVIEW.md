@@ -1,6 +1,6 @@
 # Dragon Boat Training 项目总览
 
-> 未来 agent 的首要入口。最后核对：2026-09-20。
+> 未来 agent 的首要入口。最后核对：2026-09-21。
 >
 > 本页说明项目为什么存在、必须遵守的顶层原则、目标与子目标、当前架构边界，以及从哪里继续工作。会频繁变化的部署版本、实测结果和下一步只在[当前进度](CURRENT-STATUS.md)维护；完整业务规则只在[项目说明](README.md)维护。
 
@@ -174,5 +174,5 @@ P0 至 P4 已完成相应阶段验收：连接与契约、建季排期、报名�
 4. 修改业务规则前先更新 `README.md`，修改阶段或实现边界时更新对应 Epic／规格，完成实际验证后才更新 `CURRENT-STATUS.md`。
 5. 保留稳定 ID、报名时间、版本、请求结果、正式 revision、冻结快照、审计和恢复语义；不要在客户端或新后端复制第二套报名／递补算法。
 6. 继续写入真实测试环境前重读服务器状态和验收脚本限制。不要假设旧的成员人数、草稿版本、会话或测试清理状态仍然成立。
-7. 本地基线命令为 `npm test`、`npm run build`、`npm run build:backend`；文档变更至少检查链接和 `git diff --check`。
+7. 本地基线命令为 `npm test`、`npm run cf:test`、`npm run cf:check`、`npm run build`、`npm run build:backend`、`npm run build:bridge-probe` 和 `npm run cf:dry-run`；修改 Wrangler 变量或绑定时另运行 `npm run cf:types`。文档变更至少运行文档一致性测试并检查 `git diff --check`。
 8. 不提交 Coach Code、Cloudflare／Google 密钥、OAuth 结果、私有文件 ID、会话令牌或真实成员隐私数据。

@@ -19,6 +19,8 @@ npm run cf:dry-run
 npm run cf:dev
 ```
 
+修改 `cloudflare/wrangler.jsonc` 的变量或绑定后必须重新运行 `npm run cf:types` 并提交生成的 `worker-configuration.d.ts`。契约测试会核对 staging 服务版本、接口清单和生成类型，避免配置与说明静默漂移。
+
 `npm run cf:deploy:staging` 创建或更新隔离 staging。`npm run cf:deploy:production` 只保留为明确的后续命令；C4 前不得用它接管生产业务。Cloudflare 和 Google secret 分别通过平台配置，不写入代码、Wrangler vars 或日志。
 
 账户首次部署还需要在 Cloudflare Dashboard 启用一个 `workers.dev` 子域；Worker 上传成功不代表该公网地址已经可用。staging 的 `C0_TEST_KEY`、`C1_TEST_KEY`、`COACH_CODE_SECRET`、`SESSION_SECRET`、`GOOGLE_BRIDGE_URL` 和 `GOOGLE_BRIDGE_SECRET` 必须用 Wrangler secret 或平台 secret 配置，不能加入 `wrangler.jsonc`。Code secret 只核对迁入的旧摘要；新后端 session 使用独立 secret。`wrangler dev --remote` 可以验证 Worker 本身，但当前 Wrangler 不支持以该模式访问 Durable Objects SQLite，因此远端 DO 验收必须走已部署的 staging 地址。

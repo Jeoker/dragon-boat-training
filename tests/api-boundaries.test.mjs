@@ -33,6 +33,34 @@ test("the C1 manifest matches its executable action registry", async () => {
   }
 });
 
+test("the C1 manifest and generated Worker types match the Wrangler service versions", async () => {
+  const contract = JSON.parse(await readFile(new URL("../contracts/api-cloudflare-c1.json", import.meta.url), "utf8"));
+  const configText = await readFile(new URL("../cloudflare/wrangler.jsonc", import.meta.url), "utf8");
+  const parsed = ts.parseConfigFileTextToJson("cloudflare/wrangler.jsonc", configText);
+  assert.equal(parsed.error, undefined);
+  const generatedTypes = await readFile(new URL("../cloudflare/worker-configuration.d.ts", import.meta.url), "utf8");
+  const stagingVersion = parsed.config.vars.SERVICE_VERSION;
+  const productionVersion = parsed.config.env.production.vars.SERVICE_VERSION;
+
+  assert.equal(contract.service_version, stagingVersion);
+  assert.match(generatedTypes, new RegExp(`SERVICE_VERSION: [^;]*${JSON.stringify(stagingVersion).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(generatedTypes, new RegExp(`SERVICE_VERSION: [^;]*${JSON.stringify(productionVersion).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+});
+
+test("the C1 manifest lists every error raised directly by its business services", async () => {
+  const contract = JSON.parse(await readFile(new URL("../contracts/api-cloudflare-c1.json", import.meta.url), "utf8"));
+  const sources = await Promise.all([
+    "../cloudflare/src/c1-service.ts",
+    "../cloudflare/src/c1-schedule-service.ts",
+    "../cloudflare/src/c1-support.ts"
+  ].map((file) => readFile(new URL(file, import.meta.url), "utf8")));
+  const raised = new Set(sources.flatMap((source) =>
+    [...source.matchAll(/new ApiError\("([A-Z0-9_]+)"/g)].map((match) => match[1])));
+
+  for (const code of raised) assert.ok(contract.errors.includes(code), `Missing C1 error ${code}`);
+  assert.ok(contract.errors.includes("INVALID_JSON"));
+});
+
 test("POST never creates a request ID for an unidentifiable retry", async () => {
   const { context, spreadsheet } = await createBackend();
   for (const request_id of [undefined, null, "", "  ", 12345678]) {

@@ -2,17 +2,9 @@
 
 > 更新：2026-09-21
 
-> 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。下方产品状态仍以 2026-09-05 的验证记录为准，仓库拆分不等同于 Cloudflare 迁移或新的生产功能验收。
+> 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。仓库拆分本身不等同于 Cloudflare 迁移或新的生产功能验收；后续状态按下方各日期记录及“当前基线”判断。
 
-> Cloudflare C0 更新：2026-09-19。C0 全部门槛已通过：隔离 staging 的 Worker／Durable Object、SQLite 持久化、真实 Apps Script 签名往返、负向范围、重复操作和 Free 计划用量入口均已验收。生产 Worker、GitHub Pages API 配置和 Apps Script 业务写入归属均未改变；下一阶段是 C1 业务迁移。
-
-> C1 前审查更新：2026-09-20。完成现有代码审查与本地修复，重点为 API 输入／响应、幂等恢复、赛季隔离、船位分配、日志分页和异步 UI。源码服务标记为 `0.9.1-api-review`，尚未部署，未开始 C1。详见[审查记录](tests/PRE-C1-CODE-REVIEW.md)及 [API 边界约定](contracts/README.md)。
-
-> C1.1 更新：2026-09-20。Cloudflare 核心身份与数据切片已在本地实现：schema v2、赛季／成员、旧 Code 摘要兼容、新代次会话、核心影子导入、不可变回执／审计／outbox 及隔离公开名单。证据见 [C1.1 验收](tests/C1-CORE-ACCEPTANCE.md)；当前接续点以紧随其后的 C1.2 状态为准。
-
-> C1.2 更新：2026-09-21。Cloudflare 排期切片已在本地实现：schema v3、排期影子导入、模板、私有周草稿、立即／预约开放、开放后单场发布、修改预览、取消墓碑和持久到期任务。尚未部署 staging，未连接 Pages 或 Google 同步；下一段为 C1.3 报名候补。证据见 [C1.2 验收](tests/C1-SCHEDULE-ACCEPTANCE.md)。
-
-> C1.2 后代码健康审查：2026-09-21。修复可变赛季设置导致的幂等冲突、损坏持久任务阻断同批任务、outbox 首次失败缺少诊断、会话载荷宽松解析及预约发布覆盖确认审计字段；合并 C1 重复基础助手。源码标记为 Apps Script `0.9.2-schedule-review`、Cloudflare staging `0.3.1-c1-review`，均未部署。完整记录见 [C1.2 后代码审查](tests/POST-C1.2-CODE-REVIEW.md)。
+> Cloudflare 迁移现状：2026-09-21。C0 已完整验收；C1.1 核心身份与数据及 C1.2 排期已完成本地实现和代码健康审查，下一段为 C1.3 报名候补。源码标记为 Apps Script `0.9.2-schedule-review`、Cloudflare staging `0.3.1-c1-review`，均未部署；Pages、Google 同步和生产写入归属没有改变。C1 接口清单、Wrangler 配置、生成的 Worker 类型、服务版本、错误清单、可选字段及文档命令已经对齐并受自动测试约束。当前 Node 回归为 **184／184**、Cloudflare 回归为 **36／36**；证据见 [C0](tests/C0-CLOUDFLARE-ACCEPTANCE.md)、[C1.1](tests/C1-CORE-ACCEPTANCE.md)、[C1.2](tests/C1-SCHEDULE-ACCEPTANCE.md)及[C1.2 后代码审查](tests/POST-C1.2-CODE-REVIEW.md)。
 
 本文件记录当前交付状态、验证边界和下一步。第一次接手项目先读[项目总览](PROJECT-OVERVIEW.md)；产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
 
@@ -33,8 +25,8 @@
 - 线上 Apps Script 沿用原 Web App URL，当前为 **Version 14、服务 `0.9.0-p5-performance`**，契约保持 `2026-09-02.p2.1`。生产 `setupDragonBoatP4` 已幂等执行完成，`PublicHistorySeasons` 紧凑索引及维护触发器已建立或迁移。
 - P5 功能提交 **`38c9361`** 的 [Pages run 33999868687](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33999868687) 成功；三个正式页面均返回 HTTP 200，线上 HTML 与本地 P5 构建 SHA-256 一致。正式 health 返回 Version 14 的 `0.9.0-p5-performance`；公开历史空目录返回成功及分页字段。P4 的 [Pages run 33989665856](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33989665856) 继续作为上一阶段历史证据。
 - C0 源码与文档提交 **`4a55bb0`** 的 [Pages run 35486989400](https://github.com/Jeoker/dragon-boat-training/actions/runs/35486989400) 成功；队员页、Coach Mode、过往赛季页和 Cloudflare staging health 均返回 HTTP 200。该发布只保存 C0 代码与文档，没有改变三个页面的生产 API。
-- C1.2 后审查完整本地回归通过：应用与桥接 **180／180**，Cloudflare Workers／DO **36／36**；Cloudflare 类型检查和 dry-run、Astro 检查与三个页面构建、Apps Script 业务及独立桥接构建均通过。这些证据不更新以上生产部署结论。
-- Script ID、私有 Spreadsheet ID、Coach Code、会话令牌和服务端 secret 均不写入仓库。
+- C1.2 后审查及文档一致性复核通过：应用、桥接与文档／契约一致性 **184／184**，Cloudflare Workers／DO **36／36**；Cloudflare 类型检查、类型生成和 dry-run、Astro 检查与三个页面构建、Apps Script 业务及独立桥接构建均通过。这些证据不更新以上生产部署结论。
+- 当前跟踪文件不包含 Script ID、私有 Spreadsheet ID、Coach Code、会话令牌或服务端 secret。早期测试夹具曾复用实际 Coach Code，普通提交不会清除 Git 历史，因此下一次管理后端部署前必须轮换该 Code。
 
 ## 运行中 Apps Script 的写入与恢复约束
 
@@ -93,4 +85,4 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 3. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
 4. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。
 
-重新开始时先检查 Git 分支和未提交改动，再运行 `npm test`、`npm run cf:test`、`npm run cf:check`、`npm run build`、`npm run build:backend` 和 `npm run cf:dry-run`；受限环境设置 `ASTRO_TELEMETRY_DISABLED=1`。当前仓库命令可使用 `git -c safe.directory=D:/agents/dev-master/dragon-boat-training -C D:/agents/dev-master/dragon-boat-training ...`。
+重新开始时先检查 Git 分支和未提交改动，再运行 `npm test`、`npm run cf:test`、`npm run cf:check`、`npm run build`、`npm run build:backend`、`npm run build:bridge-probe` 和 `npm run cf:dry-run`；修改 Wrangler 变量或绑定时另运行 `npm run cf:types`。受限环境设置 `ASTRO_TELEMETRY_DISABLED=1`。当前仓库命令可使用 `git -c safe.directory=D:/agents/dev-master/dragon-boat-training -C D:/agents/dev-master/dragon-boat-training ...`。

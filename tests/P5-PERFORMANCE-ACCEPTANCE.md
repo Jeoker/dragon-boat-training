@@ -15,7 +15,7 @@
 
 - `npm test`：159／159 通过。
 - `npm run build`：Astro 43 个文件零诊断，生成队员页、Coach Mode、荣誉墙和网站首页四个静态页面。
-- `npm run build:dragon-boat-backend`：Apps Script 单文件构建通过。
+- `npm run build:backend`：Apps Script 单文件构建通过。
 - `contracts/api-v1.json`：JSON 解析通过；新增字段只位于兼容扩展。
 - 专项回归验证两秒定时器、慢写入期间继续编辑及后续合并；开放赛季训练在到期后按时冻结且不提前整季归档；三场训练在每轮一个工作单元下跨多轮完成归档且无重复；120 条赛季审计用 25 条分页读完且单次读取不超过 26 行；35 条历史记录完成分页、缓存命中、缓存未命中的紧凑索引读取和按行详情读取；35 行公开投影只调用一次数据写入范围；历史更正同步更新列表版本、数量和详情说明。
 - 生产 `setupDragonBoatP4` 于 Version 14 发布前幂等执行完成，创建或迁移 `PublicHistorySeasons` 并设置后台维护触发器；执行日志明确显示 `Execution completed`。
