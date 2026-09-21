@@ -4,8 +4,9 @@
 
 - [api-v1.json](api-v1.json)：现行 Apps Script 动作、权限、输入和输出清单。
 - [api-cloudflare-c0.json](api-cloudflare-c0.json)：Cloudflare C0 隔离测试接口，不是生产报名 API。
+- [api-cloudflare-c1.json](api-cloudflare-c1.json)：C1 核心赛季、成员与权限切片的隔离接口。
 
-两个 JSON 文件是接口清单，不是可交给 JSON Schema 验证器执行的 schema。当前校验由服务端入口、业务校验器及客户端响应校验共同执行；动作和 HTTP 方法由测试核对代码与清单一致。不能把字段清单当成完整的类型或权限校验。
+这些 JSON 文件是接口清单，不是可交给 JSON Schema 验证器执行的 schema。C1 的 TypeScript DTO、动作注册和运行时解析在 `shared/c1-contract.ts`；服务端业务校验及客户端响应校验继续独立承担相应边界。测试核对代码与清单中的动作、方法和权限声明一致。不能把字段清单当成完整的类型或权限校验。
 
 ## 请求边界
 
@@ -13,7 +14,7 @@
 2. 公开读取用 GET。Apps Script 管理读取和写入用 POST JSON 请求体，浏览器以 `text/plain;charset=UTF-8` 发送并跟随重定向。Code 和 session token 不进入 URL。
 3. 所有 POST 必须带客户端生成的 `request_id`，8–128 位 ASCII 字母、数字、下划线或连字符。缺失或非法编号在业务动作前拒绝；GET 缺省时服务端可生成编号。正常客户端始终传入编号并验证响应关联。
 4. Apps Script 版本字段接受非负安全整数，保留规范十进制字符串兼容；不把 `null`、布尔值、数组、空串或小数转换成版本。明确的布尔选项只接受 JSON boolean。`known_roster_version=-1` 是旧页面的“未知”提示，不是业务版本。缺省 `bootstrap.season_id` 或旧客户端空串表示首页默认入口。
-5. Cloudflare C0 的 JSON 数值字段只接受 number 安全整数，布尔字段只接受 boolean。不能以 TypeScript 类型断言代替运行时校验。迁移旧客户端时由适配器明确处理兼容，不静默转换原请求摘要。
+5. Cloudflare JSON 数值字段只接受 number 安全整数，布尔字段只接受 boolean。不能以 TypeScript 类型断言代替运行时校验。迁移旧客户端时由适配器明确处理兼容，不静默转换原请求摘要。
 6. `limit` 必须为正整数，超过上限时截到上限；缺省值见动作清单。cursor 是不透明续页标识，客户端不构造、不解释。实体关联、必填字段、枚举和时间边界继续在业务层检查。
 
 ## 响应边界

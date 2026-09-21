@@ -7,7 +7,11 @@ export default defineConfig({
       wrangler: { configPath: "./cloudflare/wrangler.jsonc" },
       miniflare: {
         bindings: {
-          C0_TEST_KEY: "local-c0-test-key"
+          C0_TEST_KEY: "local-c0-test-key",
+          C1_TEST_KEY: "local-c1-test-key",
+          COACH_CODE_SECRET: "local-c1-coach-secret",
+          SESSION_SECRET: "local-c1-session-secret",
+          COACH_SESSION_TTL_SECONDS: "28800"
         }
       }
     })

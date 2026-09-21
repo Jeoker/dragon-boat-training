@@ -1,0 +1,79 @@
+{
+  "document_type": "api-contract-manifest",
+  "conventions": "contracts/README.md",
+  "status": "C1 core local implementation; isolated migration API; not production",
+  "contract_version": "2026-09-20.c1",
+  "service_version": "0.2.0-c1-core",
+  "transport_gate": "Every /internal/c1 route is absent in production and requires C1_TEST_KEY in local or staging. This gate is separate from the business authentication declared per action.",
+  "response": {
+    "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
+    "write": "data contains operation:{action,request_id,committed_at} and immutable result. Replay returns the same stored data.",
+    "read": "data is a current projection with generated_at when time matters."
+  },
+  "actions": {
+    "/internal/c1/import-core": {
+      "method": "POST",
+      "authentication": "migration_key",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "settings_version", "default_season_id", "coaches", "seasons", "members"],
+      "notes": "Full core shadow snapshot. Preserves legacy Coach credential digests and stable IDs. Upserts only equal or newer entity versions; never interprets an omitted row as deletion; creates no Google outbox."
+    },
+    "/internal/c1/coach-login": {
+      "method": "POST",
+      "authentication": "coach_code",
+      "writes": true,
+      "request": ["request_id", "coach_code"],
+      "response_result": ["session_token", "coach_id", "display_name", "issued_at", "expires_at"],
+      "notes": "Validates a migrated legacy Code digest. New session tokens bind backend_generation and writer_epoch; no old session is migrated."
+    },
+    "/internal/c1/coach-logout": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token"],
+      "response_result": ["logged_out"]
+    },
+    "/internal/c1/coach-bootstrap": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token"],
+      "response": ["coach", "default_season_id", "settings_version", "seasons", "generated_at"]
+    },
+    "/internal/c1/create-season": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "name", "start_date", "end_date", "timezone"],
+      "response_result": ["season"],
+      "notes": "Creates a DRAFT season with a deterministic stable ID and a pending CORE_CHANGED outbox row. Does not activate or bind Google."
+    },
+    "/internal/c1/update-member": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "member_id", "member_version", "optional display_name_override", "optional default_preference", "optional status"],
+      "response_result": ["season_id", "roster_version", "member"],
+      "notes": "Requires an OPEN season and exact member version. Updates roster version and creates a pending CORE_CHANGED outbox row in the same transaction."
+    },
+    "/internal/c1/public-roster": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "season_id"],
+      "response": ["season", "members", "generated_at"],
+      "notes": "The isolated transport gate still applies. Only active member ID, effective display name, default preference and member version are projected."
+    }
+  },
+  "errors": [
+    "INVALID_REQUEST", "INVALID_REQUEST_ID", "METHOD_NOT_ALLOWED", "NOT_FOUND", "C1_ACCESS_DENIED",
+    "CONFIGURATION_ERROR", "IDEMPOTENCY_CONFLICT", "IMPORT_CONFLICT", "IMPORT_VERSION_REGRESSION",
+    "IMPORT_SNAPSHOT_CONFLICT", "IMPORT_REFERENCE_MISSING", "COACH_CODE_INVALID", "SESSION_INVALID",
+    "SESSION_EXPIRED", "SESSION_REVOKED", "SEASON_NOT_FOUND", "SEASON_NOT_OPEN", "SEASON_NOT_PUBLIC",
+    "MEMBER_NOT_FOUND", "VERSION_CONFLICT", "INTERNAL_ERROR"
+  ],
+  "not_yet_in_this_slice": [
+    "season activation and Google binding", "default-season mutation", "schedule", "signup allocation", "seating",
+    "freeze/history", "Google import/export execution", "production or Pages routing", "browser CORS"
+  ]
+}

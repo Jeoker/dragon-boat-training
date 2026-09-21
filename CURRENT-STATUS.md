@@ -8,13 +8,15 @@
 
 > C1 前审查更新：2026-09-20。完成现有代码审查与本地修复，重点为 API 输入／响应、幂等恢复、赛季隔离、船位分配、日志分页和异步 UI。源码服务标记为 `0.9.1-api-review`，尚未部署，未开始 C1。详见[审查记录](tests/PRE-C1-CODE-REVIEW.md)及 [API 边界约定](contracts/README.md)。
 
+> C1.1 更新：2026-09-20。Cloudflare 核心身份与数据切片已在本地实现：schema v2、赛季／成员、旧 Code 摘要兼容、新代次会话、核心影子导入、不可变回执／审计／outbox 及隔离公开名单。尚未部署 staging，生产写入归属没有改变；下一段为 C1.2 排期。证据见 [C1.1 验收](tests/C1-CORE-ACCEPTANCE.md)。
+
 本文件记录当前交付状态、验证边界和下一步。第一次接手项目先读[项目总览](PROJECT-OVERVIEW.md)；产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
 
 ## 已确认的下一阶段
 
 采用 **Cloudflare Workers + Durable Objects（SQLite）** 保存在线业务主数据，GitHub Pages 保留现有网页，Apps Script 收敛为 Google Form／Sheets 桥接。支持偶尔直接修改 Sheet，通过基线对比、业务校验和 Coach Mode 冲突处理导入；有变化时默认十分钟批量导出，网页保存不等待 Google。
 
-目标架构、C0–C4 顺序、三个 Epic 的新增工作包、真实 Google 边界及切换／回退门槛已整理到[Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md)。**C0.1–C0.6 已完成，下一阶段按 C1 的赛季／成员与权限、排期、报名候补、排座、冻结历史顺序迁移，并只接隔离测试端点。** 下方仍是实际运行中的 Apps Script 生产基线，不代表新架构已经上线。
+目标架构、C0–C4 顺序、三个 Epic 的新增工作包、真实 Google 边界及切换／回退门槛已整理到[Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md)。**C0.1–C0.6 已完成，C1.1 核心身份与数据已本地完成；下一段为 C1.2 排期，仍只接隔离测试端点。** 下方仍是实际运行中的 Apps Script 生产基线，不代表新架构已经上线。
 
 2026-09-19 已按 [C0 可执行工作清单](cloudflare-migration-plan.md#c0-可执行工作清单)建立 Worker、SQLite schema v1、不可变请求结果、事务审计／outbox／任务、alarm 租约与应用级重试、旧摘要兼容向量和签名桥接协议。真实本地 Wrangler 进程重启后数据、请求去重结果和待执行任务仍在；并发、回滚、闹钟修复及超过六次失败后的继续续排已有专项测试。独立 Apps Script Web App 的真实往返、重放及过期／篡改／错团队／错 binding／错代次拒绝均通过；实际 Free 计划和 Worker／DO 用量入口已核对。详细证据和观察边界见 [C0 验收记录](tests/C0-CLOUDFLARE-ACCEPTANCE.md)。
 
@@ -27,7 +29,7 @@
 - 线上 Apps Script 沿用原 Web App URL，当前为 **Version 14、服务 `0.9.0-p5-performance`**，契约保持 `2026-09-02.p2.1`。生产 `setupDragonBoatP4` 已幂等执行完成，`PublicHistorySeasons` 紧凑索引及维护触发器已建立或迁移。
 - P5 功能提交 **`38c9361`** 的 [Pages run 33999868687](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33999868687) 成功；三个正式页面均返回 HTTP 200，线上 HTML 与本地 P5 构建 SHA-256 一致。正式 health 返回 Version 14 的 `0.9.0-p5-performance`；公开历史空目录返回成功及分页字段。P4 的 [Pages run 33989665856](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33989665856) 继续作为上一阶段历史证据。
 - C0 源码与文档提交 **`4a55bb0`** 的 [Pages run 35486989400](https://github.com/Jeoker/dragon-boat-training/actions/runs/35486989400) 成功；队员页、Coach Mode、过往赛季页和 Cloudflare staging health 均返回 HTTP 200。该发布只保存 C0 代码与文档，没有改变三个页面的生产 API。
-- 本地审查后应用与桥接 **179／179** 测试通过，Cloudflare Workers／DO **17／17** 测试通过；Cloudflare 类型检查、dry-run、Astro 检查与三个页面构建、Apps Script 业务及独立桥接构建均通过。这是本地修复证据，不更新以上生产部署结论。Astro 与 Workers 类型及构建产物检查范围已隔离。
+- C1.1 完整本地回归通过：应用与桥接 **180／180**，Cloudflare Workers／DO **26／26**；Cloudflare 类型检查和 dry-run、Astro 检查与三个页面构建、Apps Script 业务及独立桥接构建均通过。这些证据不更新以上生产部署结论。
 - Script ID、私有 Spreadsheet ID、Coach Code、会话令牌和服务端 secret 均不写入仓库。
 
 ## 运行中 Apps Script 的写入与恢复约束
@@ -81,7 +83,7 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 
 ## 未完成范围与下一步
 
-1. **开始 C1 业务迁移**：先冻结 C1 数据模型、请求／响应 DTO 和运行时 schema，再按赛季／成员与权限、排期、报名候补、排座、冻结历史逐层迁入团队 Durable Object，接入事务、请求结果和 outbox。复用审查后 Apps Script 场景和 [API 边界约定](contracts/README.md)，只连接隔离测试端点；C1 不改生产 Pages API 或写入归属。本轮审查补丁未发布，后续部署时需分别核对业务 Apps Script、独立桥接、Pages 与 staging 版本并冒烟验收，不把源码版本当线上版本。
+1. **继续 C1.2 排期迁移**：C1.1 已冻结共享 DTO／运行时校验并完成赛季、成员与权限切片。下一步迁移模板、周、训练、确认／预约发布、开放后增补、修改预览、取消和到期任务；沿用 [API 边界约定](contracts/README.md)和现行 P1 场景，只连接隔离测试端点。C1 不改生产 Pages API 或写入归属。
 2. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
 3. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
 4. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。

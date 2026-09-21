@@ -9,6 +9,7 @@
   },
   "include": [
     "src/**/*.ts",
+    "../shared/**/*.ts",
     "test/**/*.ts",
     "vitest.config.ts",
     "worker-configuration.d.ts"

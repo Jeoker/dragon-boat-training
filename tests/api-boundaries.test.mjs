@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import ts from "typescript";
 import { createBackend, payload, post, sheetRecords } from "./backend-test-runtime.mjs";
 
 test("every production action and HTTP method matches the executable route registry", async () => {
@@ -15,6 +16,21 @@ test("every production action and HTTP method matches the executable route regis
   assert.equal(unknown.error.code, "UNSUPPORTED_ACTION");
   const wrongMethod = post(context, { action: "members", request_id: "wrong_method_01" });
   assert.equal(wrongMethod.error.code, "METHOD_NOT_ALLOWED");
+});
+
+test("the C1 manifest matches its executable action registry", async () => {
+  const contract = JSON.parse(await readFile(new URL("../contracts/api-cloudflare-c1.json", import.meta.url), "utf8"));
+  const source = await readFile(new URL("../shared/c1-contract.ts", import.meta.url), "utf8");
+  const javascript = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+  }).outputText;
+  const executable = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
+  assert.equal(contract.contract_version, executable.C1_CONTRACT_VERSION);
+  assert.deepEqual(Object.keys(contract.actions).sort(), Object.keys(executable.C1_ACTIONS).sort());
+  for (const [path, definition] of Object.entries(contract.actions)) {
+    assert.deepEqual({ method: definition.method, authentication: definition.authentication, writes: definition.writes },
+      executable.C1_ACTIONS[path], path);
+  }
 });
 
 test("POST never creates a request ID for an unidentifiable retry", async () => {

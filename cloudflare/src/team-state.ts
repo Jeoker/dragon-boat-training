@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import { sha256Base64Url } from "./crypto";
 import { ApiError, apiFailure, apiSuccess, optionalBoolean, optionalInteger, readJsonObject, requireRequestId, requireString } from "./http";
 import { APPLICATION_SCHEMA_VERSION, applySchema } from "./schema";
+import { C1_ACTIONS, C1_CONTRACT_VERSION } from "../../shared/c1-contract";
+import { C1Service } from "./c1-service";
 
 interface C0CommitInput {
   requestId: string;
@@ -48,6 +50,7 @@ export class TeamState extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     let requestId: string | null = null;
+    const isC1 = url.pathname.startsWith("/internal/c1/");
     try {
       if (request.method === "POST" && url.pathname === "/internal/c0/commit") {
         const input = await readJsonObject(request);
@@ -58,9 +61,25 @@ export class TeamState extends DurableObject<Env> {
         if (url.searchParams.has("request_id")) requestId = requireRequestId({ request_id: url.searchParams.get("request_id") });
         return apiSuccess(await this.readState(), this.env, requestId);
       }
+      const c1Action = isC1 ? C1_ACTIONS[url.pathname as keyof typeof C1_ACTIONS] : undefined;
+      if (isC1 && !c1Action) throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
+      if (c1Action && request.method !== c1Action.method) {
+        throw new ApiError("METHOD_NOT_ALLOWED", `This action requires ${c1Action.method}.`, 405);
+      }
+      if (isC1 && request.method === "GET" && url.pathname === "/internal/c1/public-roster") {
+        requestId = requireRequestId({ request_id: url.searchParams.get("request_id") });
+        return apiSuccess(new C1Service(this.ctx, this.env).publicRoster(url.searchParams.get("season_id") || ""),
+          this.env, requestId, C1_CONTRACT_VERSION);
+      }
+      if (isC1 && request.method === "POST") {
+        const input = await readJsonObject(request);
+        requestId = requireRequestId(input);
+        return apiSuccess(await new C1Service(this.ctx, this.env).handle(url.pathname, input),
+          this.env, requestId, C1_CONTRACT_VERSION);
+      }
       throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
     } catch (error) {
-      return apiFailure(error, this.env, requestId);
+      return apiFailure(error, this.env, requestId, isC1 ? C1_CONTRACT_VERSION : this.env.CONTRACT_VERSION);
     }
   }
 

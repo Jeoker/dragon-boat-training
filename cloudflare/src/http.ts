@@ -33,9 +33,9 @@ export async function readJsonObject(request: Request): Promise<Record<string, u
   return value as Record<string, unknown>;
 }
 
-export function apiMeta(env: Env, requestId: string | null = null): Record<string, unknown> {
+export function apiMeta(env: Env, requestId: string | null = null, contractVersion: string = env.CONTRACT_VERSION): Record<string, unknown> {
   return {
-    contract_version: env.CONTRACT_VERSION,
+    contract_version: contractVersion,
     service_version: env.SERVICE_VERSION,
     backend_instance: env.BACKEND_INSTANCE,
     backend_generation: env.BACKEND_GENERATION,
@@ -46,11 +46,13 @@ export function apiMeta(env: Env, requestId: string | null = null): Record<strin
   };
 }
 
-export function apiSuccess(data: Record<string, unknown>, env: Env, requestId: string | null = null): Response {
-  return jsonResponse({ ok: true, data, meta: apiMeta(env, requestId) });
+export function apiSuccess(data: Record<string, unknown>, env: Env, requestId: string | null = null,
+  contractVersion: string = env.CONTRACT_VERSION): Response {
+  return jsonResponse({ ok: true, data, meta: apiMeta(env, requestId, contractVersion) });
 }
 
-export function apiFailure(error: unknown, env: Env, requestId: string | null = null): Response {
+export function apiFailure(error: unknown, env: Env, requestId: string | null = null,
+  contractVersion: string = env.CONTRACT_VERSION): Response {
   const known = error instanceof ApiError;
   const status = known ? error.status : 500;
   return jsonResponse(
@@ -61,7 +63,7 @@ export function apiFailure(error: unknown, env: Env, requestId: string | null = 
         message: known ? error.message : "The service could not complete the request.",
         retryable: known ? error.retryable : true
       },
-      meta: apiMeta(env, requestId)
+      meta: apiMeta(env, requestId, contractVersion)
     },
     status
   );

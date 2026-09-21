@@ -1,2 +1,5 @@
 # Copy to .dev.vars for local manual testing. Never commit the real value.
 C0_TEST_KEY=replace-with-a-local-only-value
+C1_TEST_KEY=replace-with-a-different-local-only-value
+COACH_CODE_SECRET=use-the-legacy-code-secret-only-in-the-authorized-environment
+SESSION_SECRET=replace-with-a-new-random-session-secret

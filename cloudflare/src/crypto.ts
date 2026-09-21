@@ -1,9 +1,19 @@
 const encoder = new TextEncoder();
 
-function base64Url(bytes: ArrayBuffer): string {
+function base64Url(bytes: ArrayBufferLike): string {
   let binary = "";
   for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
+export function base64UrlText(value: string): string {
+  return base64Url(new TextEncoder().encode(value).buffer);
+}
+
+export function decodeBase64UrlText(value: string): string {
+  const base64 = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const binary = atob(base64);
+  return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
 }
 
 export async function sha256Base64Url(value: string): Promise<string> {

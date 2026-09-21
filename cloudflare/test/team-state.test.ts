@@ -37,12 +37,12 @@ describe("TeamState C0 persistence", () => {
     const stub = objectFor("schema-version-guard");
     await state(stub);
     await runInDurableObject(stub, async (_instance: TeamState, context) => {
-      for (const value of ["future", "", "0", "1.5", "2", "9007199254740992"]) {
+      for (const value of ["future", "", "0", "1.5", "3", "9007199254740992"]) {
         context.storage.sql.exec("UPDATE app_meta SET value = ? WHERE key = 'schema_version'", value);
         expect(() => applySchema(context.storage)).toThrow("Unsupported database schema");
         expect(context.storage.sql.exec<{ value: string }>("SELECT value FROM app_meta WHERE key = 'schema_version'").one().value).toBe(value);
       }
-      context.storage.sql.exec("UPDATE app_meta SET value = '1' WHERE key = 'schema_version'");
+      context.storage.sql.exec("UPDATE app_meta SET value = '2' WHERE key = 'schema_version'");
       expect(() => applySchema(context.storage)).not.toThrow();
     });
   });
@@ -74,7 +74,7 @@ describe("TeamState C0 persistence", () => {
     const rightBody = await right.json();
     expect((leftBody as { data: unknown }).data).toEqual((rightBody as { data: unknown }).data);
     await expect(state(stub)).resolves.toMatchObject({
-      schema_version: 1,
+      schema_version: 2,
       counter_value: 3,
       request_count: 1,
       audit_count: 1

@@ -1,16 +1,17 @@
 import { constantTimeEqual } from "./crypto";
 import { callGoogleBridgeProbe, type C0BridgeProbeScenario } from "./bridge";
 import { ApiError, apiFailure, apiSuccess, readJsonObject, requireRequestId, requireString } from "./http";
+import { C1_CONTRACT_VERSION } from "../../shared/c1-contract";
 export { TeamState } from "./team-state";
 
-function requireC0Access(request: Request, env: Env): void {
+function requireInternalAccess(request: Request, env: Env, generation: "C0" | "C1"): void {
   if (env.ENVIRONMENT === "production") {
     throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
   }
-  const configured = env.C0_TEST_KEY ?? "";
+  const configured = generation === "C0" ? env.C0_TEST_KEY ?? "" : env.C1_TEST_KEY ?? "";
   const supplied = request.headers.get("authorization")?.replace(/^Bearer\s+/iu, "") ?? "";
   if (!configured || !supplied || !constantTimeEqual(configured, supplied)) {
-    throw new ApiError("C0_ACCESS_DENIED", "C0 test access was denied.", 403);
+    throw new ApiError(`${generation}_ACCESS_DENIED`, `${generation} test access was denied.`, 403);
   }
 }
 
@@ -24,7 +25,7 @@ export default {
         return apiSuccess({ status: "available" }, env, requestId);
       }
       if (url.pathname.startsWith("/internal/c0/")) {
-        requireC0Access(request, env);
+        requireInternalAccess(request, env, "C0");
         if (request.method === "POST" && url.pathname === "/internal/c0/bridge-probe") {
           const input = await readJsonObject(request);
           requestId = requireRequestId(input);
@@ -52,9 +53,14 @@ export default {
           return await env.TEAM_STATE.getByName(env.TEAM_ID).fetch(request);
         }
       }
+      if (url.pathname.startsWith("/internal/c1/")) {
+        requireInternalAccess(request, env, "C1");
+        return await env.TEAM_STATE.getByName(env.TEAM_ID).fetch(request);
+      }
       throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
     } catch (error) {
-      return apiFailure(error, env, requestId);
+      return apiFailure(error, env, requestId,
+        url.pathname.startsWith("/internal/c1/") ? C1_CONTRACT_VERSION : env.CONTRACT_VERSION);
     }
   }
 } satisfies ExportedHandler<Env>;
