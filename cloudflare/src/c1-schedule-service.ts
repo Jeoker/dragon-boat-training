@@ -1,7 +1,4 @@
 import {
-  ContractValidationError
-} from "../../shared/c1-contract";
-import {
   parseCancelPractice, parseConfirmTrainingWeek, parseCreatePractice, parseImportScheduleSnapshot,
   parsePrepareTrainingWeek, parsePreviewPracticeChange, parsePublishAdditionalPractice,
   parseScheduleWorkspace, parseUpdatePractice, parseUpdateScheduleTemplates, parseWeekMutation,
@@ -14,8 +11,7 @@ import {
 import { sha256Base64Url } from "./crypto";
 import { ApiError } from "./http";
 import { C1Service, type AuthenticatedCoach, type C1RequestIdentity } from "./c1-service";
-
-type SqlRow = Record<string, SqlStorageValue>;
+import { firstRow, isRecord, operationReceipt, parseContract, type SqlRow } from "./c1-support";
 
 interface DueWeekJob {
   season_id: string;
@@ -23,6 +19,17 @@ interface DueWeekJob {
   week_version: number;
   backend_generation: string;
   writer_epoch: number;
+}
+
+function parseDueWeekJob(value: unknown): DueWeekJob {
+  if (!isRecord(value) || typeof value.season_id !== "string" || !value.season_id ||
+      typeof value.week_id !== "string" || !value.week_id ||
+      typeof value.week_version !== "number" || !Number.isSafeInteger(value.week_version) || value.week_version < 1 ||
+      typeof value.backend_generation !== "string" || !value.backend_generation ||
+      typeof value.writer_epoch !== "number" || !Number.isSafeInteger(value.writer_epoch) || value.writer_epoch < 0) {
+    throw new Error("Invalid OPEN_TRAINING_WEEK payload.");
+  }
+  return value as unknown as DueWeekJob;
 }
 
 interface PracticeChangePreview extends Record<string, unknown> {
@@ -44,21 +51,16 @@ interface PracticeChangePreview extends Record<string, unknown> {
   values: Record<string, unknown>;
 }
 
-function one<T extends Record<string, SqlStorageValue>>(sql: SqlStorage, query: string,
-  ...bindings: unknown[]): T | null {
-  return sql.exec<T>(query, ...(bindings as SqlStorageValue[])).toArray()[0] ?? null;
-}
-
-function validation<T>(parse: () => T): T {
-  try { return parse(); }
-  catch (error) {
-    if (error instanceof ContractValidationError) throw new ApiError("INVALID_REQUEST", error.message, 400);
-    throw error;
-  }
-}
-
-function operation(action: string, requestId: string, committedAt: string): Record<string, unknown> {
-  return { action, request_id: requestId, committed_at: committedAt };
+function practiceInputPayload(input: PracticeValues): Record<string, unknown> {
+  return {
+    practice_date: input.practice_date,
+    start_time: input.start_time,
+    end_time: input.end_time,
+    ...(input.timezone === undefined ? {} : { timezone: input.timezone }),
+    location: input.location,
+    address: input.address,
+    map_url: input.map_url
+  };
 }
 
 function templateProjection(row: Record<string, unknown>): Record<string, unknown> {
@@ -169,7 +171,7 @@ export class C1ScheduleService {
   }
 
   private requireSeason(seasonId: string): SqlRow {
-    const row = one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM seasons WHERE season_id = ?", seasonId);
+    const row = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM seasons WHERE season_id = ?", seasonId);
     if (!row) throw new ApiError("SEASON_NOT_FOUND", "The season does not exist.", 404);
     return row;
   }
@@ -181,14 +183,14 @@ export class C1ScheduleService {
   }
 
   private requireWeek(seasonId: string, weekId: string): SqlRow {
-    const row = one<SqlRow>(this.ctx.storage.sql,
+    const row = firstRow<SqlRow>(this.ctx.storage.sql,
       "SELECT * FROM training_weeks WHERE season_id = ? AND week_id = ?", seasonId, weekId);
     if (!row) throw new ApiError("WEEK_NOT_FOUND", "The training week does not exist.", 404);
     return row;
   }
 
   private requirePractice(seasonId: string, practiceId: string): SqlRow {
-    const row = one<SqlRow>(this.ctx.storage.sql,
+    const row = firstRow<SqlRow>(this.ctx.storage.sql,
       "SELECT * FROM practices WHERE season_id = ? AND practice_id = ?", seasonId, practiceId);
     if (!row) throw new ApiError("PRACTICE_NOT_FOUND", "The training does not exist.", 404);
     return row;
@@ -224,16 +226,16 @@ export class C1ScheduleService {
   }
 
   private async scheduleWorkspace(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseScheduleWorkspace(raw));
+    const input = parseContract(() => parseScheduleWorkspace(raw));
     await this.core.authenticateSession(input.session_token);
     return this.workspaceProjection(input.season_id);
   }
 
-  private assertImportVersion(table: "schedule_templates" | "training_weeks" | "practices", keys: unknown[],
+  private assertImportVersion(table: "schedule_templates" | "training_weeks" | "practices", keys: SqlStorageValue[],
     versionColumn: string, incomingVersion: number, comparable: unknown): SqlRow | null {
     const keyWhere = table === "schedule_templates" ? "season_id = ? AND template_id = ?" :
       table === "training_weeks" ? "season_id = ? AND week_id = ?" : "season_id = ? AND practice_id = ?";
-    const current = one<SqlRow>(this.ctx.storage.sql,
+    const current = firstRow<SqlRow>(this.ctx.storage.sql,
       `SELECT *, ${versionColumn} AS imported_version FROM ${table} WHERE ${keyWhere}`, ...keys);
     if (!current) return null;
     const currentVersion = Number(current.imported_version);
@@ -323,19 +325,19 @@ export class C1ScheduleService {
   }
 
   private async importSchedule(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseImportScheduleSnapshot(raw));
-    this.validateImportGraph(input);
+    const input = parseContract(() => parseImportScheduleSnapshot(raw));
     const { request_id: _requestId, ...snapshot } = input;
     const identity = await this.core.createRequestIdentity("C1:MIGRATION", "importScheduleSnapshot", input.request_id, snapshot);
     const replay = this.core.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
-    const prior = one<{ payload_digest: string }>(this.ctx.storage.sql,
+    this.validateImportGraph(input);
+    const prior = firstRow<{ payload_digest: string }>(this.ctx.storage.sql,
       "SELECT payload_digest FROM schedule_migration_snapshots WHERE source_snapshot_id = ?", input.source_snapshot_id);
     if (prior && prior.payload_digest !== identity.payloadDigest) {
       throw new ApiError("IMPORT_SNAPSHOT_CONFLICT", "This schedule snapshot identifier has different content.", 409);
     }
     const at = new Date().toISOString();
-    const response = { operation: operation("importScheduleSnapshot", input.request_id, at), result: {
+    const response = { operation: operationReceipt("importScheduleSnapshot", input.request_id, at), result: {
       source_snapshot_id: input.source_snapshot_id, templates: input.templates.length,
       weeks: input.weeks.length, practices: input.practices.length
     } };
@@ -373,7 +375,7 @@ export class C1ScheduleService {
     if (current && current.week_start_date !== row.week_start_date) {
       throw new ApiError("IMPORT_CONFLICT", "A training week date cannot be reassigned.", 409);
     }
-    const owner = one<SqlRow>(this.ctx.storage.sql,
+    const owner = firstRow<SqlRow>(this.ctx.storage.sql,
       "SELECT week_id FROM training_weeks WHERE season_id = ? AND week_start_date = ?", row.season_id, row.week_start_date);
     if (owner && owner.week_id !== row.week_id) throw new ApiError("IMPORT_CONFLICT", "A week date belongs to another week.", 409);
     this.ctx.storage.sql.exec(
@@ -396,7 +398,7 @@ export class C1ScheduleService {
       throw new ApiError("IMPORT_CONFLICT", "A training publication identity cannot be reassigned.", 409);
     }
     if (row.generation_key) {
-      const owner = one<SqlRow>(this.ctx.storage.sql,
+      const owner = firstRow<SqlRow>(this.ctx.storage.sql,
         "SELECT practice_id FROM practices WHERE season_id = ? AND generation_key = ?", row.season_id, row.generation_key);
       if (owner && owner.practice_id !== row.practice_id) {
         throw new ApiError("IMPORT_CONFLICT", "A generation key belongs to another training.", 409);
@@ -427,7 +429,7 @@ export class C1ScheduleService {
   }
 
   private async updateTemplates(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseUpdateScheduleTemplates(raw));
+    const input = parseContract(() => parseUpdateScheduleTemplates(raw));
     const auth = await this.core.authenticateSession(input.session_token);
     const payload = { season_id: input.season_id, season_version: input.season_version, templates: input.templates };
     const identity = await this.core.createRequestIdentity(auth.coach_id, "updateScheduleTemplates", input.request_id, payload);
@@ -452,7 +454,7 @@ export class C1ScheduleService {
       const nextSeasonVersion = Number(season.season_version) + 1;
       this.ctx.storage.sql.exec("UPDATE seasons SET season_version=?, updated_at=? WHERE season_id=?",
         nextSeasonVersion, at, input.season_id).toArray();
-      response = { operation: operation("updateScheduleTemplates", input.request_id, at),
+      response = { operation: operationReceipt("updateScheduleTemplates", input.request_id, at),
         result: { season_id: input.season_id, season_version: nextSeasonVersion, templates: created } };
       this.core.recordRequest(identity, auth.coach_id, "updateScheduleTemplates", input.request_id, response,
         { season_id: input.season_id, template_count: created.length }, at);
@@ -463,8 +465,8 @@ export class C1ScheduleService {
 
   private practiceValues(input: PracticeValues, season: SqlRow): Record<string, unknown> {
     const timezone = input.timezone || String(season.timezone);
-    const startAt = validation(() => localDateTimeToIso(input.practice_date, input.start_time, timezone));
-    const endAt = validation(() => localDateTimeToIso(input.practice_date, input.end_time, timezone));
+    const startAt = parseContract(() => localDateTimeToIso(input.practice_date, input.start_time, timezone));
+    const endAt = parseContract(() => localDateTimeToIso(input.practice_date, input.end_time, timezone));
     if (Date.parse(endAt) <= Date.parse(startAt)) throw new ApiError("INVALID_TIME_RANGE", "A training must end after it starts.");
     return { start_at: startAt, end_at: endAt, timezone, location: input.location, address: input.address,
       map_url: input.map_url, signup_cutoff_at: new Date(Date.parse(startAt) - 7_200_000).toISOString() };
@@ -473,7 +475,7 @@ export class C1ScheduleService {
   private validatePracticeTiming(values: Record<string, unknown>, season: SqlRow, week?: SqlRow): void {
     const startAt = String(values.start_at);
     const endAt = String(values.end_at);
-    const seasonStart = validation(() => localDateTimeToIso(String(season.start_date), "00:00", String(season.timezone)));
+    const seasonStart = parseContract(() => localDateTimeToIso(String(season.start_date), "00:00", String(season.timezone)));
     if (startAt < seasonStart || endAt > String(season.season_ends_at)) {
       throw new ApiError("PRACTICE_OUTSIDE_SEASON", "Both training times must be inside the season.", 409);
     }
@@ -486,7 +488,7 @@ export class C1ScheduleService {
   }
 
   private async prepareWeek(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parsePrepareTrainingWeek(raw));
+    const input = parseContract(() => parsePrepareTrainingWeek(raw));
     const auth = await this.core.authenticateSession(input.session_token);
     const payload = { season_id: input.season_id, season_version: input.season_version, week_start_date: input.week_start_date };
     const identity = await this.core.createRequestIdentity(auth.coach_id, "prepareTrainingWeek", input.request_id, payload);
@@ -501,7 +503,7 @@ export class C1ScheduleService {
       if (input.week_start_date > String(season.end_date) || addCalendarDays(input.week_start_date, 6) < String(season.start_date)) {
         throw new ApiError("WEEK_OUTSIDE_SEASON", "The training week is outside the season.", 409);
       }
-      let week = one<SqlRow>(this.ctx.storage.sql,
+      let week = firstRow<SqlRow>(this.ctx.storage.sql,
         "SELECT * FROM training_weeks WHERE season_id=? AND week_start_date=?", input.season_id, input.week_start_date);
       let created = false;
       if (!week) {
@@ -538,7 +540,7 @@ export class C1ScheduleService {
         created = true;
       }
       const practices = this.practiceRows(input.season_id, String(week.week_id)).map(practiceProjection);
-      response = { operation: operation("prepareTrainingWeek", input.request_id, at), result: {
+      response = { operation: operationReceipt("prepareTrainingWeek", input.request_id, at), result: {
         season_id: input.season_id, created, week: weekProjection(week), practices
       } };
       this.core.recordRequest(identity, auth.coach_id, "prepareTrainingWeek", input.request_id, response,
@@ -566,10 +568,16 @@ export class C1ScheduleService {
       week.confirmed_at, week.published_at, week.updated_at, week.season_id, week.week_id).toArray();
   }
 
-  private openWeek(week: SqlRow, practices: SqlRow[], actorId: string, at: string): void {
+  private openWeek(week: SqlRow, practices: SqlRow[], actorId: string, at: string,
+    preserveConfirmation: boolean): void {
     week.week_version = Number(week.week_version) + 1;
-    week.confirmed_version = week.week_version; week.confirmed_by = actorId; week.confirmed_at = at;
-    week.scheduled_open_at = at; week.status = "OPENED"; week.published_at = at; week.updated_at = at;
+    if (!preserveConfirmation) {
+      week.confirmed_version = week.week_version;
+      week.confirmed_by = actorId;
+      week.confirmed_at = at;
+      week.scheduled_open_at = at;
+    }
+    week.status = "OPENED"; week.published_at = at; week.updated_at = at;
     this.saveWeek(week);
     practices.filter((row) => !row.cancelled_at).forEach((row) => {
       this.ctx.storage.sql.exec(
@@ -580,16 +588,18 @@ export class C1ScheduleService {
   }
 
   private async confirmWeek(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseConfirmTrainingWeek(raw));
+    const input = parseContract(() => parseConfirmTrainingWeek(raw));
     const auth = await this.core.authenticateSession(input.session_token);
-    const season = this.requireSeason(input.season_id);
-    const normalizedOpen = input.open_at || (input.open_date && input.open_time
-      ? validation(() => localDateTimeToIso(input.open_date!, input.open_time!, String(season.timezone))) : "IMMEDIATE");
     const payload = { season_id: input.season_id, week_id: input.week_id, week_version: input.week_version,
-      open_at: normalizedOpen };
+      open_at: input.open_at ?? null, open_date: input.open_date ?? null, open_time: input.open_time ?? null };
     const identity = await this.core.createRequestIdentity(auth.coach_id, "confirmTrainingWeek", input.request_id, payload);
     const replay = this.core.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return this.currentView(replay, input.season_id);
+    const season = this.requireSeason(input.season_id);
+    const openDate = input.open_date;
+    const openTime = input.open_time;
+    const normalizedOpen = input.open_at || (openDate && openTime
+      ? parseContract(() => localDateTimeToIso(openDate, openTime, String(season.timezone))) : "IMMEDIATE");
     const at = new Date().toISOString();
     const openAt = normalizedOpen === "IMMEDIATE" ? at : normalizedOpen;
     let response: Record<string, unknown> = {};
@@ -606,7 +616,7 @@ export class C1ScheduleService {
         throw new ApiError("OPEN_TIME_TOO_LATE", "Open the week before its first training starts.", 409);
       }
       if (Date.parse(openAt) <= Date.now()) {
-        this.openWeek(week, practices, auth.coach_id, at);
+        this.openWeek(week, practices, auth.coach_id, at, false);
       } else {
         week.week_version = Number(week.week_version) + 1; week.confirmed_version = week.week_version;
         week.confirmed_by = auth.coach_id; week.confirmed_at = at; week.scheduled_open_at = openAt;
@@ -621,7 +631,7 @@ export class C1ScheduleService {
           `job_${identity.requestKey.slice(7)}`, JSON.stringify(jobPayload), Date.parse(openAt), at, at).toArray();
       }
       const currentWeek = this.requireWeek(input.season_id, input.week_id);
-      response = { operation: operation("confirmTrainingWeek", input.request_id, at), result: {
+      response = { operation: operationReceipt("confirmTrainingWeek", input.request_id, at), result: {
         season_id: input.season_id, week: weekProjection(currentWeek),
         practices: this.practiceRows(input.season_id, input.week_id).map(practiceProjection)
       } };
@@ -634,7 +644,7 @@ export class C1ScheduleService {
   }
 
   private async publishWeek(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseWeekMutation(raw));
+    const input = parseContract(() => parseWeekMutation(raw));
     const auth = await this.core.authenticateSession(input.session_token);
     const payload = { season_id: input.season_id, week_id: input.week_id, week_version: input.week_version };
     const identity = await this.core.createRequestIdentity(auth.coach_id, "publishTrainingWeek", input.request_id, payload);
@@ -659,8 +669,8 @@ export class C1ScheduleService {
         throw new ApiError("WEEK_NOT_DUE", "The confirmed week is not due to open.", 409);
       }
       const practices = this.practiceRows(seasonId, weekId);
-      this.openWeek(week, practices, actorId, at);
-      response = { operation: operation("publishTrainingWeek", requestId, at), result: {
+      this.openWeek(week, practices, actorId, at, true);
+      response = { operation: operationReceipt("publishTrainingWeek", requestId, at), result: {
         season_id: seasonId, week: weekProjection(this.requireWeek(seasonId, weekId)),
         practices: this.practiceRows(seasonId, weekId).map(practiceProjection)
       } };
@@ -672,12 +682,13 @@ export class C1ScheduleService {
     return response;
   }
 
-  async publishDueWeek(payload: DueWeekJob): Promise<boolean> {
+  async publishDueWeek(raw: unknown): Promise<boolean> {
+    const payload = parseDueWeekJob(raw);
     if (payload.backend_generation !== this.env.BACKEND_GENERATION ||
         payload.writer_epoch !== Number(this.env.WRITER_EPOCH)) return false;
-    const week = one<SqlRow>(this.ctx.storage.sql,
+    const week = firstRow<SqlRow>(this.ctx.storage.sql,
       "SELECT * FROM training_weeks WHERE season_id=? AND week_id=?", payload.season_id, payload.week_id);
-    const season = one<SqlRow>(this.ctx.storage.sql, "SELECT status FROM seasons WHERE season_id=?", payload.season_id);
+    const season = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT status FROM seasons WHERE season_id=?", payload.season_id);
     if (!season || season.status !== "OPEN" || !week || week.status !== "SCHEDULED" || Number(week.week_version) !== payload.week_version ||
         Number(week.confirmed_version) !== payload.week_version || !week.scheduled_open_at ||
         Date.parse(String(week.scheduled_open_at)) > Date.now()) return false;
@@ -692,14 +703,14 @@ export class C1ScheduleService {
   }
 
   private async createPractice(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseCreatePractice(raw));
+    const input = parseContract(() => parseCreatePractice(raw));
     const auth = await this.core.authenticateSession(input.session_token);
-    const seasonBefore = this.requireSeason(input.season_id);
-    const values = this.practiceValues(input, seasonBefore);
-    const payload = { season_id: input.season_id, week_id: input.week_id, week_version: input.week_version, values };
+    const payload = { season_id: input.season_id, week_id: input.week_id, week_version: input.week_version,
+      values: practiceInputPayload(input) };
     const identity = await this.core.createRequestIdentity(auth.coach_id, "createPractice", input.request_id, payload);
     const replay = this.core.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return this.currentView(replay, input.season_id);
+    const values = this.practiceValues(input, this.requireSeason(input.season_id));
     const at = new Date().toISOString();
     let response: Record<string, unknown> = {};
     this.ctx.storage.transactionSync(() => {
@@ -719,7 +730,7 @@ export class C1ScheduleService {
         cancelled_by: null, schedule_published_at: null, schedule_published_by: null, created_at: at, updated_at: at };
       this.upsertPractice(practice);
       this.changeWeek(week, at); this.saveWeek(week);
-      response = { operation: operation("createPractice", input.request_id, at), result: {
+      response = { operation: operationReceipt("createPractice", input.request_id, at), result: {
         season_id: input.season_id, week: weekProjection(week), practice: practiceProjection(practice)
       } };
       this.core.recordRequest(identity, auth.coach_id, "createPractice", input.request_id, response,
@@ -731,7 +742,7 @@ export class C1ScheduleService {
   }
 
   private async publishAdditionalPractice(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parsePublishAdditionalPractice(raw));
+    const input = parseContract(() => parsePublishAdditionalPractice(raw));
     const auth = await this.core.authenticateSession(input.session_token);
     const payload = { season_id: input.season_id, week_id: input.week_id, practice_id: input.practice_id,
       week_version: input.week_version, practice_version: input.practice_version };
@@ -758,7 +769,7 @@ export class C1ScheduleService {
          WHERE season_id=? AND practice_id=?`, at, auth.coach_id, practice.practice_version, at,
         input.season_id, input.practice_id).toArray();
       this.changeWeek(week, at); this.saveWeek(week);
-      response = { operation: operation("publishAdditionalPractice", input.request_id, at), result: {
+      response = { operation: operationReceipt("publishAdditionalPractice", input.request_id, at), result: {
         season_id: input.season_id, week: weekProjection(week), practice: practiceProjection(practice)
       } };
       this.core.recordRequest(identity, auth.coach_id, "publishAdditionalPractice", input.request_id, response,
@@ -781,7 +792,7 @@ export class C1ScheduleService {
       this.validatePracticeTiming(values, season);
       if (Date.parse(String(values.start_at)) <= Date.now()) throw new ApiError("PRACTICE_ALREADY_STARTED", "Choose a future training time.", 409);
     }
-    const state = one<SqlRow>(this.ctx.storage.sql,
+    const state = firstRow<SqlRow>(this.ctx.storage.sql,
       "SELECT * FROM practice_versions WHERE season_id=? AND practice_id=?", seasonId, practiceId);
     const signupVersion = Number(state?.signup_version ?? 0);
     const fingerprint = { season_id: seasonId, season_version: Number(season.season_version),
@@ -799,19 +810,19 @@ export class C1ScheduleService {
   }
 
   private async previewPracticeChange(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parsePreviewPracticeChange(raw));
+    const input = parseContract(() => parsePreviewPracticeChange(raw));
     await this.core.authenticateSession(input.session_token);
     return this.buildPreview(input.season_id, input.practice_id, input.change,
       input.change === "UPDATE" ? input as PracticeValues : undefined);
   }
 
   private async updatePractice(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseUpdatePractice(raw));
+    const input = parseContract(() => parseUpdatePractice(raw));
     return this.commitPracticeChange(input, "UPDATE");
   }
 
   private async cancelPractice(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseCancelPractice(raw));
+    const input = parseContract(() => parseCancelPractice(raw));
     return this.commitPracticeChange(input, "CANCEL");
   }
 
@@ -821,7 +832,7 @@ export class C1ScheduleService {
     const payload = { season_id: input.season_id, week_id: input.week_id, practice_id: input.practice_id,
       week_version: input.week_version, practice_version: input.practice_version,
       signup_version: input.signup_version, preview_token: input.preview_token,
-      ...(change === "UPDATE" ? { values: this.practiceValues(input as PracticeValues, this.requireSeason(input.season_id)) } : {}) };
+      ...(change === "UPDATE" ? { values: practiceInputPayload(input as PracticeValues) } : {}) };
     const action = change === "UPDATE" ? "updatePractice" : "cancelPractice";
     const identity = await this.core.createRequestIdentity(auth.coach_id, action, input.request_id, payload);
     const replay = this.core.replayRequest(identity.requestKey, identity.payloadDigest);
@@ -836,7 +847,7 @@ export class C1ScheduleService {
       const season = this.requireOpenSeason(input.season_id);
       const week = this.requireWeek(input.season_id, input.week_id);
       const practice = this.requirePractice(input.season_id, input.practice_id);
-      const state = one<SqlRow>(this.ctx.storage.sql,
+      const state = firstRow<SqlRow>(this.ctx.storage.sql,
         "SELECT * FROM practice_versions WHERE season_id=? AND practice_id=?", input.season_id, input.practice_id);
       if (practice.week_id !== input.week_id) throw new ApiError("PRACTICE_OUTSIDE_WEEK", "The training belongs to another week.", 409);
       if (Number(season.season_version) !== Number(preview.season_version) ||
@@ -864,7 +875,7 @@ export class C1ScheduleService {
       }
       this.changeWeek(week, at); this.saveWeek(week);
       const current = this.requirePractice(input.season_id, input.practice_id);
-      response = { operation: operation(action, input.request_id, at), result: {
+      response = { operation: operationReceipt(action, input.request_id, at), result: {
         season_id: input.season_id, week: weekProjection(week), practice: practiceProjection(current)
       } };
       this.core.recordRequest(identity, auth.coach_id, action, input.request_id, response,

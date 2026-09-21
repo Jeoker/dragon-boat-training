@@ -12,6 +12,8 @@
 
 > C1.2 更新：2026-09-21。Cloudflare 排期切片已在本地实现：schema v3、排期影子导入、模板、私有周草稿、立即／预约开放、开放后单场发布、修改预览、取消墓碑和持久到期任务。尚未部署 staging，未连接 Pages 或 Google 同步；下一段为 C1.3 报名候补。证据见 [C1.2 验收](tests/C1-SCHEDULE-ACCEPTANCE.md)。
 
+> C1.2 后代码健康审查：2026-09-21。修复可变赛季设置导致的幂等冲突、损坏持久任务阻断同批任务、outbox 首次失败缺少诊断、会话载荷宽松解析及预约发布覆盖确认审计字段；合并 C1 重复基础助手。源码标记为 Apps Script `0.9.2-schedule-review`、Cloudflare staging `0.3.1-c1-review`，均未部署。完整记录见 [C1.2 后代码审查](tests/POST-C1.2-CODE-REVIEW.md)。
+
 本文件记录当前交付状态、验证边界和下一步。第一次接手项目先读[项目总览](PROJECT-OVERVIEW.md)；产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
 
 ## 已确认的下一阶段
@@ -31,7 +33,7 @@
 - 线上 Apps Script 沿用原 Web App URL，当前为 **Version 14、服务 `0.9.0-p5-performance`**，契约保持 `2026-09-02.p2.1`。生产 `setupDragonBoatP4` 已幂等执行完成，`PublicHistorySeasons` 紧凑索引及维护触发器已建立或迁移。
 - P5 功能提交 **`38c9361`** 的 [Pages run 33999868687](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33999868687) 成功；三个正式页面均返回 HTTP 200，线上 HTML 与本地 P5 构建 SHA-256 一致。正式 health 返回 Version 14 的 `0.9.0-p5-performance`；公开历史空目录返回成功及分页字段。P4 的 [Pages run 33989665856](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33989665856) 继续作为上一阶段历史证据。
 - C0 源码与文档提交 **`4a55bb0`** 的 [Pages run 35486989400](https://github.com/Jeoker/dragon-boat-training/actions/runs/35486989400) 成功；队员页、Coach Mode、过往赛季页和 Cloudflare staging health 均返回 HTTP 200。该发布只保存 C0 代码与文档，没有改变三个页面的生产 API。
-- C1.2 完整本地回归通过：应用与桥接 **180／180**，Cloudflare Workers／DO **33／33**；Cloudflare 类型检查和 dry-run、Astro 检查与三个页面构建、Apps Script 业务及独立桥接构建均通过。这些证据不更新以上生产部署结论。
+- C1.2 后审查完整本地回归通过：应用与桥接 **180／180**，Cloudflare Workers／DO **36／36**；Cloudflare 类型检查和 dry-run、Astro 检查与三个页面构建、Apps Script 业务及独立桥接构建均通过。这些证据不更新以上生产部署结论。
 - Script ID、私有 Spreadsheet ID、Coach Code、会话令牌和服务端 secret 均不写入仓库。
 
 ## 运行中 Apps Script 的写入与恢复约束

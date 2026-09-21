@@ -26,10 +26,32 @@ interface ClaimedJob {
   lease_token: string;
 }
 
-interface JobPayload {
+interface C0MockSyncJobPayload {
   outbox_id: string;
   fail_attempts: number;
   retry_delay_ms: number;
+}
+
+function parseJobJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error("Scheduled job payload is not valid JSON.");
+  }
+}
+
+function parseC0MockSyncJob(value: unknown): C0MockSyncJobPayload {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid C0_MOCK_SYNC payload.");
+  }
+  const row = value as Record<string, unknown>;
+  if (typeof row.outbox_id !== "string" || !row.outbox_id ||
+      typeof row.fail_attempts !== "number" || !Number.isSafeInteger(row.fail_attempts) || row.fail_attempts < 0 ||
+      typeof row.retry_delay_ms !== "number" || !Number.isSafeInteger(row.retry_delay_ms) ||
+      row.retry_delay_ms < 1_000 || row.retry_delay_ms > 3_600_000) {
+    throw new Error("Invalid C0_MOCK_SYNC payload.");
+  }
+  return row as unknown as C0MockSyncJobPayload;
 }
 
 const JOB_BATCH_LIMIT = 8;
@@ -113,7 +135,7 @@ export class TeamState extends DurableObject<Env> {
       enqueueJob: optionalBoolean(input, "enqueue_job"),
       jobDueAtMs: optionalInteger(input, "job_due_at_ms", 0, 0, Number.MAX_SAFE_INTEGER),
       failAttempts: optionalInteger(input, "fail_attempts", 0, 0, 100),
-      retryDelayMs: optionalInteger(input, "retry_delay_ms", 1_000, 0, 3_600_000),
+      retryDelayMs: optionalInteger(input, "retry_delay_ms", 1_000, 1_000, 3_600_000),
       simulateFailure: optionalBoolean(input, "simulate_failure")
     };
   }
@@ -284,15 +306,18 @@ export class TeamState extends DurableObject<Env> {
   }
 
   private async processClaimedJob(job: ClaimedJob): Promise<void> {
-    const payload = JSON.parse(job.payload_json) as JobPayload;
     let outboxId: string | null = null;
+    let retryDelayMs = RECOVERY_ALARM_MS;
     try {
+      const payload = parseJobJson(job.payload_json);
       if (job.job_type === "OPEN_TRAINING_WEEK") {
-        await new C1ScheduleService(this.ctx, this.env).publishDueWeek(JSON.parse(job.payload_json));
+        await new C1ScheduleService(this.ctx, this.env).publishDueWeek(payload);
       } else if (job.job_type === "C0_MOCK_SYNC") {
+        const c0Payload = parseC0MockSyncJob(payload);
+        outboxId = c0Payload.outbox_id;
+        retryDelayMs = c0Payload.retry_delay_ms;
         await Promise.resolve();
-        if (job.attempt_count <= payload.fail_attempts) throw new Error("Simulated downstream failure.");
-        outboxId = payload.outbox_id;
+        if (job.attempt_count <= c0Payload.fail_attempts) throw new Error("Simulated downstream failure.");
       } else throw new Error(`Unsupported scheduled job type ${job.job_type}.`);
       const completedAt = new Date().toISOString();
       this.ctx.storage.transactionSync(() => {
@@ -318,7 +343,6 @@ export class TeamState extends DurableObject<Env> {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown downstream failure.";
-      const retryDelayMs = job.job_type === "OPEN_TRAINING_WEEK" ? RECOVERY_ALARM_MS : payload.retry_delay_ms;
       const retryAt = Date.now() + retryDelayMs;
       this.ctx.storage.transactionSync(() => {
         const current = this.ctx.storage.sql

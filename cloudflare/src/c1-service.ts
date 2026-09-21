@@ -1,5 +1,5 @@
 import {
-  ContractValidationError, parseCoachLogin, parseCreateSeason, parseImportCoreSnapshot,
+  parseCoachLogin, parseCreateSeason, parseImportCoreSnapshot,
   parseSessionRequest, parseUpdateMember, type CoachSnapshot, type ImportCoreSnapshotRequest,
   type MemberSnapshot, type SeasonSnapshot
 } from "../../shared/c1-contract";
@@ -9,6 +9,7 @@ import {
   base64UrlText, constantTimeEqual, decodeBase64UrlText, hmacSha256Base64Url,
   legacyCredentialDigest, sha256Base64Url
 } from "./crypto";
+import { firstRow, isRecord, operationReceipt, parseContract, type SqlRow } from "./c1-support";
 
 export interface AuthenticatedCoach {
   coach_id: string;
@@ -23,29 +24,36 @@ export interface C1RequestIdentity {
   eventId: string;
 }
 
-type SqlRow = Record<string, SqlStorageValue>;
+interface SessionTokenPayload {
+  sid: string;
+  cid: string;
+  cv: number;
+  iat: string;
+  exp: string;
+  bg: string;
+  we: number;
+}
 
-function validation<T>(parse: () => T): T {
-  try {
-    return parse();
-  } catch (error) {
-    if (error instanceof ContractValidationError) throw new ApiError("INVALID_REQUEST", error.message, 400);
-    throw error;
+function invalidSession(): ApiError {
+  return new ApiError("SESSION_INVALID", "The Coach session is invalid.", 401);
+}
+
+function parseSessionTokenPayload(value: unknown): SessionTokenPayload {
+  if (!isRecord(value) || typeof value.sid !== "string" || !value.sid ||
+      typeof value.cid !== "string" || !value.cid ||
+      typeof value.cv !== "number" || !Number.isSafeInteger(value.cv) || value.cv < 1 ||
+      typeof value.iat !== "string" || !Number.isFinite(Date.parse(value.iat)) ||
+      typeof value.exp !== "string" || !Number.isFinite(Date.parse(value.exp)) ||
+      typeof value.bg !== "string" || !value.bg ||
+      typeof value.we !== "number" || !Number.isSafeInteger(value.we) || value.we < 0) {
+    throw invalidSession();
   }
+  return value as unknown as SessionTokenPayload;
 }
 
 function requiredSecret(value: string | undefined, name: string): string {
   if (!value || value.length < 16) throw new ApiError("CONFIGURATION_ERROR", `${name} is not configured.`, 500, true);
   return value;
-}
-
-function one<T extends Record<string, SqlStorageValue>>(sql: SqlStorage, query: string,
-  ...bindings: unknown[]): T | null {
-  return sql.exec<T>(query, ...(bindings as SqlStorageValue[])).toArray()[0] ?? null;
-}
-
-function operation(action: string, requestId: string, committedAt: string): Record<string, unknown> {
-  return { action, request_id: requestId, committed_at: committedAt };
 }
 
 function memberProjection(row: Record<string, unknown>): Record<string, unknown> {
@@ -87,7 +95,7 @@ export class C1Service {
   publicRoster(seasonId: string): Record<string, unknown> {
     if (!/^[A-Za-z0-9_-]{8,128}$/u.test(seasonId)) throw new ApiError("INVALID_REQUEST", "season_id is invalid.");
     const sql = this.ctx.storage.sql;
-    const season = one<SqlRow>(sql, "SELECT * FROM seasons WHERE season_id = ?", seasonId);
+    const season = firstRow<SqlRow>(sql, "SELECT * FROM seasons WHERE season_id = ?", seasonId);
     if (!season || !["OPEN", "COMPLETED"].includes(String(season.status))) {
       throw new ApiError("SEASON_NOT_PUBLIC", "The season is not publicly available.", 404);
     }
@@ -114,7 +122,7 @@ export class C1Service {
   }
 
   replayRequest(requestKey: string, payloadDigest: string): Record<string, unknown> | null {
-    const existing = one<SqlRow>(this.ctx.storage.sql,
+    const existing = firstRow<SqlRow>(this.ctx.storage.sql,
       "SELECT payload_digest, result_json FROM system_requests WHERE request_key = ?", requestKey);
     if (!existing) return null;
     if (String(existing.payload_digest) !== payloadDigest) {
@@ -155,7 +163,7 @@ export class C1Service {
     unique(input.seasons.map((row) => row.season_id), "seasons");
     unique(input.members.map((row) => `${row.season_id}\n${row.member_id}`), "members");
     unique(input.members.map((row) => `${row.season_id}\n${row.source_key}`), "member source keys");
-    input.seasons.forEach((season) => validation(() => validateSeasonSnapshot(season)));
+    input.seasons.forEach((season) => parseContract(() => validateSeasonSnapshot(season)));
     const seasonIds = new Set(input.seasons.map((row) => row.season_id));
     const coachIds = new Set(input.coaches.map((row) => row.coach_id));
     for (const season of input.seasons) if (!coachIds.has(season.created_by)) {
@@ -170,11 +178,11 @@ export class C1Service {
     }
   }
 
-  private assertImportVersion(table: "coaches" | "seasons" | "members", keys: unknown[], versionColumn: string,
+  private assertImportVersion(table: "coaches" | "seasons" | "members", keys: SqlStorageValue[], versionColumn: string,
     incomingVersion: number, comparable: unknown): void {
     const keyWhere = table === "members" ? "season_id = ? AND member_id = ?" :
       table === "coaches" ? "coach_id = ?" : "season_id = ?";
-    const current = one<SqlRow>(this.ctx.storage.sql,
+    const current = firstRow<SqlRow>(this.ctx.storage.sql,
       `SELECT *, ${versionColumn} AS imported_version FROM ${table} WHERE ${keyWhere}`, ...keys);
     if (!current) return;
     const currentVersion = Number(current.imported_version);
@@ -206,20 +214,20 @@ export class C1Service {
   }
 
   private async importCore(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseImportCoreSnapshot(raw));
-    this.validateImportGraph(input);
+    const input = parseContract(() => parseImportCoreSnapshot(raw));
     const { request_id: _requestId, ...snapshotPayload } = input;
     const identity = await this.createRequestIdentity("C1:MIGRATION", "importCoreSnapshot", input.request_id, snapshotPayload);
     const replay = this.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
-    const priorSnapshot = one<{ payload_digest: string }>(this.ctx.storage.sql,
+    this.validateImportGraph(input);
+    const priorSnapshot = firstRow<{ payload_digest: string }>(this.ctx.storage.sql,
       "SELECT payload_digest FROM migration_snapshots WHERE source_snapshot_id = ?", input.source_snapshot_id);
     if (priorSnapshot && priorSnapshot.payload_digest !== identity.payloadDigest) {
       throw new ApiError("IMPORT_SNAPSHOT_CONFLICT", "This source snapshot identifier was already imported with different content.", 409);
     }
     const importedAt = new Date().toISOString();
     const result = {
-      operation: operation("importCoreSnapshot", input.request_id, importedAt),
+      operation: operationReceipt("importCoreSnapshot", input.request_id, importedAt),
       result: { source_snapshot_id: input.source_snapshot_id, coaches: input.coaches.length,
         seasons: input.seasons.length, members: input.members.length, settings_version: input.settings_version }
     };
@@ -227,7 +235,7 @@ export class C1Service {
       input.coaches.forEach((row) => this.upsertCoach(row));
       input.seasons.forEach((row) => this.upsertSeason(row));
       input.members.forEach((row) => this.upsertMember(row));
-      const currentSetting = one<{ settings_version: number; value_json: string }>(this.ctx.storage.sql,
+      const currentSetting = firstRow<{ settings_version: number; value_json: string }>(this.ctx.storage.sql,
         "SELECT settings_version, value_json FROM settings WHERE setting_key = 'default_season_id'");
       if (currentSetting && input.settings_version < Number(currentSetting.settings_version)) {
         throw new ApiError("IMPORT_VERSION_REGRESSION", "The snapshot contains an older settings version.", 409);
@@ -281,12 +289,12 @@ export class C1Service {
 
   private upsertMember(row: MemberSnapshot): void {
     this.assertImportVersion("members", [row.season_id, row.member_id], "member_version", row.member_version, row);
-    const currentMember = one<SqlRow>(this.ctx.storage.sql,
+    const currentMember = firstRow<SqlRow>(this.ctx.storage.sql,
       "SELECT source_key FROM members WHERE season_id = ? AND member_id = ?", row.season_id, row.member_id);
     if (currentMember && String(currentMember.source_key) !== row.source_key) {
       throw new ApiError("IMPORT_CONFLICT", "A member source key cannot be reassigned.", 409);
     }
-    const sourceOwner = one<SqlRow>(this.ctx.storage.sql,
+    const sourceOwner = firstRow<SqlRow>(this.ctx.storage.sql,
       "SELECT member_id FROM members WHERE season_id = ? AND source_key = ?", row.season_id, row.source_key);
     if (sourceOwner && String(sourceOwner.member_id) !== row.member_id) {
       throw new ApiError("IMPORT_CONFLICT", "A member source key already belongs to another member.", 409);
@@ -303,7 +311,7 @@ export class C1Service {
   }
 
   private async login(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseCoachLogin(raw));
+    const input = parseContract(() => parseCoachLogin(raw));
     const secret = requiredSecret(this.env.COACH_CODE_SECRET, "COACH_CODE_SECRET");
     const coaches = this.ctx.storage.sql.exec<SqlRow>("SELECT * FROM coaches WHERE active = 1 ORDER BY coach_id").toArray();
     let coach: SqlRow | null = null;
@@ -324,7 +332,7 @@ export class C1Service {
       throw new ApiError("CONFIGURATION_ERROR", "COACH_SESSION_TTL_SECONDS is invalid.", 500, true);
     }
     const metadata = {
-      operation: operation("coachLogin", input.request_id, now.toISOString()),
+      operation: operationReceipt("coachLogin", input.request_id, now.toISOString()),
       result: {
         session_id: `session_${identity.requestKey.slice(-32)}`, coach_id: actor,
         display_name: String(coach.display_name), credential_version: Number(coach.credential_version),
@@ -332,7 +340,7 @@ export class C1Service {
       }
     };
     this.ctx.storage.transactionSync(() => {
-      const currentCoach = one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coaches WHERE coach_id = ?", actor);
+      const currentCoach = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coaches WHERE coach_id = ?", actor);
       if (!currentCoach || Number(currentCoach.active) !== 1 ||
           Number(currentCoach.credential_version) !== Number(coach.credential_version) ||
           String(currentCoach.code_digest) !== String(coach.code_digest)) {
@@ -350,10 +358,11 @@ export class C1Service {
     return this.loginResponse(metadata);
   }
 
-  private async loginResponse(metadata: Record<string, any>): Promise<Record<string, unknown>> {
-    const result = metadata.result as Record<string, unknown>;
-    const row = one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coach_sessions WHERE session_id = ?", result.session_id);
-    const coach = row && one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coaches WHERE coach_id = ?", row.coach_id);
+  private async loginResponse(metadata: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!isRecord(metadata.result)) throw new Error("Stored login result is invalid.");
+    const result = metadata.result;
+    const row = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coach_sessions WHERE session_id = ?", String(result.session_id));
+    const coach = row && firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coaches WHERE coach_id = ?", row.coach_id);
     if (!row || !coach || Number(coach.active) !== 1 || Number(coach.credential_version) !== Number(row.credential_version) ||
         row.backend_generation !== this.env.BACKEND_GENERATION || Number(row.writer_epoch) !== Number(this.env.WRITER_EPOCH)) {
       throw new ApiError("SESSION_REVOKED", "The Coach session is no longer active.", 401);
@@ -380,21 +389,21 @@ export class C1Service {
 
   async authenticateSession(token: string, allowRevoked = false): Promise<AuthenticatedCoach> {
     const parts = token.split(".");
-    if (parts.length !== 2 || !parts[0] || !parts[1]) throw new ApiError("SESSION_INVALID", "The Coach session is invalid.", 401);
+    if (parts.length !== 2 || !parts[0] || !parts[1]) throw invalidSession();
     const expected = await hmacSha256Base64Url(parts[0], requiredSecret(this.env.SESSION_SECRET, "SESSION_SECRET"));
-    if (!constantTimeEqual(expected, parts[1])) throw new ApiError("SESSION_INVALID", "The Coach session is invalid.", 401);
-    let payload: Record<string, unknown>;
-    try { payload = JSON.parse(decodeBase64UrlText(parts[0])) as Record<string, unknown>; }
-    catch { throw new ApiError("SESSION_INVALID", "The Coach session is invalid.", 401); }
+    if (!constantTimeEqual(expected, parts[1])) throw invalidSession();
+    let payload: SessionTokenPayload;
+    try { payload = parseSessionTokenPayload(JSON.parse(decodeBase64UrlText(parts[0]))); }
+    catch { throw invalidSession(); }
     if (payload.bg !== this.env.BACKEND_GENERATION || payload.we !== Number(this.env.WRITER_EPOCH)) {
       throw new ApiError("SESSION_INVALID", "The Coach session belongs to another backend generation.", 401);
     }
-    const session = one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coach_sessions WHERE session_id = ?", payload.sid);
-    const coach = session && one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coaches WHERE coach_id = ?", session.coach_id);
-    if (!session || !coach || Number(coach.active) !== 1 || String(session.coach_id) !== String(payload.cid) ||
-        Number(session.credential_version) !== Number(payload.cv) || Number(coach.credential_version) !== Number(payload.cv) ||
-        String(session.issued_at) !== String(payload.iat) || String(session.expires_at) !== String(payload.exp)) {
-      throw new ApiError("SESSION_INVALID", "The Coach session is invalid.", 401);
+    const session = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coach_sessions WHERE session_id = ?", payload.sid);
+    const coach = session && firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coaches WHERE coach_id = ?", session.coach_id);
+    if (!session || !coach || Number(coach.active) !== 1 || String(session.coach_id) !== payload.cid ||
+        Number(session.credential_version) !== payload.cv || Number(coach.credential_version) !== payload.cv ||
+        String(session.issued_at) !== payload.iat || String(session.expires_at) !== payload.exp) {
+      throw invalidSession();
     }
     if (session.revoked_at && !allowRevoked) throw new ApiError("SESSION_REVOKED", "The Coach session was revoked.", 401);
     if (Date.parse(String(session.expires_at)) <= Date.now()) throw new ApiError("SESSION_EXPIRED", "The Coach session expired.", 401);
@@ -403,9 +412,10 @@ export class C1Service {
   }
 
   assertSessionCurrent(auth: AuthenticatedCoach): void {
-    const session = one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coach_sessions WHERE session_id = ?", auth.session_id);
-    const coach = session && one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coaches WHERE coach_id = ?", auth.coach_id);
-    if (!session || !coach || session.revoked_at || Number(coach.active) !== 1 ||
+    const session = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coach_sessions WHERE session_id = ?", auth.session_id);
+    const coach = session && firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coaches WHERE coach_id = ?", auth.coach_id);
+    if (!session || !coach || String(session.coach_id) !== auth.coach_id ||
+        session.revoked_at || Number(coach.active) !== 1 ||
         Number(session.credential_version) !== auth.credential_version ||
         Number(coach.credential_version) !== auth.credential_version ||
         String(session.backend_generation) !== this.env.BACKEND_GENERATION ||
@@ -418,13 +428,13 @@ export class C1Service {
   }
 
   private async logout(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseSessionRequest(raw));
+    const input = parseContract(() => parseSessionRequest(raw));
     const auth = await this.authenticateSession(input.session_token, true);
     const identity = await this.createRequestIdentity(auth.coach_id, "coachLogout", input.request_id, { session_id: auth.session_id });
     const replay = this.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
     const at = new Date().toISOString();
-    const result = { operation: operation("coachLogout", input.request_id, at), result: { logged_out: true } };
+    const result = { operation: operationReceipt("coachLogout", input.request_id, at), result: { logged_out: true } };
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec("UPDATE coach_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE session_id = ?", at, auth.session_id).toArray();
       this.recordRequest(identity, auth.coach_id, "coachLogout", input.request_id, result,
@@ -434,10 +444,10 @@ export class C1Service {
   }
 
   private async bootstrap(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseSessionRequest(raw));
+    const input = parseContract(() => parseSessionRequest(raw));
     const auth = await this.authenticateSession(input.session_token);
     const sql = this.ctx.storage.sql;
-    const setting = one<{ value_json: string; settings_version: number }>(sql,
+    const setting = firstRow<{ value_json: string; settings_version: number }>(sql,
       "SELECT value_json, settings_version FROM settings WHERE setting_key = 'default_season_id'");
     return {
       coach: { coach_id: auth.coach_id, display_name: auth.display_name },
@@ -449,21 +459,21 @@ export class C1Service {
   }
 
   private async createSeason(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseCreateSeason(raw));
+    const input = parseContract(() => parseCreateSeason(raw));
     const auth = await this.authenticateSession(input.session_token);
-    if (input.start_date > input.end_date) throw new ApiError("INVALID_REQUEST", "A season cannot end before it starts.");
-    const boundary = validation(() => seasonEndsAt(input.end_date, input.timezone));
     const payload = { name: input.name, start_date: input.start_date, end_date: input.end_date, timezone: input.timezone };
     const identity = await this.createRequestIdentity(auth.coach_id, "createSeason", input.request_id, payload);
     const replay = this.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
+    if (input.start_date > input.end_date) throw new ApiError("INVALID_REQUEST", "A season cannot end before it starts.");
+    const boundary = parseContract(() => seasonEndsAt(input.end_date, input.timezone));
     const at = new Date().toISOString();
     const season = {
       season_id: `season_${identity.requestKey.slice(-32)}`, ...payload, season_ends_at: boundary,
       status: "DRAFT", binding_version: 0, season_version: 1, roster_version: 0,
       created_at: at, updated_at: at
     };
-    const result = { operation: operation("createSeason", input.request_id, at), result: { season } };
+    const result = { operation: operationReceipt("createSeason", input.request_id, at), result: { season } };
     this.ctx.storage.transactionSync(() => {
       this.assertSessionCurrent(auth);
       this.ctx.storage.sql.exec(
@@ -479,7 +489,7 @@ export class C1Service {
   }
 
   private async updateMember(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = validation(() => parseUpdateMember(raw));
+    const input = parseContract(() => parseUpdateMember(raw));
     const auth = await this.authenticateSession(input.session_token);
     const payload = { season_id: input.season_id, member_id: input.member_id, member_version: input.member_version,
       ...(input.display_name_override !== undefined ? { display_name_override: input.display_name_override } : {}),
@@ -492,8 +502,8 @@ export class C1Service {
     let result: Record<string, unknown> = {};
     this.ctx.storage.transactionSync(() => {
       this.assertSessionCurrent(auth);
-      const season = one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM seasons WHERE season_id = ?", input.season_id);
-      const member = one<SqlRow>(this.ctx.storage.sql,
+      const season = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM seasons WHERE season_id = ?", input.season_id);
+      const member = firstRow<SqlRow>(this.ctx.storage.sql,
         "SELECT * FROM members WHERE season_id = ? AND member_id = ?", input.season_id, input.member_id);
       if (!season) throw new ApiError("SEASON_NOT_FOUND", "The season does not exist.", 404);
       if (season.status !== "OPEN") throw new ApiError("SEASON_NOT_OPEN", "The season is not open.", 409);
@@ -517,7 +527,7 @@ export class C1Service {
       const nextRoster = Number(season.roster_version) + 1;
       this.ctx.storage.sql.exec("UPDATE seasons SET roster_version=?, updated_at=? WHERE season_id=?",
         nextRoster, at, input.season_id).toArray();
-      result = { operation: operation("updateMember", input.request_id, at),
+      result = { operation: operationReceipt("updateMember", input.request_id, at),
         result: { season_id: input.season_id, roster_version: nextRoster, member: memberProjection(next) } };
       this.recordRequest(identity, auth.coach_id, "updateMember", input.request_id, result,
         { season_id: input.season_id, member_id: input.member_id, member_version: next.member_version }, at);

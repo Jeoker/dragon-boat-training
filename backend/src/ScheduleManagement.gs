@@ -277,14 +277,15 @@ function buildScheduleMutation_(request, season, plan) {
       throw dragonBoatRequestError_("INVALID_REQUEST", "A valid opening time is required.");
     }
     if (request.open_at && request.open_date) throw dragonBoatRequestError_("INVALID_REQUEST", "Use one opening-time format.");
+    var publishingScheduledWeek = request.action === "publishTrainingWeek";
     var openAt = request.open_date
       ? localDateTimeToIso_(requireIsoDate_(request.open_date, "open_date"), requireLocalTime_(request.open_time, "open_time"), season.timezone)
       : request.open_at ? new Date(request.open_at).toISOString() : now;
-    if (request.action === "publishTrainingWeek") {
+    if (publishingScheduledWeek) {
       if (String(week.status) !== "SCHEDULED" || !week.scheduled_open_at || Date.parse(week.scheduled_open_at) > Date.now() || Number(week.confirmed_version) !== Number(week.week_version)) {
         throw dragonBoatRequestError_("WEEK_NOT_DUE", "This confirmed week is not due to open.");
       }
-      openAt = now;
+      openAt = week.scheduled_open_at;
     }
     var active = practices.filter(function (row) { return !row.cancelled_at; });
     if (!active.length) throw dragonBoatRequestError_("WEEK_EMPTY", "Add at least one training before confirming the week.");
@@ -292,7 +293,9 @@ function buildScheduleMutation_(request, season, plan) {
       throw dragonBoatRequestError_("OPEN_TIME_TOO_LATE", "Open the week before its first training starts.");
     }
     week.week_version = Number(week.week_version) + 1;
-    week.confirmed_version = week.week_version; week.confirmed_at = now; week.confirmed_by = actorId;
+    if (!publishingScheduledWeek) {
+      week.confirmed_version = week.week_version; week.confirmed_at = now; week.confirmed_by = actorId;
+    }
     week.scheduled_open_at = openAt;
     week.status = Date.parse(openAt) <= Date.now() ? "OPENED" : "SCHEDULED";
     week.updated_at = now;

@@ -52,6 +52,7 @@ describe("TeamState C0 persistence", () => {
     for (const overrides of [
       { amount: null }, { amount: true }, { amount: "2" }, { amount: [] },
       { job_due_at_ms: false }, { fail_attempts: "3" }, { retry_delay_ms: [] },
+      { retry_delay_ms: 0 },
       { enqueue_job: "false" }, { simulate_failure: 1 }, { request_id: null }
     ]) {
       const response = await commit(stub, "strict_request_001", overrides);
@@ -135,6 +136,43 @@ describe("TeamState C0 persistence", () => {
     });
   });
 
+  it("isolates a corrupt persisted job and continues the rest of the claimed batch", async () => {
+    const stub = objectFor("corrupt-job-isolation");
+    await state(stub);
+    await runInDurableObject(stub, async (instance: TeamState, durableState) => {
+      const createdAt = new Date().toISOString();
+      const dueAt = Date.now() - 1;
+      durableState.storage.sql.exec(
+        `INSERT INTO scheduled_jobs(
+           job_id, job_type, payload_json, status, due_at_ms, created_at, updated_at
+         ) VALUES
+           ('job_a_corrupt', 'C0_MOCK_SYNC', '{', 'PENDING', ?, ?, ?),
+           ('job_b_valid', 'C0_MOCK_SYNC', ?, 'PENDING', ?, ?, ?)`,
+        dueAt,
+        createdAt,
+        createdAt,
+        JSON.stringify({ outbox_id: "out_missing", fail_attempts: 0, retry_delay_ms: 1_000 }),
+        dueAt,
+        createdAt,
+        createdAt
+      ).toArray();
+      await instance.repairScheduledWork();
+    });
+
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await runInDurableObject(stub, async (_instance: TeamState, durableState) => {
+      const jobs = durableState.storage.sql.exec<{
+        job_id: string; status: string; attempt_count: number; last_error: string;
+      }>("SELECT job_id, status, attempt_count, last_error FROM scheduled_jobs ORDER BY job_id").toArray();
+      expect(jobs).toEqual([
+        { job_id: "job_a_corrupt", status: "PENDING", attempt_count: 1,
+          last_error: "Scheduled job payload is not valid JSON." },
+        { job_id: "job_b_valid", status: "COMPLETED", attempt_count: 1, last_error: "" }
+      ]);
+      expect(await durableState.storage.getAlarm()).not.toBeNull();
+    });
+  });
+
   it("keeps application retries running beyond the platform retry window", async () => {
     const stub = objectFor("alarm-retry");
     expect(
@@ -158,6 +196,11 @@ describe("TeamState C0 persistence", () => {
         await durableState.storage.setAlarm(now + 60_000);
       });
       expect(await runDurableObjectAlarm(stub)).toBe(true);
+      if (attempt === 0) {
+        await expect(state(stub)).resolves.toMatchObject({
+          outbox: [{ status: "PENDING", attempt_count: 1, last_error: "Simulated downstream failure." }]
+        });
+      }
     }
     await expect(state(stub)).resolves.toMatchObject({
       outbox: [{ status: "CONFIRMED", attempt_count: 8, last_error: "" }],

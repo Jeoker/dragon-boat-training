@@ -40,7 +40,7 @@ async function setupCore(name: string) {
     request_id: `import_core_${name}_001`, source_snapshot_id: `snapshot_core_${name}_001`,
     settings_version: 1, default_season_id: "season_schedule_2027",
     coaches: [{ coach_id: "coach_liu_yang", display_name: "刘阳", code_salt: "salt_fixture_001",
-      code_digest: await legacyCredentialDigest("salt_fixture_001", "pen001", "local-c1-coach-secret"),
+      code_digest: await legacyCredentialDigest("salt_fixture_001", "local-test-coach-code", "local-c1-coach-secret"),
       credential_version: 1, active: true, created_at: at, updated_at: at }],
     seasons: [{ season_id: "season_schedule_2027", name: "Schedule 2027",
       start_date: "2027-03-01", end_date: "2027-12-31", timezone: "America/New_York",
@@ -50,7 +50,7 @@ async function setupCore(name: string) {
   }, "POST", testEnv);
   expect(imported.status).toBe(200);
   const login = await ok(await call("/internal/c1/coach-login", {
-    request_id: `login_${name}_001`, coach_code: "pen001"
+    request_id: `login_${name}_001`, coach_code: "local-test-coach-code"
   }, "POST", testEnv));
   return { testEnv, token: login.result.session_token as string, seasonId: "season_schedule_2027" };
 }
@@ -143,7 +143,35 @@ describe("C1.2 schedule migration slice", () => {
       expect(context.storage.sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM sync_outbox WHERE topic='SCHEDULE_CHANGED' AND status='PENDING'").one().count)
         .toBe(5);
+      expect(context.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM practice_versions").one().count).toBe(3);
     });
+  });
+
+  it("replays completed writes before mutable season defaults can change their request identity", async () => {
+    const fixture = await setupWeek("state-independent-replay");
+    const createPayload = {
+      request_id: "create_state_replay_001", session_token: fixture.token, season_id: fixture.seasonId,
+      week_id: fixture.week.week_id, week_version: fixture.week.week_version,
+      practice_date: "2027-05-07", start_time: "07:00", end_time: "09:00",
+      location: "Replay Dock", address: "7 Replay Road", map_url: ""
+    };
+    const created = await ok(await call("/internal/c1/create-practice", createPayload, "POST", fixture.testEnv));
+    const confirmPayload = {
+      request_id: "confirm_state_replay_001", session_token: fixture.token, season_id: fixture.seasonId,
+      week_id: fixture.week.week_id, week_version: created.result.week.week_version,
+      open_date: "2027-05-01", open_time: "10:00"
+    };
+    const confirmed = await ok(await call("/internal/c1/confirm-training-week", confirmPayload, "POST", fixture.testEnv));
+    const stub = fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec("UPDATE seasons SET timezone='America/Chicago' WHERE season_id=?", fixture.seasonId).toArray();
+    });
+
+    const createReplay = await ok(await call("/internal/c1/create-practice", createPayload, "POST", fixture.testEnv));
+    const confirmReplay = await ok(await call("/internal/c1/confirm-training-week", confirmPayload, "POST", fixture.testEnv));
+    expect(createReplay.result).toEqual(created.result);
+    expect(confirmReplay.result).toEqual(confirmed.result);
   });
 
   it("allows an authenticated manual recovery to publish a due scheduled week", async () => {
@@ -166,6 +194,24 @@ describe("C1.2 schedule migration slice", () => {
     expect((await publicSchedule(fixture.testEnv, fixture.seasonId, "public_manual_due_001")).practices).toHaveLength(2);
   });
 
+  it("records a new confirmation when an administrator changes a scheduled week to immediate opening", async () => {
+    const fixture = await setupWeek("reconfirm-immediate");
+    const scheduled = await ok(await call("/internal/c1/confirm-training-week", {
+      request_id: "confirm_future_then_now_001", session_token: fixture.token, season_id: fixture.seasonId,
+      week_id: fixture.week.week_id, week_version: fixture.week.week_version,
+      open_at: new Date(Date.now() + 3_600_000).toISOString()
+    }, "POST", fixture.testEnv));
+    const opened = await ok(await call("/internal/c1/confirm-training-week", {
+      request_id: "confirm_future_then_now_002", session_token: fixture.token, season_id: fixture.seasonId,
+      week_id: fixture.week.week_id, week_version: scheduled.result.week.week_version
+    }, "POST", fixture.testEnv));
+
+    expect(opened.result.week.status).toBe("OPENED");
+    expect(opened.result.week.confirmed_version).toBe(scheduled.result.week.week_version + 1);
+    expect(opened.result.week.scheduled_open_at).not.toBe(scheduled.result.week.scheduled_open_at);
+    expect(Date.parse(opened.result.week.scheduled_open_at)).toBeLessThanOrEqual(Date.now());
+  });
+
   it("opens a scheduled week from a durable job and records one immutable operation", async () => {
     const fixture = await setupWeek("due");
     const openAt = new Date(Date.now() + 150).toISOString();
@@ -180,6 +226,10 @@ describe("C1.2 schedule migration slice", () => {
     await runDurableObjectAlarm(stub);
     const visible = await publicSchedule(fixture.testEnv, fixture.seasonId, "public_due_visible_001");
     expect(visible.weeks[0].status).toBe("OPENED");
+    expect(visible.weeks[0].confirmed_version).toBe(scheduled.result.week.confirmed_version);
+    expect(visible.weeks[0].confirmed_at).toBe(scheduled.result.week.confirmed_at);
+    expect(visible.weeks[0].scheduled_open_at).toBe(scheduled.result.week.scheduled_open_at);
+    expect(visible.weeks[0].published_at).toBeTruthy();
     expect(visible.practices).toHaveLength(2);
     await runDurableObjectAlarm(stub);
     await runInDurableObject(stub, async (_instance: TeamState, context) => {
@@ -309,7 +359,16 @@ describe("C1.2 schedule migration slice", () => {
         cancelled_at: null, cancelled_by: null, schedule_published_at: null,
         schedule_published_by: null, created_at: at, updated_at: at }]
     };
-    expect((await ok(await call("/internal/c1/import-schedule", schedule, "POST", core.testEnv))).result.practices).toBe(1);
+    const imported = await ok(await call("/internal/c1/import-schedule", schedule, "POST", core.testEnv));
+    expect(imported.result.practices).toBe(1);
+    const stub = core.testEnv.TEAM_STATE.getByName(core.testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec("UPDATE seasons SET timezone='America/Chicago' WHERE season_id=?", core.seasonId).toArray();
+    });
+    expect((await ok(await call("/internal/c1/import-schedule", schedule, "POST", core.testEnv))).result).toEqual(imported.result);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec("UPDATE seasons SET timezone='America/New_York' WHERE season_id=?", core.seasonId).toArray();
+    });
     const same = structuredClone(schedule); same.request_id = "import_schedule_same_002";
     expect((await ok(await call("/internal/c1/import-schedule", same, "POST", core.testEnv))).result.practices).toBe(1);
     const drift = structuredClone(schedule); drift.request_id = "import_schedule_drift_003";
@@ -320,7 +379,6 @@ describe("C1.2 schedule migration slice", () => {
     regression.source_snapshot_id = "snapshot_schedule_002"; regression.practices[0].practice_version = 1;
     expect(await errorCode(await call("/internal/c1/import-schedule", regression, "POST", core.testEnv)))
       .toBe("IMPORT_VERSION_REGRESSION");
-    const stub = core.testEnv.TEAM_STATE.getByName(core.testEnv.TEAM_ID);
     await runInDurableObject(stub, async (_instance: TeamState, context) => {
       expect(context.storage.sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM scheduled_jobs WHERE job_type='OPEN_TRAINING_WEEK'").one().count).toBe(0);

@@ -32,7 +32,7 @@ async function snapshot(requestId = "import_core_001", overrides: Record<string,
     default_season_id: "season_open_2026",
     coaches: [{
       coach_id: "coach_liu_yang", display_name: "刘阳", code_salt: "salt_fixture_001",
-      code_digest: await legacyCredentialDigest("salt_fixture_001", "pen001", "local-c1-coach-secret"),
+      code_digest: await legacyCredentialDigest("salt_fixture_001", "local-test-coach-code", "local-c1-coach-secret"),
       credential_version: 1, active: true, created_at: at, updated_at: at
     }],
     seasons: [
@@ -66,7 +66,7 @@ async function importAndLogin(prefix: string) {
     source_snapshot_id: `snapshot_${prefix}_001`
   }), "POST", testEnv);
   expect(imported.status).toBe(200);
-  const login = await call("/internal/c1/coach-login", { request_id: `login_${prefix}_001`, coach_code: "pen001" }, "POST", testEnv);
+  const login = await call("/internal/c1/coach-login", { request_id: `login_${prefix}_001`, coach_code: "local-test-coach-code" }, "POST", testEnv);
   expect(login.status).toBe(200);
   return { token: (await body(login)).data.result.session_token as string, testEnv };
 }
@@ -173,7 +173,7 @@ describe("C1 contract and core business slice", () => {
       request_id: "bootstrap_rotated_001", session_token: token
     }, "POST", testEnv))).error.code).toBe("SESSION_INVALID");
     expect((await body(await call("/internal/c1/coach-login", {
-      request_id: "login_rotated_old_001", coach_code: "pen001"
+      request_id: "login_rotated_old_001", coach_code: "local-test-coach-code"
     }, "POST", testEnv))).error.code).toBe("COACH_CODE_INVALID");
     expect((await call("/internal/c1/coach-login", {
       request_id: "login_rotated_new_001", coach_code: "pen002"
