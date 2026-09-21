@@ -6,6 +6,7 @@ import {
 import { canonicalJson } from "../../shared/c1-rules";
 import { ApiError } from "./http";
 import { C1Service, type AuthenticatedCoach, type C1RequestIdentity } from "./c1-service";
+import { C1SeatingService, publicSeatPlanProjection } from "./c1-seating-service";
 import { firstRow, operationReceipt, parseContract, type SqlRow } from "./c1-support";
 
 type MutationKind = "CREATE" | "UPDATE" | "CANCEL";
@@ -84,9 +85,11 @@ function validateIdentifier(value: string, field: string): string {
 
 export class C1SignupService {
   private readonly core: C1Service;
+  private readonly seating: C1SeatingService;
 
   constructor(private readonly ctx: DurableObjectState, private readonly env: Env) {
     this.core = new C1Service(ctx, env);
+    this.seating = new C1SeatingService(ctx, env);
   }
 
   async handle(path: string, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -123,7 +126,7 @@ export class C1SignupService {
       signups: rows.map((row) => ({ ...signupProjection(row),
         display_name: names.get(String(row.member_id)) || "已停用队员",
         waitlist_position: row.status === "WAITLISTED" ? ++waitlistPosition : null })),
-      seat_plan: null, generated_at: new Date().toISOString()
+      seat_plan: publicSeatPlanProjection(this.ctx.storage.sql, practice), generated_at: new Date().toISOString()
     };
   }
 
@@ -218,6 +221,9 @@ export class C1SignupService {
     if (kind !== "CANCEL" && preflight.member.status !== "ACTIVE") {
       throw new ApiError("MEMBER_INACTIVE", "This member is inactive.", 409);
     }
+    if (kind !== "CANCEL" && this.seating.roleMemberIds(input.season_id, input.practice_id).has(input.member_id)) {
+      throw new ApiError("ROLE_SIGNUP_CONFLICT", "A Coach or Steerer cannot also hold a training signup.", 409);
+    }
     const at = new Date().toISOString();
     if (!management) this.consumePublicAttempt(input.season_id, input.member_id, at);
     let response: Record<string, unknown> = {};
@@ -226,6 +232,9 @@ export class C1SignupService {
       const { practice, member } = this.requireMutationContext(input, management);
       if (kind !== "CANCEL" && member.status !== "ACTIVE") {
         throw new ApiError("MEMBER_INACTIVE", "This member is inactive.", 409);
+      }
+      if (kind !== "CANCEL" && this.seating.roleMemberIds(input.season_id, input.practice_id).has(input.member_id)) {
+        throw new ApiError("ROLE_SIGNUP_CONFLICT", "A Coach or Steerer cannot also hold a training signup.", 409);
       }
       const rows = this.signupRows(input.season_id, input.practice_id);
       const before = new Map(rows.map((row) => [String(row.member_id), signupComparable(row)]));
@@ -254,8 +263,10 @@ export class C1SignupService {
           "SELECT member_id FROM members WHERE season_id=? AND status='ACTIVE'", input.season_id
         ).toArray().map((row) => String(row.member_id)));
         const counts = signupCounts(rows, practice);
+        const seatAvailability = this.seating.signupSeatAvailability(practice, rows, input.member_id);
         for (const row of rows.filter((candidate) => candidate.status === "WAITLISTED").sort(queueOrder)) {
-          if (!activeMembers.has(String(row.member_id)) || !canConfirm(row.preference, counts)) continue;
+          if (!activeMembers.has(String(row.member_id)) || !canConfirm(row.preference, counts) ||
+              !this.seating.claimSignupSeat(seatAvailability, row.preference)) continue;
           row.status = "CONFIRMED";
           row.updated_at = at;
           row.last_request_id = input.request_id;
@@ -281,16 +292,22 @@ export class C1SignupService {
         nextVersion, sequence, input.season_id, input.practice_id).toArray();
       const promoted = changed.filter((row) => row.member_id !== input.member_id && row.status === "CONFIRMED" &&
         before.get(String(row.member_id))?.status === "WAITLISTED").map((row) => String(row.member_id));
+      const seating = noChange ? null : this.seating.applySignupTransition(practice, rows, target!, promoted,
+        action, input.request_id, identity.requestKey, auth?.coach_id || input.member_id, at);
       response = { operation: operationReceipt(action, input.request_id, at), result: {
         season_id: input.season_id, practice_id: input.practice_id, signup_version: nextVersion,
-        signup: signupProjection(target!), promoted_member_ids: promoted
+        signup: signupProjection(target!), promoted_member_ids: promoted,
+        ...(seating ? { seat_plan_version: seating.seat_plan_version,
+          published_revision: seating.published_revision } : {})
       } };
       this.core.recordRequest(identity, actorScope, action, input.request_id, response,
         { season_id: input.season_id, practice_id: input.practice_id, member_id: input.member_id,
-          status: target!.status, promoted_member_ids: promoted }, at);
+          status: target!.status, promoted_member_ids: promoted, seating }, at);
       if (!noChange) this.core.enqueueChange(identity, "SIGNUPS_CHANGED", action,
         { season_id: input.season_id, practice_id: input.practice_id,
-          member_id: input.member_id, promoted_member_ids: promoted }, at);
+          member_id: input.member_id, promoted_member_ids: promoted,
+          ...(seating ? { seat_plan_version: seating.seat_plan_version,
+            published_revision: seating.published_revision } : {}) }, at);
     });
     return this.currentView(response, input.season_id, input.practice_id);
   }

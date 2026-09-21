@@ -1,9 +1,9 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C1.1 core, C1.2 schedule and C1.3 signup local implementation; isolated migration API; not production",
+  "status": "C1.1 core, C1.2 schedule, C1.3 signup and C1.4 seating local implementation; isolated migration API; not production",
   "contract_version": "2026-09-20.c1",
-  "service_version": "0.4.0-c1-signups",
+  "service_version": "0.5.0-c1-seating",
   "transport_gate": "Every /internal/c1 route is absent in production and requires C1_TEST_KEY in local or staging. This gate is separate from the business authentication declared per action.",
   "response": {
     "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
@@ -170,21 +170,21 @@
       "writes": false,
       "request_query": ["request_id", "season_id", "practice_id"],
       "response": ["season_id", "season_status", "practice", "signup_version", "roster_version", "binding_version", "signup_open", "management_signup_open", "closed_reason", "counts", "signups", "seat_plan", "generated_at"],
-      "notes": "Returns the authoritative signup and waitlist projection for one public non-cancelled training. seat_plan remains null until C1.4."
+      "notes": "Returns the authoritative signup, waitlist and latest formal seating projection for one public non-cancelled training. Private drafts and role member IDs are excluded."
     },
     "/internal/c1/signup": {
       "method": "POST",
       "authentication": "public",
       "writes": true,
       "request": ["request_id", "season_id", "practice_id", "member_id", "practice_version", "signup_version", "preference"],
-      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids"]
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"]
     },
     "/internal/c1/update-signup": {
       "method": "POST",
       "authentication": "public",
       "writes": true,
       "request": ["request_id", "season_id", "practice_id", "member_id", "practice_version", "signup_version", "preference"],
-      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids"],
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"],
       "notes": "Preserves the original queue timestamp and sequence, but does not reserve the released side."
     },
     "/internal/c1/cancel-signup": {
@@ -192,29 +192,60 @@
       "authentication": "public",
       "writes": true,
       "request": ["request_id", "season_id", "practice_id", "member_id", "practice_version", "signup_version"],
-      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids"]
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"]
     },
     "/internal/c1/signup-by-coach": {
       "method": "POST",
       "authentication": "session_token",
       "writes": true,
       "request": ["request_id", "session_token", "season_id", "practice_id", "member_id", "practice_version", "signup_version", "preference"],
-      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids"]
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"]
     },
     "/internal/c1/update-signup-by-coach": {
       "method": "POST",
       "authentication": "session_token",
       "writes": true,
       "request": ["request_id", "session_token", "season_id", "practice_id", "member_id", "practice_version", "signup_version", "preference"],
-      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids"]
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"]
     },
     "/internal/c1/cancel-signup-by-coach": {
       "method": "POST",
       "authentication": "session_token",
       "writes": true,
       "request": ["request_id", "session_token", "season_id", "practice_id", "member_id", "practice_version", "signup_version"],
-      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids"],
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"],
       "notes": "Coach mutations bypass the public signup cutoff but still enforce season state, training end, member eligibility and capacity."
+    },
+    "/internal/c1/import-seating": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "states", "draft_seats", "revisions"],
+      "response_result": ["source_snapshot_id", "states", "draft_seats", "revisions"],
+      "notes": "Versioned seating shadow snapshot. Drafts must be complete for each included state; revisions are immutable; import creates no Google outbox."
+    },
+    "/internal/c1/get-seating-workspace": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id", "practice_id"],
+      "response": ["season_id", "practice_id", "practice", "mode", "editable", "archive_due_at", "generated_at", "signup_version", "seat_plan_version", "published_revision", "draft", "published", "members", "signups", "unseated_member_ids", "preference_mismatches"]
+    },
+    "/internal/c1/save-seat-plan-draft": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "practice_version", "signup_version", "seat_plan_version", "coach_member_id", "steerer_member_id", "seats", "change_kind"],
+      "response_result": ["season_id", "practice_id", "seat_plan_version"],
+      "notes": "Saves a complete private snapshot. RESET_TO_PUBLISHED restores roles and seats from the latest immutable revision."
+    },
+    "/internal/c1/publish-seat-plan": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "practice_version", "signup_version", "seat_plan_version", "published_revision", "acknowledge_preference_mismatch"],
+      "response_result": ["season_id", "practice_id", "seat_plan_version", "published_revision"],
+      "notes": "Publishes an immutable manual revision. Upcoming training requires every confirmed signup to be seated and explicit acknowledgement of side mismatches; final correction preserves signup history."
     }
   },
   "errors": [
@@ -228,10 +259,12 @@
     "PRACTICE_OUTSIDE_SEASON", "PRACTICE_ALREADY_STARTED", "PRACTICE_CANCELLED", "PRACTICE_ENDED",
     "PRACTICE_NOT_PUBLIC", "PRACTICE_NOT_PUBLISHABLE", "INVALID_TIME_RANGE", "PREVIEW_STALE",
     "SIGNUP_CLOSED", "SIGNUP_EXISTS", "SIGNUP_NOT_ACTIVE", "SIGNUP_RATE_LIMITED",
+    "INVALID_SEAT_PLAN", "ROLE_SIGNUP_CONFLICT", "SEAT_MEMBER_NOT_CONFIRMED", "SEAT_PLAN_INCOMPLETE",
+    "PREFERENCE_ACK_REQUIRED", "SEAT_PLAN_FROZEN",
     "VERSION_CONFLICT", "INTERNAL_ERROR"
   ],
   "not_yet_in_this_slice": [
-    "season activation and Google binding", "default-season mutation", "seating and role conflicts",
-    "freeze/history", "Google import/export execution", "production or Pages routing", "browser CORS"
+    "season activation and Google binding", "default-season mutation", "immutable freeze snapshots and history",
+    "Google import/export execution", "production or Pages routing", "browser CORS"
   ]
 }

@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 4;
+export const APPLICATION_SCHEMA_VERSION = 5;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -178,6 +178,67 @@ function applyC1SignupSchema(sql: SqlStorage): void {
   `).toArray();
 }
 
+function applyC1SeatingSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS seat_plan_states (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      coach_member_id TEXT, steerer_member_id TEXT,
+      updated_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id),
+      FOREIGN KEY (season_id, coach_member_id) REFERENCES members(season_id, member_id),
+      FOREIGN KEY (season_id, steerer_member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE TABLE IF NOT EXISTS seat_plan_draft_seats (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      side TEXT NOT NULL CHECK (side IN ('LEFT', 'RIGHT')),
+      row_number INTEGER NOT NULL CHECK (row_number >= 1), member_id TEXT,
+      seat_plan_version INTEGER NOT NULL CHECK (seat_plan_version >= 1),
+      updated_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id, side, row_number),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id),
+      FOREIGN KEY (season_id, member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE INDEX IF NOT EXISTS seat_plan_draft_member_idx
+      ON seat_plan_draft_seats(season_id, member_id, practice_id);
+    CREATE TABLE IF NOT EXISTS seat_plan_revisions (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      revision_number INTEGER NOT NULL CHECK (revision_number >= 1), revision_id TEXT NOT NULL UNIQUE,
+      source TEXT NOT NULL, seat_plan_version INTEGER NOT NULL CHECK (seat_plan_version >= 0),
+      coach_member_id TEXT, steerer_member_id TEXT,
+      published_by TEXT NOT NULL, published_at TEXT NOT NULL, request_id TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id, revision_number),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id),
+      FOREIGN KEY (season_id, coach_member_id) REFERENCES members(season_id, member_id),
+      FOREIGN KEY (season_id, steerer_member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE TABLE IF NOT EXISTS seat_plan_revision_seats (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL, revision_number INTEGER NOT NULL,
+      side TEXT NOT NULL CHECK (side IN ('LEFT', 'RIGHT')),
+      row_number INTEGER NOT NULL CHECK (row_number >= 1), member_id TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id, revision_number, side, row_number),
+      UNIQUE (season_id, practice_id, revision_number, member_id),
+      FOREIGN KEY (season_id, practice_id, revision_number)
+        REFERENCES seat_plan_revisions(season_id, practice_id, revision_number),
+      FOREIGN KEY (season_id, member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE INDEX IF NOT EXISTS seat_plan_revision_member_idx
+      ON seat_plan_revision_seats(season_id, member_id, practice_id, revision_number);
+    CREATE TABLE IF NOT EXISTS seat_plan_revision_names (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL, revision_number INTEGER NOT NULL,
+      member_id TEXT NOT NULL, display_name TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id, revision_number, member_id),
+      FOREIGN KEY (season_id, practice_id, revision_number)
+        REFERENCES seat_plan_revisions(season_id, practice_id, revision_number)
+    );
+    CREATE TABLE IF NOT EXISTS seating_migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+  `).toArray();
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -192,6 +253,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 2) applyC1CoreSchema(sql);
     if (currentVersion < 3) applyC1ScheduleSchema(sql);
     if (currentVersion < 4) applyC1SignupSchema(sql);
+    if (currentVersion < 5) applyC1SeatingSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

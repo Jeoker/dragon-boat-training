@@ -53,6 +53,7 @@ test("the C1 manifest lists every error raised directly by its business services
     "../cloudflare/src/c1-service.ts",
     "../cloudflare/src/c1-schedule-service.ts",
     "../cloudflare/src/c1-signup-service.ts",
+    "../cloudflare/src/c1-seating-service.ts",
     "../cloudflare/src/c1-support.ts"
   ].map((file) => readFile(new URL(file, import.meta.url), "utf8")));
   const raised = new Set(sources.flatMap((source) =>

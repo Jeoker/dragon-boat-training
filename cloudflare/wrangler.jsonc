@@ -9,7 +9,7 @@
   },
   "vars": {
     "ENVIRONMENT": "staging",
-    "SERVICE_VERSION": "0.4.0-c1-signups",
+    "SERVICE_VERSION": "0.5.0-c1-seating",
     "CONTRACT_VERSION": "2026-09-19.c0",
     "BACKEND_INSTANCE": "dragon-boat-training-staging",
     "BACKEND_GENERATION": "cf-c1-staging-2",

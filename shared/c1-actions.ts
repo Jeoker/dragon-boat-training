@@ -36,4 +36,13 @@ export const C1_SIGNUP_ACTIONS = {
   "/internal/c1/cancel-signup-by-coach": { method: "POST", authentication: "session_token", writes: true }
 } as const;
 
-export const C1_ACTIONS = { ...C1_CORE_ACTIONS, ...C1_SCHEDULE_ACTIONS, ...C1_SIGNUP_ACTIONS } as const;
+export const C1_SEATING_ACTIONS = {
+  "/internal/c1/import-seating": { method: "POST", authentication: "transport_only", writes: true },
+  "/internal/c1/get-seating-workspace": { method: "POST", authentication: "session_token", writes: false },
+  "/internal/c1/save-seat-plan-draft": { method: "POST", authentication: "session_token", writes: true },
+  "/internal/c1/publish-seat-plan": { method: "POST", authentication: "session_token", writes: true }
+} as const;
+
+export const C1_ACTIONS = {
+  ...C1_CORE_ACTIONS, ...C1_SCHEDULE_ACTIONS, ...C1_SIGNUP_ACTIONS, ...C1_SEATING_ACTIONS
+} as const;

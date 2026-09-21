@@ -80,6 +80,25 @@ function seasonProjection(row: Record<string, unknown>): Record<string, unknown>
 export class C1Service {
   constructor(private readonly ctx: DurableObjectState, private readonly env: Env) {}
 
+  private hasActiveMemberLinks(seasonId: string, memberId: string, at: string): boolean {
+    return Boolean(firstRow<SqlRow>(this.ctx.storage.sql,
+      `SELECT 1 AS present FROM practices p
+       JOIN practice_versions pv ON pv.season_id=p.season_id AND pv.practice_id=p.practice_id
+       WHERE p.season_id=? AND p.cancelled_at IS NULL AND p.end_at>? AND (
+         EXISTS (SELECT 1 FROM signups sg WHERE sg.season_id=p.season_id AND sg.practice_id=p.practice_id
+           AND sg.member_id=? AND sg.status<>'CANCELLED') OR
+         EXISTS (SELECT 1 FROM seat_plan_draft_seats ds WHERE ds.season_id=p.season_id
+           AND ds.practice_id=p.practice_id AND ds.member_id=?) OR
+         EXISTS (SELECT 1 FROM seat_plan_states ss WHERE ss.season_id=p.season_id
+           AND ss.practice_id=p.practice_id AND (ss.coach_member_id=? OR ss.steerer_member_id=?)) OR
+         EXISTS (SELECT 1 FROM seat_plan_revisions sr WHERE sr.season_id=p.season_id
+           AND sr.practice_id=p.practice_id AND sr.revision_number=pv.published_revision
+           AND (sr.coach_member_id=? OR sr.steerer_member_id=?)) OR
+         EXISTS (SELECT 1 FROM seat_plan_revision_seats rs WHERE rs.season_id=p.season_id
+           AND rs.practice_id=p.practice_id AND rs.revision_number=pv.published_revision AND rs.member_id=?)
+       ) LIMIT 1`, seasonId, at, memberId, memberId, memberId, memberId, memberId, memberId, memberId));
+  }
+
   async handle(path: string, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     switch (path) {
       case "/internal/c1/import-core": return this.importCore(raw);
@@ -300,12 +319,7 @@ export class C1Service {
       throw new ApiError("IMPORT_CONFLICT", "A member source key already belongs to another member.", 409);
     }
     if (row.status === "INACTIVE") {
-      const activeLink = firstRow<{ count: number }>(this.ctx.storage.sql,
-        `SELECT COUNT(*) AS count FROM signups sg
-         JOIN practices p ON p.season_id=sg.season_id AND p.practice_id=sg.practice_id
-         WHERE sg.season_id=? AND sg.member_id=? AND sg.status<>'CANCELLED'
-           AND p.cancelled_at IS NULL AND p.end_at>?`, row.season_id, row.member_id, new Date().toISOString());
-      if (Number(activeLink?.count ?? 0) > 0) {
+      if (this.hasActiveMemberLinks(row.season_id, row.member_id, new Date().toISOString())) {
         throw new ApiError("IMPORT_CONFLICT", "An inactive member still has active training links.", 409);
       }
     }
@@ -522,13 +536,9 @@ export class C1Service {
         throw new ApiError("VERSION_CONFLICT", "The member changed. Refresh and try again.", 409);
       }
       if (input.status === "INACTIVE") {
-        const activeLink = firstRow<{ count: number }>(this.ctx.storage.sql,
-          `SELECT COUNT(*) AS count FROM signups sg
-           JOIN practices p ON p.season_id=sg.season_id AND p.practice_id=sg.practice_id
-           WHERE sg.season_id=? AND sg.member_id=? AND sg.status<>'CANCELLED'
-             AND p.cancelled_at IS NULL AND p.end_at>?`, input.season_id, input.member_id, at);
-        if (Number(activeLink?.count ?? 0) > 0) {
-          throw new ApiError("MEMBER_HAS_ACTIVE_LINKS", "Cancel active signups before deactivating this member.", 409);
+        if (this.hasActiveMemberLinks(input.season_id, input.member_id, at)) {
+          throw new ApiError("MEMBER_HAS_ACTIVE_LINKS",
+            "Clear this member's active signup, seating or training-role links before deactivation.", 409);
         }
       }
       const next = {

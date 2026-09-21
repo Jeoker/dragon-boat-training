@@ -2,9 +2,12 @@ import { DurableObject } from "cloudflare:workers";
 import { sha256Base64Url } from "./crypto";
 import { ApiError, apiFailure, apiSuccess, optionalBoolean, optionalInteger, readJsonObject, requireRequestId, requireString } from "./http";
 import { APPLICATION_SCHEMA_VERSION, applySchema } from "./schema";
-import { C1_ACTIONS, C1_CONTRACT_VERSION, C1_SCHEDULE_ACTIONS, C1_SIGNUP_ACTIONS } from "../../shared/c1-actions";
+import {
+  C1_ACTIONS, C1_CONTRACT_VERSION, C1_SCHEDULE_ACTIONS, C1_SEATING_ACTIONS, C1_SIGNUP_ACTIONS
+} from "../../shared/c1-actions";
 import { C1Service } from "./c1-service";
 import { C1ScheduleService } from "./c1-schedule-service";
+import { C1SeatingService } from "./c1-seating-service";
 import { C1SignupService } from "./c1-signup-service";
 
 interface C0CommitInput {
@@ -112,6 +115,8 @@ export class TeamState extends DurableObject<Env> {
         requestId = requireRequestId(input);
         const data = Object.hasOwn(C1_SCHEDULE_ACTIONS, url.pathname)
           ? await new C1ScheduleService(this.ctx, this.env).handle(url.pathname, input)
+          : Object.hasOwn(C1_SEATING_ACTIONS, url.pathname)
+            ? await new C1SeatingService(this.ctx, this.env).handle(url.pathname, input)
           : Object.hasOwn(C1_SIGNUP_ACTIONS, url.pathname)
             ? await new C1SignupService(this.ctx, this.env).handle(url.pathname, input)
             : await new C1Service(this.ctx, this.env).handle(url.pathname, input);

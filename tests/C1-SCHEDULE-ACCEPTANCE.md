@@ -27,6 +27,6 @@ Cloudflare Workers／Durable Object 官方本地运行时验证：
 
 ## 尚未完成
 
-C1.3 报名候补现已完成独立本地切片及[验收记录](C1-SIGNUP-ACCEPTANCE.md)，当前 Cloudflare 回归为 **49／49**。修改训练预览已读取真实确认／候补人数并绑定当前 `signup_version`。C1.4–C1.6 的排座、冻结历史、完整迁移回归和远端 staging 验收尚未开始；默认赛季修改、赛季激活、Google 双向同步、浏览器 CORS 和 Pages 路由仍不在本切片。
+C1.3 报名候补及 C1.4 排座现已完成独立本地切片及[报名验收](C1-SIGNUP-ACCEPTANCE.md)和[排座验收](C1-SEATING-ACCEPTANCE.md)，当前 Cloudflare 回归为 **59／59**。修改训练预览已读取真实确认／候补人数并绑定当前 `signup_version`。C1.5–C1.6 的冻结历史、完整迁移回归和远端 staging 验收尚未开始；默认赛季修改、赛季激活、Google 双向同步、浏览器 CORS 和 Pages 路由仍不在本切片。
 
 本轮只使用虚构 Coach、赛季、地点和时间，没有迁入真实成员或 Code，没有配置新 secrets，也没有部署 Worker。现有生产 Apps Script、Pages API 和 Google 文件均未改变。

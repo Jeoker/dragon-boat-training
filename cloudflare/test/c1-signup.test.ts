@@ -137,7 +137,8 @@ describe("C1.3 signup and waitlist migration slice", () => {
     });
     const view = await practice(fixture, "schema");
     expect(view).toMatchObject({ signup_version: 0, signup_open: true, management_signup_open: true,
-      counts: { confirmed: 0, waitlisted: 0 }, signups: [], seat_plan: null });
+      counts: { confirmed: 0, waitlisted: 0 }, signups: [],
+      seat_plan: { status: "UNPUBLISHED", published_revision: 0, seats: [] } });
   });
 
   it("never exceeds the last seat and returns a current view with deterministic promotion", async () => {
