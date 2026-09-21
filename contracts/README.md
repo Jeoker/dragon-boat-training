@@ -4,9 +4,9 @@
 
 - [api-v1.json](api-v1.json)：现行 Apps Script 动作、权限、输入和输出清单。
 - [api-cloudflare-c0.json](api-cloudflare-c0.json)：Cloudflare C0 隔离测试接口，不是生产报名 API。
-- [api-cloudflare-c1.json](api-cloudflare-c1.json)：C1 核心赛季、成员与权限切片的隔离接口。
+- [api-cloudflare-c1.json](api-cloudflare-c1.json)：C1 核心、权限与排期切片的隔离接口。
 
-这些 JSON 文件是接口清单，不是可交给 JSON Schema 验证器执行的 schema。C1 的 TypeScript DTO、动作注册和运行时解析在 `shared/c1-contract.ts`；服务端业务校验及客户端响应校验继续独立承担相应边界。测试核对代码与清单中的动作、方法和权限声明一致。不能把字段清单当成完整的类型或权限校验。
+这些 JSON 文件是接口清单，不是可交给 JSON Schema 验证器执行的 schema。C1 的动作注册在 `shared/c1-actions.ts`，核心与排期 DTO／运行时解析分别在 `shared/c1-contract.ts` 和 `shared/c1-schedule-contract.ts`；服务端业务校验及客户端响应校验继续独立承担相应边界。测试核对代码与清单中的动作、方法和权限声明一致。不能把字段清单当成完整的类型或权限校验。C1 影子导入的 `transport_only` 表示本地／staging 隔离入口只使用统一的 `C1_TEST_KEY` 传输门；当前没有第二个未实现的 migration key，production 入口仍固定隐藏。
 
 ## 请求边界
 

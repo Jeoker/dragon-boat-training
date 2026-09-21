@@ -2,8 +2,9 @@ import { DurableObject } from "cloudflare:workers";
 import { sha256Base64Url } from "./crypto";
 import { ApiError, apiFailure, apiSuccess, optionalBoolean, optionalInteger, readJsonObject, requireRequestId, requireString } from "./http";
 import { APPLICATION_SCHEMA_VERSION, applySchema } from "./schema";
-import { C1_ACTIONS, C1_CONTRACT_VERSION } from "../../shared/c1-contract";
+import { C1_ACTIONS, C1_CONTRACT_VERSION, C1_SCHEDULE_ACTIONS } from "../../shared/c1-actions";
 import { C1Service } from "./c1-service";
+import { C1ScheduleService } from "./c1-schedule-service";
 
 interface C0CommitInput {
   requestId: string;
@@ -19,6 +20,7 @@ interface C0CommitInput {
 
 interface ClaimedJob {
   job_id: string;
+  job_type: string;
   payload_json: string;
   attempt_count: number;
   lease_token: string;
@@ -71,11 +73,19 @@ export class TeamState extends DurableObject<Env> {
         return apiSuccess(new C1Service(this.ctx, this.env).publicRoster(url.searchParams.get("season_id") || ""),
           this.env, requestId, C1_CONTRACT_VERSION);
       }
+      if (isC1 && request.method === "GET" && url.pathname === "/internal/c1/public-schedule") {
+        requestId = requireRequestId({ request_id: url.searchParams.get("request_id") });
+        return apiSuccess(new C1ScheduleService(this.ctx, this.env)
+          .publicSchedule(url.searchParams.get("season_id") || ""), this.env, requestId, C1_CONTRACT_VERSION);
+      }
       if (isC1 && request.method === "POST") {
         const input = await readJsonObject(request);
         requestId = requireRequestId(input);
-        return apiSuccess(await new C1Service(this.ctx, this.env).handle(url.pathname, input),
-          this.env, requestId, C1_CONTRACT_VERSION);
+        const data = Object.hasOwn(C1_SCHEDULE_ACTIONS, url.pathname)
+          ? await new C1ScheduleService(this.ctx, this.env).handle(url.pathname, input)
+          : await new C1Service(this.ctx, this.env).handle(url.pathname, input);
+        await this.ensureNextAlarm();
+        return apiSuccess(data, this.env, requestId, C1_CONTRACT_VERSION);
       }
       throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
     } catch (error) {
@@ -88,7 +98,7 @@ export class TeamState extends DurableObject<Env> {
       const jobs = this.claimDueJobs(Date.now(), JOB_BATCH_LIMIT);
       for (const job of jobs) await this.processClaimedJob(job);
     } catch (error) {
-      console.error("C0 alarm batch failed", error instanceof Error ? error.message : "unknown error");
+      console.error("Alarm batch failed", error instanceof Error ? error.message : "unknown error");
     } finally {
       await this.ensureNextAlarm();
     }
@@ -233,10 +243,11 @@ export class TeamState extends DurableObject<Env> {
       const rows = this.ctx.storage.sql
         .exec<{
           job_id: string;
+          job_type: string;
           payload_json: string;
           attempt_count: number;
         }>(
-          `SELECT job_id, payload_json, attempt_count
+          `SELECT job_id, job_type, payload_json, attempt_count
              FROM scheduled_jobs
             WHERE (status = 'PENDING' AND due_at_ms <= ?)
                OR (status = 'RUNNING' AND lease_until_ms <= ?)
@@ -263,6 +274,7 @@ export class TeamState extends DurableObject<Env> {
         ).toArray();
         return {
           job_id: row.job_id,
+          job_type: String(row.job_type),
           payload_json: row.payload_json,
           attempt_count: nextAttempt,
           lease_token: leaseToken
@@ -273,11 +285,15 @@ export class TeamState extends DurableObject<Env> {
 
   private async processClaimedJob(job: ClaimedJob): Promise<void> {
     const payload = JSON.parse(job.payload_json) as JobPayload;
+    let outboxId: string | null = null;
     try {
-      await Promise.resolve();
-      if (job.attempt_count <= payload.fail_attempts) {
-        throw new Error("Simulated downstream failure.");
-      }
+      if (job.job_type === "OPEN_TRAINING_WEEK") {
+        await new C1ScheduleService(this.ctx, this.env).publishDueWeek(JSON.parse(job.payload_json));
+      } else if (job.job_type === "C0_MOCK_SYNC") {
+        await Promise.resolve();
+        if (job.attempt_count <= payload.fail_attempts) throw new Error("Simulated downstream failure.");
+        outboxId = payload.outbox_id;
+      } else throw new Error(`Unsupported scheduled job type ${job.job_type}.`);
       const completedAt = new Date().toISOString();
       this.ctx.storage.transactionSync(() => {
         const current = this.ctx.storage.sql
@@ -296,18 +312,14 @@ export class TeamState extends DurableObject<Env> {
           completedAt,
           job.job_id
         ).toArray();
-        this.ctx.storage.sql.exec(
-          `UPDATE sync_outbox
-              SET status = 'CONFIRMED', attempt_count = ?, completed_at = ?, last_error = ''
-            WHERE outbox_id = ?`,
-          job.attempt_count,
-          completedAt,
-          payload.outbox_id
-        ).toArray();
+        if (outboxId) this.ctx.storage.sql.exec(
+          `UPDATE sync_outbox SET status = 'CONFIRMED', attempt_count = ?, completed_at = ?, last_error = ''
+            WHERE outbox_id = ?`, job.attempt_count, completedAt, outboxId).toArray();
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown downstream failure.";
-      const retryAt = Date.now() + payload.retry_delay_ms;
+      const retryDelayMs = job.job_type === "OPEN_TRAINING_WEEK" ? RECOVERY_ALARM_MS : payload.retry_delay_ms;
+      const retryAt = Date.now() + retryDelayMs;
       this.ctx.storage.transactionSync(() => {
         const current = this.ctx.storage.sql
           .exec<{ lease_token: string; status: string }>(
@@ -326,14 +338,9 @@ export class TeamState extends DurableObject<Env> {
           message,
           job.job_id
         ).toArray();
-        this.ctx.storage.sql.exec(
-          `UPDATE sync_outbox
-              SET attempt_count = ?, last_error = ?
-            WHERE outbox_id = ?`,
-          job.attempt_count,
-          message,
-          payload.outbox_id
-        ).toArray();
+        if (outboxId) this.ctx.storage.sql.exec(
+          `UPDATE sync_outbox SET attempt_count = ?, last_error = ? WHERE outbox_id = ?`,
+          job.attempt_count, message, outboxId).toArray();
       });
     }
   }

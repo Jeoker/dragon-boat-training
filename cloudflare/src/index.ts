@@ -1,7 +1,7 @@
 import { constantTimeEqual } from "./crypto";
 import { callGoogleBridgeProbe, type C0BridgeProbeScenario } from "./bridge";
 import { ApiError, apiFailure, apiSuccess, readJsonObject, requireRequestId, requireString } from "./http";
-import { C1_CONTRACT_VERSION } from "../../shared/c1-contract";
+import { C1_CONTRACT_VERSION } from "../../shared/c1-actions";
 export { TeamState } from "./team-state";
 
 function requireInternalAccess(request: Request, env: Env, generation: "C0" | "C1"): void {

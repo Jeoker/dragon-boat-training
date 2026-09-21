@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { C1_ACTIONS, C1_CONTRACT_VERSION } from "../../shared/c1-contract";
+import { C1_ACTIONS, C1_CONTRACT_VERSION } from "../../shared/c1-actions";
 import { canonicalJson, seasonEndsAt } from "../../shared/c1-rules";
 import { legacyCredentialDigest } from "../src/crypto";
 import { applySchema, APPLICATION_SCHEMA_VERSION } from "../src/schema";
@@ -73,7 +73,7 @@ async function importAndLogin(prefix: string) {
 
 describe("C1 contract and core business slice", () => {
   it("defines executable action schemas and correct DST-aware season boundaries", () => {
-    expect(Object.keys(C1_ACTIONS)).toHaveLength(7);
+    expect(Object.keys(C1_ACTIONS)).toHaveLength(19);
     expect(seasonEndsAt("2026-03-07", "America/New_York")).toBe("2026-03-08T05:00:00.000Z");
     expect(seasonEndsAt("2026-03-08", "America/New_York")).toBe("2026-03-09T04:00:00.000Z");
     expect(canonicalJson({ z: 1, a: { y: 2, x: 3 } })).toBe('{"a":{"x":3,"y":2},"z":1}');

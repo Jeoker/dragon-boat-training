@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 2;
+export const APPLICATION_SCHEMA_VERSION = 3;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -81,6 +81,68 @@ function applyC1CoreSchema(sql: SqlStorage): void {
   `).toArray();
 }
 
+function applyC1ScheduleSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS schedule_templates (
+      season_id TEXT NOT NULL, template_id TEXT NOT NULL,
+      day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
+      start_time TEXT NOT NULL, end_time TEXT NOT NULL, timezone TEXT NOT NULL,
+      location TEXT NOT NULL, address TEXT NOT NULL, map_url TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL CHECK (active IN (0, 1)),
+      template_version INTEGER NOT NULL CHECK (template_version >= 1),
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, template_id),
+      FOREIGN KEY (season_id) REFERENCES seasons(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS schedule_templates_active_idx
+      ON schedule_templates(season_id, active, day_of_week, start_time, template_id);
+    CREATE TABLE IF NOT EXISTS training_weeks (
+      season_id TEXT NOT NULL, week_id TEXT NOT NULL, week_start_date TEXT NOT NULL,
+      scheduled_open_at TEXT, status TEXT NOT NULL CHECK (status IN ('DRAFT', 'SCHEDULED', 'OPENED')),
+      week_version INTEGER NOT NULL CHECK (week_version >= 1), confirmed_version INTEGER,
+      confirmed_by TEXT, confirmed_at TEXT, published_at TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, week_id), UNIQUE (season_id, week_start_date),
+      FOREIGN KEY (season_id) REFERENCES seasons(season_id),
+      FOREIGN KEY (confirmed_by) REFERENCES coaches(coach_id)
+    );
+    CREATE INDEX IF NOT EXISTS training_weeks_status_idx
+      ON training_weeks(season_id, status, scheduled_open_at, week_start_date);
+    CREATE TABLE IF NOT EXISTS practices (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL, week_id TEXT NOT NULL,
+      template_id TEXT, generation_key TEXT,
+      start_at TEXT NOT NULL, end_at TEXT NOT NULL, timezone TEXT NOT NULL,
+      location TEXT NOT NULL, address TEXT NOT NULL, map_url TEXT NOT NULL DEFAULT '',
+      left_capacity INTEGER NOT NULL CHECK (left_capacity >= 1),
+      right_capacity INTEGER NOT NULL CHECK (right_capacity >= 1),
+      signup_cutoff_at TEXT NOT NULL,
+      practice_version INTEGER NOT NULL CHECK (practice_version >= 1),
+      cancelled_at TEXT, cancelled_by TEXT, schedule_published_at TEXT, schedule_published_by TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id), UNIQUE (season_id, generation_key),
+      FOREIGN KEY (season_id, week_id) REFERENCES training_weeks(season_id, week_id),
+      FOREIGN KEY (cancelled_by) REFERENCES coaches(coach_id),
+      FOREIGN KEY (schedule_published_by) REFERENCES coaches(coach_id)
+    );
+    CREATE INDEX IF NOT EXISTS practices_week_idx ON practices(season_id, week_id, start_at, practice_id);
+    CREATE INDEX IF NOT EXISTS practices_public_idx
+      ON practices(season_id, schedule_published_at, cancelled_at, start_at, practice_id);
+    CREATE TABLE IF NOT EXISTS practice_versions (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      signup_version INTEGER NOT NULL DEFAULT 0 CHECK (signup_version >= 0),
+      seat_plan_version INTEGER NOT NULL DEFAULT 0 CHECK (seat_plan_version >= 0),
+      published_revision INTEGER NOT NULL DEFAULT 0 CHECK (published_revision >= 0),
+      PRIMARY KEY (season_id, practice_id),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id)
+    );
+    CREATE TABLE IF NOT EXISTS schedule_migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+  `).toArray();
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -93,6 +155,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     }
     if (currentVersion < 1) applyC0Schema(sql);
     if (currentVersion < 2) applyC1CoreSchema(sql);
+    if (currentVersion < 3) applyC1ScheduleSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

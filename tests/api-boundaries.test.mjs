@@ -20,7 +20,7 @@ test("every production action and HTTP method matches the executable route regis
 
 test("the C1 manifest matches its executable action registry", async () => {
   const contract = JSON.parse(await readFile(new URL("../contracts/api-cloudflare-c1.json", import.meta.url), "utf8"));
-  const source = await readFile(new URL("../shared/c1-contract.ts", import.meta.url), "utf8");
+  const source = await readFile(new URL("../shared/c1-actions.ts", import.meta.url), "utf8");
   const javascript = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
   }).outputText;

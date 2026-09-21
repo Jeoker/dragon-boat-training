@@ -1,14 +1,4 @@
-export const C1_CONTRACT_VERSION = "2026-09-20.c1";
-
-export const C1_ACTIONS = {
-  "/internal/c1/import-core": { method: "POST", authentication: "migration_key", writes: true },
-  "/internal/c1/coach-login": { method: "POST", authentication: "coach_code", writes: true },
-  "/internal/c1/coach-logout": { method: "POST", authentication: "session_token", writes: true },
-  "/internal/c1/coach-bootstrap": { method: "POST", authentication: "session_token", writes: false },
-  "/internal/c1/create-season": { method: "POST", authentication: "session_token", writes: true },
-  "/internal/c1/update-member": { method: "POST", authentication: "session_token", writes: true },
-  "/internal/c1/public-roster": { method: "GET", authentication: "public", writes: false }
-} as const;
+export { C1_CONTRACT_VERSION, C1_CORE_ACTIONS } from "./c1-actions";
 
 export type SeasonStatus = "DRAFT" | "OPEN" | "COMPLETED" | "ARCHIVED";
 export type MemberStatus = "ACTIVE" | "INACTIVE";
@@ -97,16 +87,16 @@ export class ContractValidationError extends Error {
   }
 }
 
-type Input = Record<string, unknown>;
+export type Input = Record<string, unknown>;
 
-function object(value: unknown, field = "request"): Input {
+export function object(value: unknown, field = "request"): Input {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ContractValidationError(`${field} must be an object.`, field);
   }
   return value as Input;
 }
 
-function string(input: Input, field: string, minimum: number, maximum: number): string {
+export function string(input: Input, field: string, minimum: number, maximum: number): string {
   if (typeof input[field] !== "string") {
     throw new ContractValidationError(`${field} must be a string.`, field);
   }
@@ -117,7 +107,7 @@ function string(input: Input, field: string, minimum: number, maximum: number): 
   return value;
 }
 
-function integer(input: Input, field: string, minimum = 0): number {
+export function integer(input: Input, field: string, minimum = 0): number {
   const value = input[field];
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) {
     throw new ContractValidationError(`${field} must be an integer of at least ${minimum}.`, field);
@@ -125,12 +115,12 @@ function integer(input: Input, field: string, minimum = 0): number {
   return value;
 }
 
-function boolean(input: Input, field: string): boolean {
+export function boolean(input: Input, field: string): boolean {
   if (typeof input[field] !== "boolean") throw new ContractValidationError(`${field} must be a boolean.`, field);
   return input[field];
 }
 
-function enumeration<T extends string>(input: Input, field: string, allowed: readonly T[]): T {
+export function enumeration<T extends string>(input: Input, field: string, allowed: readonly T[]): T {
   const value = input[field];
   if (typeof value !== "string" || !allowed.includes(value as T)) {
     throw new ContractValidationError(`${field} must be one of ${allowed.join(", ")}.`, field);
@@ -138,7 +128,7 @@ function enumeration<T extends string>(input: Input, field: string, allowed: rea
   return value as T;
 }
 
-function identifier(input: Input, field: string): string {
+export function identifier(input: Input, field: string): string {
   const value = string(input, field, 8, 128);
   if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
     throw new ContractValidationError(`${field} contains unsupported characters.`, field);
@@ -146,18 +136,21 @@ function identifier(input: Input, field: string): string {
   return value;
 }
 
-function nullableIdentifier(input: Input, field: string): string | null {
+export function nullableIdentifier(input: Input, field: string): string | null {
   if (input[field] === null) return null;
   return identifier(input, field);
 }
 
-function isoTimestamp(input: Input, field: string): string {
+export function isoTimestamp(input: Input, field: string): string {
   const value = string(input, field, 20, 40);
-  if (!Number.isFinite(Date.parse(value))) throw new ContractValidationError(`${field} must be an ISO timestamp.`, field);
-  return value;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(value) ||
+      !Number.isFinite(Date.parse(value))) {
+    throw new ContractValidationError(`${field} must be an ISO timestamp with a time zone.`, field);
+  }
+  return new Date(value).toISOString();
 }
 
-function date(input: Input, field: string): string {
+export function date(input: Input, field: string): string {
   const value = string(input, field, 10, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(value) || new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) !== value) {
     throw new ContractValidationError(`${field} must be a real YYYY-MM-DD date.`, field);
@@ -165,7 +158,7 @@ function date(input: Input, field: string): string {
   return value;
 }
 
-function array(input: Input, field: string, maximum: number): unknown[] {
+export function array(input: Input, field: string, maximum: number): unknown[] {
   const value = input[field];
   if (!Array.isArray(value) || value.length > maximum) {
     throw new ContractValidationError(`${field} must be an array with at most ${maximum} entries.`, field);
@@ -173,13 +166,13 @@ function array(input: Input, field: string, maximum: number): unknown[] {
   return value;
 }
 
-function requestId(input: Input): string {
+export function requestId(input: Input): string {
   const value = identifier(input, "request_id");
   if (value.length < 8) throw new ContractValidationError("request_id is invalid.", "request_id");
   return value;
 }
 
-function sessionRequest(value: unknown): SessionRequest {
+export function sessionRequest(value: unknown): SessionRequest {
   const input = object(value);
   return { request_id: requestId(input), session_token: string(input, "session_token", 32, 2048) };
 }

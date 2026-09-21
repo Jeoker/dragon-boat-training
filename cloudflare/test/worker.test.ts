@@ -17,7 +17,7 @@ describe("Cloudflare C0 Worker", () => {
       meta: {
         contract_version: "2026-09-19.c0",
         backend_instance: "dragon-boat-training-staging",
-        backend_generation: "cf-c1-staging-1",
+      backend_generation: "cf-c1-staging-2",
         writer_epoch: 0,
         environment: "staging"
       }

@@ -9,10 +9,10 @@
   },
   "vars": {
     "ENVIRONMENT": "staging",
-    "SERVICE_VERSION": "0.2.0-c1-core",
+    "SERVICE_VERSION": "0.3.0-c1-schedule",
     "CONTRACT_VERSION": "2026-09-19.c0",
     "BACKEND_INSTANCE": "dragon-boat-training-staging",
-    "BACKEND_GENERATION": "cf-c1-staging-1",
+    "BACKEND_GENERATION": "cf-c1-staging-2",
     "WRITER_EPOCH": "0",
     "TEAM_ID": "pentasus"
   },

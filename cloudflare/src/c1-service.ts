@@ -10,11 +10,17 @@ import {
   legacyCredentialDigest, sha256Base64Url
 } from "./crypto";
 
-interface AuthenticatedCoach {
+export interface AuthenticatedCoach {
   coach_id: string;
   display_name: string;
   credential_version: number;
   session_id: string;
+}
+
+export interface C1RequestIdentity {
+  requestKey: string;
+  payloadDigest: string;
+  eventId: string;
 }
 
 type SqlRow = Record<string, SqlStorageValue>;
@@ -33,8 +39,9 @@ function requiredSecret(value: string | undefined, name: string): string {
   return value;
 }
 
-function one<T extends Record<string, SqlStorageValue>>(sql: SqlStorage, query: string, ...bindings: any[]): T | null {
-  return sql.exec<T>(query, ...bindings).toArray()[0] ?? null;
+function one<T extends Record<string, SqlStorageValue>>(sql: SqlStorage, query: string,
+  ...bindings: unknown[]): T | null {
+  return sql.exec<T>(query, ...(bindings as SqlStorageValue[])).toArray()[0] ?? null;
 }
 
 function operation(action: string, requestId: string, committedAt: string): Record<string, unknown> {
@@ -99,15 +106,14 @@ export class C1Service {
     return { season: seasonProjection(season), members, generated_at: new Date().toISOString() };
   }
 
-  private async requestIdentity(actorScope: string, action: string, requestId: string, payload: unknown): Promise<{
-    requestKey: string; payloadDigest: string; eventId: string;
-  }> {
+  async createRequestIdentity(actorScope: string, action: string, requestId: string,
+    payload: unknown): Promise<C1RequestIdentity> {
     const requestKey = `req_v2_${await sha256Base64Url(`${this.env.TEAM_ID}\n${actorScope}\n${action}\n${requestId}`)}`;
     const payloadDigest = `sha256_v1:${await sha256Base64Url(canonicalJson(payload))}`;
     return { requestKey, payloadDigest, eventId: `event_${await sha256Base64Url(`${requestKey}\nsucceeded`)}` };
   }
 
-  private replay(requestKey: string, payloadDigest: string): Record<string, unknown> | null {
+  replayRequest(requestKey: string, payloadDigest: string): Record<string, unknown> | null {
     const existing = one<SqlRow>(this.ctx.storage.sql,
       "SELECT payload_digest, result_json FROM system_requests WHERE request_key = ?", requestKey);
     if (!existing) return null;
@@ -117,7 +123,7 @@ export class C1Service {
     return JSON.parse(String(existing.result_json)) as Record<string, unknown>;
   }
 
-  private persistRequest(identity: { requestKey: string; payloadDigest: string; eventId: string }, actorScope: string,
+  recordRequest(identity: C1RequestIdentity, actorScope: string,
     action: string, requestId: string, result: Record<string, unknown>, details: Record<string, unknown>, at: string): void {
     const sql = this.ctx.storage.sql;
     sql.exec(
@@ -131,11 +137,13 @@ export class C1Service {
     ).toArray();
   }
 
-  private enqueueCoreChange(identity: { requestKey: string }, action: string, entity: Record<string, unknown>, at: string): void {
+  enqueueChange(identity: Pick<C1RequestIdentity, "requestKey">, topic: string, action: string,
+    entity: Record<string, unknown>, at: string): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO sync_outbox(outbox_id, request_key, topic, payload_json, status, due_at_ms, created_at)
-       VALUES (?, ?, 'CORE_CHANGED', ?, 'PENDING', ?, ?)`,
-      `out_${identity.requestKey.slice(7)}`, identity.requestKey, JSON.stringify({ action, entity }), Date.parse(at) + 600_000, at
+       VALUES (?, ?, ?, ?, 'PENDING', ?, ?)`,
+      `out_${identity.requestKey.slice(7)}`, identity.requestKey, topic,
+      JSON.stringify({ action, entity }), Date.parse(at) + 600_000, at
     ).toArray();
   }
 
@@ -201,8 +209,8 @@ export class C1Service {
     const input = validation(() => parseImportCoreSnapshot(raw));
     this.validateImportGraph(input);
     const { request_id: _requestId, ...snapshotPayload } = input;
-    const identity = await this.requestIdentity("C1:MIGRATION", "importCoreSnapshot", input.request_id, snapshotPayload);
-    const replay = this.replay(identity.requestKey, identity.payloadDigest);
+    const identity = await this.createRequestIdentity("C1:MIGRATION", "importCoreSnapshot", input.request_id, snapshotPayload);
+    const replay = this.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
     const priorSnapshot = one<{ payload_digest: string }>(this.ctx.storage.sql,
       "SELECT payload_digest FROM migration_snapshots WHERE source_snapshot_id = ?", input.source_snapshot_id);
@@ -234,7 +242,7 @@ export class C1Service {
            settings_version=excluded.settings_version, updated_at=excluded.updated_at`,
         JSON.stringify(input.default_season_id), input.settings_version, importedAt
       ).toArray();
-      this.persistRequest(identity, "C1:MIGRATION", "importCoreSnapshot", input.request_id, result,
+      this.recordRequest(identity, "C1:MIGRATION", "importCoreSnapshot", input.request_id, result,
         { source_snapshot_id: input.source_snapshot_id, counts: result.result }, importedAt);
       this.ctx.storage.sql.exec(
         `INSERT INTO migration_snapshots(source_snapshot_id, payload_digest, imported_at, request_key)
@@ -307,8 +315,8 @@ export class C1Service {
     if (!coach || matches !== 1) throw new ApiError("COACH_CODE_INVALID", "The Coach Code is not valid.", 401);
     const actor = String(coach.coach_id);
     const credentialDigest = await legacyCredentialDigest(String(coach.code_salt), input.coach_code, secret);
-    const identity = await this.requestIdentity(actor, "coachLogin", input.request_id, { coach_code_digest: credentialDigest });
-    const replay = this.replay(identity.requestKey, identity.payloadDigest);
+    const identity = await this.createRequestIdentity(actor, "coachLogin", input.request_id, { coach_code_digest: credentialDigest });
+    const replay = this.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return this.loginResponse(replay);
     const now = new Date();
     const ttl = Number(this.env.COACH_SESSION_TTL_SECONDS || 28_800);
@@ -336,7 +344,7 @@ export class C1Service {
         metadata.result.session_id, actor, metadata.result.credential_version, metadata.result.issued_at,
         metadata.result.expires_at, this.env.BACKEND_GENERATION, Number(this.env.WRITER_EPOCH)
       ).toArray();
-      this.persistRequest(identity, actor, "coachLogin", input.request_id, metadata,
+      this.recordRequest(identity, actor, "coachLogin", input.request_id, metadata,
         { session_id: metadata.result.session_id, expires_at: metadata.result.expires_at }, now.toISOString());
     });
     return this.loginResponse(metadata);
@@ -353,7 +361,7 @@ export class C1Service {
     if (row.revoked_at) throw new ApiError("SESSION_REVOKED", "The Coach session was revoked.", 401);
     if (Date.parse(String(row.expires_at)) <= Date.now()) throw new ApiError("SESSION_EXPIRED", "The Coach session expired.", 401);
     const token = await this.signSession(row);
-    this.assertAuthenticatedCoach({ coach_id: String(coach.coach_id), display_name: String(coach.display_name),
+    this.assertSessionCurrent({ coach_id: String(coach.coach_id), display_name: String(coach.display_name),
       credential_version: Number(coach.credential_version), session_id: String(row.session_id) });
     return {
       ...metadata,
@@ -370,7 +378,7 @@ export class C1Service {
     return `${payload}.${await hmacSha256Base64Url(payload, requiredSecret(this.env.SESSION_SECRET, "SESSION_SECRET"))}`;
   }
 
-  private async authenticate(token: string, allowRevoked = false): Promise<AuthenticatedCoach> {
+  async authenticateSession(token: string, allowRevoked = false): Promise<AuthenticatedCoach> {
     const parts = token.split(".");
     if (parts.length !== 2 || !parts[0] || !parts[1]) throw new ApiError("SESSION_INVALID", "The Coach session is invalid.", 401);
     const expected = await hmacSha256Base64Url(parts[0], requiredSecret(this.env.SESSION_SECRET, "SESSION_SECRET"));
@@ -394,7 +402,7 @@ export class C1Service {
       credential_version: Number(coach.credential_version), session_id: String(session.session_id) };
   }
 
-  private assertAuthenticatedCoach(auth: AuthenticatedCoach): void {
+  assertSessionCurrent(auth: AuthenticatedCoach): void {
     const session = one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coach_sessions WHERE session_id = ?", auth.session_id);
     const coach = session && one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coaches WHERE coach_id = ?", auth.coach_id);
     if (!session || !coach || session.revoked_at || Number(coach.active) !== 1 ||
@@ -411,15 +419,15 @@ export class C1Service {
 
   private async logout(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     const input = validation(() => parseSessionRequest(raw));
-    const auth = await this.authenticate(input.session_token, true);
-    const identity = await this.requestIdentity(auth.coach_id, "coachLogout", input.request_id, { session_id: auth.session_id });
-    const replay = this.replay(identity.requestKey, identity.payloadDigest);
+    const auth = await this.authenticateSession(input.session_token, true);
+    const identity = await this.createRequestIdentity(auth.coach_id, "coachLogout", input.request_id, { session_id: auth.session_id });
+    const replay = this.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
     const at = new Date().toISOString();
     const result = { operation: operation("coachLogout", input.request_id, at), result: { logged_out: true } };
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec("UPDATE coach_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE session_id = ?", at, auth.session_id).toArray();
-      this.persistRequest(identity, auth.coach_id, "coachLogout", input.request_id, result,
+      this.recordRequest(identity, auth.coach_id, "coachLogout", input.request_id, result,
         { session_id: auth.session_id }, at);
     });
     return result;
@@ -427,7 +435,7 @@ export class C1Service {
 
   private async bootstrap(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     const input = validation(() => parseSessionRequest(raw));
-    const auth = await this.authenticate(input.session_token);
+    const auth = await this.authenticateSession(input.session_token);
     const sql = this.ctx.storage.sql;
     const setting = one<{ value_json: string; settings_version: number }>(sql,
       "SELECT value_json, settings_version FROM settings WHERE setting_key = 'default_season_id'");
@@ -442,12 +450,12 @@ export class C1Service {
 
   private async createSeason(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     const input = validation(() => parseCreateSeason(raw));
-    const auth = await this.authenticate(input.session_token);
+    const auth = await this.authenticateSession(input.session_token);
     if (input.start_date > input.end_date) throw new ApiError("INVALID_REQUEST", "A season cannot end before it starts.");
     const boundary = validation(() => seasonEndsAt(input.end_date, input.timezone));
     const payload = { name: input.name, start_date: input.start_date, end_date: input.end_date, timezone: input.timezone };
-    const identity = await this.requestIdentity(auth.coach_id, "createSeason", input.request_id, payload);
-    const replay = this.replay(identity.requestKey, identity.payloadDigest);
+    const identity = await this.createRequestIdentity(auth.coach_id, "createSeason", input.request_id, payload);
+    const replay = this.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
     const at = new Date().toISOString();
     const season = {
@@ -457,33 +465,33 @@ export class C1Service {
     };
     const result = { operation: operation("createSeason", input.request_id, at), result: { season } };
     this.ctx.storage.transactionSync(() => {
-      this.assertAuthenticatedCoach(auth);
+      this.assertSessionCurrent(auth);
       this.ctx.storage.sql.exec(
         `INSERT INTO seasons VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', 0, 1, 0, ?, ?, ?)`,
         season.season_id, season.name, season.start_date, season.end_date, season.timezone,
         season.season_ends_at, auth.coach_id, at, at
       ).toArray();
-      this.persistRequest(identity, auth.coach_id, "createSeason", input.request_id, result,
+      this.recordRequest(identity, auth.coach_id, "createSeason", input.request_id, result,
         { season_id: season.season_id }, at);
-      this.enqueueCoreChange(identity, "createSeason", { season_id: season.season_id }, at);
+      this.enqueueChange(identity, "CORE_CHANGED", "createSeason", { season_id: season.season_id }, at);
     });
     return result;
   }
 
   private async updateMember(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     const input = validation(() => parseUpdateMember(raw));
-    const auth = await this.authenticate(input.session_token);
+    const auth = await this.authenticateSession(input.session_token);
     const payload = { season_id: input.season_id, member_id: input.member_id, member_version: input.member_version,
       ...(input.display_name_override !== undefined ? { display_name_override: input.display_name_override } : {}),
       ...(input.default_preference !== undefined ? { default_preference: input.default_preference } : {}),
       ...(input.status !== undefined ? { status: input.status } : {}) };
-    const identity = await this.requestIdentity(auth.coach_id, "updateMember", input.request_id, payload);
-    const replay = this.replay(identity.requestKey, identity.payloadDigest);
+    const identity = await this.createRequestIdentity(auth.coach_id, "updateMember", input.request_id, payload);
+    const replay = this.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
     const at = new Date().toISOString();
     let result: Record<string, unknown> = {};
     this.ctx.storage.transactionSync(() => {
-      this.assertAuthenticatedCoach(auth);
+      this.assertSessionCurrent(auth);
       const season = one<SqlRow>(this.ctx.storage.sql, "SELECT * FROM seasons WHERE season_id = ?", input.season_id);
       const member = one<SqlRow>(this.ctx.storage.sql,
         "SELECT * FROM members WHERE season_id = ? AND member_id = ?", input.season_id, input.member_id);
@@ -511,9 +519,10 @@ export class C1Service {
         nextRoster, at, input.season_id).toArray();
       result = { operation: operation("updateMember", input.request_id, at),
         result: { season_id: input.season_id, roster_version: nextRoster, member: memberProjection(next) } };
-      this.persistRequest(identity, auth.coach_id, "updateMember", input.request_id, result,
+      this.recordRequest(identity, auth.coach_id, "updateMember", input.request_id, result,
         { season_id: input.season_id, member_id: input.member_id, member_version: next.member_version }, at);
-      this.enqueueCoreChange(identity, "updateMember", { season_id: input.season_id, member_id: input.member_id }, at);
+      this.enqueueChange(identity, "CORE_CHANGED", "updateMember",
+        { season_id: input.season_id, member_id: input.member_id }, at);
     });
     return result;
   }

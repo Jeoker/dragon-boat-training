@@ -1,9 +1,9 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C1 core local implementation; isolated migration API; not production",
+  "status": "C1.2 core and schedule local implementation; isolated migration API; not production",
   "contract_version": "2026-09-20.c1",
-  "service_version": "0.2.0-c1-core",
+  "service_version": "0.3.0-c1-schedule",
   "transport_gate": "Every /internal/c1 route is absent in production and requires C1_TEST_KEY in local or staging. This gate is separate from the business authentication declared per action.",
   "response": {
     "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
@@ -13,7 +13,7 @@
   "actions": {
     "/internal/c1/import-core": {
       "method": "POST",
-      "authentication": "migration_key",
+      "authentication": "transport_only",
       "writes": true,
       "request": ["request_id", "source_snapshot_id", "settings_version", "default_season_id", "coaches", "seasons", "members"],
       "notes": "Full core shadow snapshot. Preserves legacy Coach credential digests and stable IDs. Upserts only equal or newer entity versions; never interprets an omitted row as deletion; creates no Google outbox."
@@ -63,6 +63,98 @@
       "request_query": ["request_id", "season_id"],
       "response": ["season", "members", "generated_at"],
       "notes": "The isolated transport gate still applies. Only active member ID, effective display name, default preference and member version are projected."
+    },
+    "/internal/c1/import-schedule": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "templates", "weeks", "practices"],
+      "notes": "Full schedule shadow snapshot. Preserves stable IDs and versions, rejects reference drift, and never arms imported scheduled weeks. Omitted rows are not deletions."
+    },
+    "/internal/c1/schedule-workspace": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id"],
+      "response": ["season_id", "templates", "weeks", "practices", "generated_at"],
+      "notes": "Private management projection. It can include drafts and cancellation tombstones."
+    },
+    "/internal/c1/update-schedule-templates": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "season_version", "templates"],
+      "response_result": ["season_id", "season_version", "templates"]
+    },
+    "/internal/c1/prepare-training-week": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "season_version", "week_start_date"],
+      "response_result": ["season_id", "created", "week", "practices"],
+      "notes": "Creates one private Monday-based week from the active templates. Repeating with another request returns the existing authoritative week and never recreates removed instances."
+    },
+    "/internal/c1/confirm-training-week": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "week_version", "optional open_at or open_date plus open_time"],
+      "response_result": ["season_id", "week", "practices"],
+      "notes": "Opens immediately or commits a version-bound durable OPEN_TRAINING_WEEK job. A later edit invalidates the confirmation."
+    },
+    "/internal/c1/publish-training-week": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "week_version"],
+      "response_result": ["season_id", "week", "practices"],
+      "notes": "Manual due-week recovery path. The durable system task uses the same atomic publication transition."
+    },
+    "/internal/c1/create-practice": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "week_version", "practice_date", "start_time", "end_time", "optional timezone", "location", "address", "map_url"],
+      "response_result": ["season_id", "week", "practice"],
+      "notes": "Creates a private extra practice. In an opened week it requires a separate publication action."
+    },
+    "/internal/c1/publish-additional-practice": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "practice_id", "week_version", "practice_version"],
+      "response_result": ["season_id", "week", "practice"]
+    },
+    "/internal/c1/preview-practice-change": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "change", "for UPDATE: complete time, timezone and location fields"],
+      "response": ["season_id", "practice_id", "week_id", "season_version", "practice_version", "week_version", "signup_version", "preview_token", "before", "after", "cutoff_effect", "invalidates_week_confirmation"],
+      "notes": "The token binds the normalized proposal and every relevant version. Rescheduling retains the original publication week."
+    },
+    "/internal/c1/update-practice": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "practice_id", "week_version", "practice_version", "signup_version", "preview_token", "practice_date", "start_time", "end_time", "timezone", "location", "address", "map_url"],
+      "response_result": ["season_id", "week", "practice"]
+    },
+    "/internal/c1/cancel-practice": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "practice_id", "week_version", "practice_version", "signup_version", "preview_token"],
+      "response_result": ["season_id", "week", "practice"],
+      "notes": "Retains a private operational tombstone but removes the training and an otherwise empty week from public schedule projections."
+    },
+    "/internal/c1/public-schedule": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "season_id"],
+      "response": ["season_id", "weeks", "practices", "generated_at"],
+      "notes": "The isolated transport gate still applies. Draft, scheduled, unpublished and cancelled training is excluded."
     }
   },
   "errors": [
@@ -70,10 +162,14 @@
     "CONFIGURATION_ERROR", "IDEMPOTENCY_CONFLICT", "IMPORT_CONFLICT", "IMPORT_VERSION_REGRESSION",
     "IMPORT_SNAPSHOT_CONFLICT", "IMPORT_REFERENCE_MISSING", "COACH_CODE_INVALID", "SESSION_INVALID",
     "SESSION_EXPIRED", "SESSION_REVOKED", "SEASON_NOT_FOUND", "SEASON_NOT_OPEN", "SEASON_NOT_PUBLIC",
-    "MEMBER_NOT_FOUND", "VERSION_CONFLICT", "INTERNAL_ERROR"
+    "MEMBER_NOT_FOUND", "WEEK_NOT_FOUND", "WEEK_START_NOT_MONDAY", "WEEK_OUTSIDE_SEASON",
+    "SCHEDULE_TEMPLATES_REQUIRED", "WEEK_EMPTY", "WEEK_ALREADY_OPEN", "WEEK_NOT_DUE", "WEEK_NOT_OPEN",
+    "WEEK_NOT_EDITABLE", "OPEN_TIME_TOO_LATE", "PRACTICE_NOT_FOUND", "PRACTICE_OUTSIDE_WEEK",
+    "PRACTICE_OUTSIDE_SEASON", "PRACTICE_ALREADY_STARTED", "PRACTICE_CANCELLED",
+    "PRACTICE_NOT_PUBLISHABLE", "INVALID_TIME_RANGE", "PREVIEW_STALE", "INTERNAL_ERROR"
   ],
   "not_yet_in_this_slice": [
-    "season activation and Google binding", "default-season mutation", "schedule", "signup allocation", "seating",
+    "season activation and Google binding", "default-season mutation", "signup allocation", "seating",
     "freeze/history", "Google import/export execution", "production or Pages routing", "browser CORS"
   ]
 }
