@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { DragonBoatApiError } from "../frontend/lib/api-client.js";
+import { DragonBoatApiError, isUncertainWriteError } from "../frontend/lib/api-client.js";
 import { validPracticeView, olderPracticeView, usableRoster } from "../frontend/lib/current-view.js";
 import { renderSignupList, signupPreferenceLabels, signupResultText } from "../frontend/lib/signup-view.js";
 import { isPublicSeatPlan, renderSeatPlan, seatPlanSourceLabel } from "../frontend/lib/seat-plan-view.js";
@@ -83,7 +83,7 @@ function makeHarness({ post, readPractice, publishedPractices = [], seatPlan } =
     document,
     window: { location: { href: "http://localhost:4321/dragon-boat-training/?season_id=season_test&practice_id=practice_test" }, history: { replaceState() {} }, addEventListener() {}, setInterval() {} },
     URL, Intl, Date, console,
-    DragonBoatApiClient: Client, DragonBoatApiError,
+    DragonBoatApiClient: Client, DragonBoatApiError, isUncertainWriteError,
     createRequestId: () => `request_${state.posts.length + 1}`,
     loadRosterSnapshot: () => null, saveRosterSnapshot() {},
     renderSignupList, signupPreferenceLabels, signupResultText, isPublicSeatPlan, renderSeatPlan, seatPlanSourceLabel,

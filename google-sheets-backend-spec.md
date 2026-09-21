@@ -65,6 +65,8 @@ GitHub Pages 通过单一数据模块访问 Apps Script Web App 的 `doGet`／`d
 
 ## 接口契约
 
+输入类型、统一响应、结果与当前视图、重试和迁移兼容以 [API 边界约定](contracts/README.md)为准；已实现动作清单见 [api-v1.json](contracts/api-v1.json)。
+
 接口只接受定义过的业务动作及最小字段。除新建实体和首页默认解析外，请求携带明确的赛季及相关实体 ID；公共业务接口不能指定文件、Tab、范围或公式。文件标识仅在绑定接口接受并检查。地图 URL 仅允许 HTTP／HTTPS。
 
 | 范围 | 动作 | 返回或职责 |
@@ -76,15 +78,18 @@ GitHub Pages 通过单一数据模块访问 Apps Script Web App 的 `doGet`／`d
 | 队员写入 | `signup`、`updateSignup`、`cancelSignup` | 按姓名对应的成员 ID 操作，不要求身份或设备凭证；仍做实时业务校验 |
 | 管理会话 | `coachLogin`、`coachLogout` | 验证个人 Code、签发短期令牌或撤销当前会话 |
 | 管理读取 | `coachBootstrap`、`listSeasonMembers`、`listManagementAudit` | 管理配置、成员、草稿、同步状态及日志；审计按 `limit`／`cursor` 倒序分页，单页最多 100 条 |
-| 绑定检查 | `listConnectedSheets`、`validateSeasonBinding` | 候选文件或新链接的权限、对应关系、字段检查与导入预览 |
-| 赛季维护 | `createSeason`、`updateSeasonDraft`、`initializeSeason`、`updateSeasonSchedule`、`setDefaultSeason`、`retrySeasonArchive` | 连接就绪自动激活、维护有效季日期和默认入口、重试自动归档；不要求手动开放或手动结束赛季 |
+| 管理工作区 | `getSeasonManagement`、`getMemberWorkspace` | 按需返回排期配置或一致的成员／报名／排座当前视图，避免分开串行读取 |
+| 绑定检查 | `validateSeasonBinding` | 手动粘贴链接，检查权限、对应关系、字段和导入预览；每季独占运营 Spreadsheet，不复用系统或年度档案文件 |
+| 赛季维护 | `createSeason`、`initializeSeason`、`updateSeasonSchedule`、`setDefaultSeason`、`retrySeasonArchive` | 连接就绪自动激活、维护有效季日期和默认入口、重试自动归档；不要求手动开放或手动结束赛季 |
 | 周排期维护 | `updateScheduleTemplates`、`updateTrainingWeek`、`confirmTrainingWeek`、`publishTrainingWeek` | 维护模板、当周草稿和开放时间；首次整周发布核对管理确认及到点条件，确认时已到点可随即发布，否则定时执行 |
 | 训练维护 | `createPractice`、`updatePractice`、`cancelPractice` | 增补或修改日程、移除单次安排；取消只在运营数据中保留标记和审计，立即从普通公开投影移除且不进入归档，返回影响预览与最新数据 |
+| 训练变更预览 | `previewPracticeChange` | 只读检查修改或取消的影响，返回与当前版本绑定的预览令牌；后续写入必须重新核对 |
 | 增补发布 | `publishAdditionalPractice` | 在已开放周由管理人员确认并立即发布指定新增场次；仅追加该场次，不重发整周或公开其他草稿 |
 | 管理报名 | `signupByCoach`、`updateSignupByCoach`、`cancelSignupByCoach` | 训练结束前可用同一管理会话代报名、代改或取消，不受普通报名截止限制；结束后不再修改报名或触发递补 |
 | 队员维护 | `updateMember`、`restoreMemberName`、`setMemberStatus` | 按稳定 ID 修改资料并返回新版本 |
 | 排座维护 | `getSeatingWorkspace`、`saveSeatPlanDraft`、`publishSeatPlan` | 读取私有草稿与最新正式版；用完整快照保存移动、交换、角色设置及客户端撤销／重置结果；发布不可变手动 revision。`change_kind` 区分 `EDIT`、`UNDO`、`RESET_TO_PUBLISHED` |
 | 同步恢复 | `retrySeasonSync` | 受控重试失败导入，不绕过绑定检查或去重 |
+| 归档管理 | `getArchiveManagement`、`appendHistoryCorrection` | 读取归档进度，或按历史版本追加说明；不改写冻结快照 |
 
 写入携带 `action`、`request_id`、实体 ID 及所需版本；新建 ID 由后端产生，无训练关联的操作不要求 `practice_id`。管理请求包括受保护读取均通过 POST 请求体携带 `session_token`，不放入 URL。返回服务器时间、操作结果及受影响的新版本；错误区分权限、归属、状态、版本冲突、配置与可重试故障。
 
@@ -164,13 +169,13 @@ P1 排期管理使用 `P1M:` 请求范围及 `P1_MANAGEMENT` 确定计划。默�
 3. 通过后分步初始化系统 Tab、登记触发器、补导入已有响应并保存进度。不兼容的已有 Tab 停止处理，不覆盖；同一请求重试复用已建资源。
 4. 连接就绪前核对导入与触发器进度、绑定和未来结束边界；全部通过才在锁内自动激活赛季、记录事件，并在没有有效默认赛季时设置首页默认值。重试不重复激活或覆盖后来切换的默认值；失败仍为草稿。初始化和后续同步检查结构变化，不猜测新列。
 
-候选目录不承担权限审批。修改网站绑定不会调用 Form 的 `setDestination`；管理人员先在 Google Forms 中完成连接。绑定锁定规则见项目说明，源响应只追加、不排序、不删行。
+当前通过手动链接绑定，不提供文件候选目录。修改网站绑定不会调用 Form 的 `setDestination`；管理人员先在 Google Forms 中完成连接。绑定锁定规则见项目说明，源响应只追加、不排序、不删行。
 
 ### 事件路由与恢复
 
 采用绑定本季响应 Spreadsheet 的可安装 `onFormSubmit` 触发器，按事件源文件与响应 Tab 查找唯一赛季并核对绑定版本，不能按首页默认赛季路由。触发器由队伍后端账号安装运行，重复初始化复用登记记录；另设周期补扫修复失败或遗漏。
 
-来源提供稳定响应 ID 时优先用作 `source_key`；Sheets 提交事件采用文件 ID、Tab ID、受保护原始行号及提交时间的源映射。检测到历史行或映射改变时停止同步并人工核对，不按姓名猜测成员。触发器、初始化导入和补扫共享同一去重规则，覆盖初始化期间的新提交。
+现行 Apps Script 的 `source_key` 是绑定响应 Tab ID 与原始行号；同步和归档按稳定 Tab ID 查找，Tab 改名不改变绑定。导入前检查已导入行的行号、源键和原始姓名，发现可识别的移位、改名或删除时返回 `BINDING_RESPONSES_CHANGED` 并停止，不猜测成员身份。人工姓名修正使用 Coach Mode；不能声称此检查可以识别同名行交换或提供双向同步。C2 才按迁移计划引入 FormResponse 稳定 ID 与人工编辑冲突处理。触发器、初始化导入和补扫共享同一去重规则，覆盖初始化期间的新提交。
 
 只在未到赛季结束边界且允许导入的初始化阶段或开放赛季处理响应。正常新记录导入后生效；缺姓名、结构变化等技术问题进入失败项。重复同步保留人工修正和停用状态，无变化不创建新成员。成功变更推进名单版本。
 

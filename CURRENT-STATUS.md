@@ -1,10 +1,12 @@
 # 当前进度与接续入口
 
-> 更新：2026-09-19
+> 更新：2026-09-20
 
 > 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。下方产品状态仍以 2026-09-05 的验证记录为准，仓库拆分不等同于 Cloudflare 迁移或新的生产功能验收。
 
 > Cloudflare C0 更新：2026-09-19。C0 全部门槛已通过：隔离 staging 的 Worker／Durable Object、SQLite 持久化、真实 Apps Script 签名往返、负向范围、重复操作和 Free 计划用量入口均已验收。生产 Worker、GitHub Pages API 配置和 Apps Script 业务写入归属均未改变；下一阶段是 C1 业务迁移。
+
+> C1 前审查更新：2026-09-20。完成现有代码审查与本地修复，重点为 API 输入／响应、幂等恢复、赛季隔离、船位分配、日志分页和异步 UI。源码服务标记为 `0.9.1-api-review`，尚未部署，未开始 C1。详见[审查记录](tests/PRE-C1-CODE-REVIEW.md)及 [API 边界约定](contracts/README.md)。
 
 本文件记录当前交付状态、验证边界和下一步。第一次接手项目先读[项目总览](PROJECT-OVERVIEW.md)；产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
 
@@ -25,13 +27,13 @@
 - 线上 Apps Script 沿用原 Web App URL，当前为 **Version 14、服务 `0.9.0-p5-performance`**，契约保持 `2026-09-02.p2.1`。生产 `setupDragonBoatP4` 已幂等执行完成，`PublicHistorySeasons` 紧凑索引及维护触发器已建立或迁移。
 - P5 功能提交 **`38c9361`** 的 [Pages run 33999868687](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33999868687) 成功；三个正式页面均返回 HTTP 200，线上 HTML 与本地 P5 构建 SHA-256 一致。正式 health 返回 Version 14 的 `0.9.0-p5-performance`；公开历史空目录返回成功及分页字段。P4 的 [Pages run 33989665856](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33989665856) 继续作为上一阶段历史证据。
 - C0 源码与文档提交 **`4a55bb0`** 的 [Pages run 35486989400](https://github.com/Jeoker/dragon-boat-training/actions/runs/35486989400) 成功；队员页、Coach Mode、过往赛季页和 Cloudflare staging health 均返回 HTTP 200。该发布只保存 C0 代码与文档，没有改变三个页面的生产 API。
-- 本地现行应用与桥接 **162／162** 测试通过，Cloudflare Workers／DO **11／11** 测试通过；Cloudflare 类型检查、dry-run、Astro 检查与静态构建、Apps Script 单文件构建均通过。Astro 与 Workers 的 TypeScript 全局类型已隔离，避免 Worker 运行时声明污染浏览器 DOM 检查。
+- 本地审查后应用与桥接 **179／179** 测试通过，Cloudflare Workers／DO **17／17** 测试通过；Cloudflare 类型检查、dry-run、Astro 检查与三个页面构建、Apps Script 业务及独立桥接构建均通过。这是本地修复证据，不更新以上生产部署结论。Astro 与 Workers 类型及构建产物检查范围已隔离。
 - Script ID、私有 Spreadsheet ID、Coach Code、会话令牌和服务端 secret 均不写入仓库。
 
 ## 运行中 Apps Script 的写入与恢复约束
 
 1. 服务端持同一把脚本锁，先保存确定计划和不可变结果，再写业务、审计及完成标记；持锁刷新后释放。请求内复用表格句柄及已读记录，写后失效，不跨请求缓存权威业务状态。
-2. 未完成的报名和排座操作按原计划恢复，不重新生成排队时间、递补或 revision；已完成请求重放不重复写入。报名、取消、换侧与船位共用 BE-05 的唯一分配逻辑，不建立第二套排队算法，系统 revision 不夹带未发布草稿。
+2. 未完成的排期、报名、排座和历史更正按原计划恢复，不重新生成排队时间、递补或 revision；已完成请求重放不重复写入。报名、取消、换侧与船位共用 BE-05 的唯一分配逻辑，不建立第二套排队算法，系统 revision 不夹带未发布草稿。
 3. P1 周生成按保存的模板实例补齐缺失行，保留之后的调整与取消。缺少确定计划的旧未完成请求返回 `RECOVERY_REQUIRED`，不猜测重建。
 4. 单次页面请求上限三十秒，多次串行请求总耗时可能更长。正常保存复用同次响应的当前视图；结果未知时锁定原动作、参数及编号，明确保存后补读失败只重读。版本冲突保留输入，刷新核对后再显式采用服务器版本。
 5. 登录结果未知时，原页面内重新输入相同 Code，复用原登录编号。仅在内存保存摘要和编号，不持久保存 Code 或摘要；页面重载不恢复待确认登录。登录成功而赛季入口读取失败保留会话，只重试读取。详见[前端规格](frontend-spec.md#coach-mode-工作区)。
@@ -79,7 +81,7 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 
 ## 未完成范围与下一步
 
-1. **开始 C1 业务迁移**：先冻结 C1 数据模型和迁移顺序，把赛季／成员与权限、排期、报名候补、排座、冻结历史逐层迁入团队 Durable Object，并接入已有事务、请求结果和 outbox。复用现行 Apps Script 测试场景，但只连接隔离测试端点；C1 不改生产 Pages API 或写入归属。
+1. **开始 C1 业务迁移**：先冻结 C1 数据模型、请求／响应 DTO 和运行时 schema，再按赛季／成员与权限、排期、报名候补、排座、冻结历史逐层迁入团队 Durable Object，接入事务、请求结果和 outbox。复用审查后 Apps Script 场景和 [API 边界约定](contracts/README.md)，只连接隔离测试端点；C1 不改生产 Pages API 或写入归属。本轮审查补丁未发布，后续部署时需分别核对业务 Apps Script、独立桥接、Pages 与 staging 版本并冒烟验收，不把源码版本当线上版本。
 2. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
 3. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
 4. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。

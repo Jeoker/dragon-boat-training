@@ -6,6 +6,7 @@ import {
   DRAGON_BOAT_CONTRACT_VERSION,
   DragonBoatApiClient,
   DragonBoatApiError,
+  isUncertainWriteError,
   normalizeApiUrl
 } from "../frontend/lib/api-client.js";
 
@@ -114,7 +115,7 @@ test("client rejects a mismatched contract before using response data", async ()
     fetchImpl: async () => jsonResponse(envelope)
   });
 
-  await assert.rejects(() => client.get("health"), (error) => {
+  await assert.rejects(() => client.get("health", {}, { requestId: "request_123" }), (error) => {
     assert.ok(error instanceof DragonBoatApiError);
     assert.equal(error.code, "CONTRACT_MISMATCH");
     return true;
@@ -135,7 +136,7 @@ test("client preserves a safe server error and retryability", async () => {
     })
   });
 
-  await assert.rejects(() => client.get("health"), (error) => {
+  await assert.rejects(() => client.get("health", {}, { requestId: "request_123" }), (error) => {
     assert.equal(error.code, "TEMPORARY_FAILURE");
     assert.equal(error.retryable, true);
     assert.equal(error.requestId, "request_123");
@@ -153,4 +154,52 @@ test("API URL requires HTTPS except for local development", () => {
     assert.equal(error.code, "API_NOT_CONFIGURED");
     return true;
   });
+});
+
+test("wrong-request and malformed envelopes never acknowledge a write", async () => {
+  const success = successEnvelope("original_request_01");
+  const invalid = [
+    null, [], { ...success, data: null }, { ...success, data: [] },
+    { ...success, meta: { ...success.meta, request_id: "another_request_01" } },
+    { ...success, meta: { ...success.meta, server_time: "invalid" } },
+    { ...success, error: { code: "CONTRADICTORY" } },
+    { ok: false, error: { code: "FAILURE", message: "failed", retryable: "false" }, meta: success.meta },
+    { ok: false, error: null, meta: success.meta }
+  ];
+  for (const body of invalid) {
+    const client = new DragonBoatApiClient({ baseUrl: "https://example.test/api", fetchImpl: async () => jsonResponse(body) });
+    await assert.rejects(() => client.post("signup", {}, { requestId: "original_request_01" }), error => {
+      assert.equal(error.code, "INVALID_RESPONSE");
+      assert.equal(error.requestId, "original_request_01");
+      assert.equal(isUncertainWriteError(error), true);
+      return true;
+    });
+  }
+});
+
+test("an HTTP failure with a success body remains an unknown write result", async () => {
+  const client = new DragonBoatApiClient({ baseUrl: "https://example.test/api",
+    fetchImpl: async () => jsonResponse(successEnvelope("http_failure_01"), { ok: false }) });
+  await assert.rejects(() => client.post("signup", {}, { requestId: "http_failure_01" }), error =>
+    error.code === "INVALID_RESPONSE" && isUncertainWriteError(error));
+});
+
+test("credentials cannot enter a query URL and aborted writes retain uncertain status", async () => {
+  let calls = 0;
+  const controller = new AbortController();
+  controller.abort();
+  const client = new DragonBoatApiClient({ baseUrl: "https://example.test/api", fetchImpl: async (_url, init) => {
+    calls++;
+    init.signal.throwIfAborted();
+  } });
+  for (const key of ["session_token", "coach_code"]) {
+    assert.throws(() => client.get("coachBootstrap", { [key]: "fixture-secret" }), error => error.code === "INVALID_REQUEST");
+  }
+  assert.equal(calls, 0);
+  await assert.rejects(() => client.post("signup", {}, { requestId: "abort_request_01", signal: controller.signal }), error => {
+    assert.equal(error.code, "REQUEST_ABORTED");
+    assert.equal(isUncertainWriteError(error), true);
+    return true;
+  });
+  assert.equal(isUncertainWriteError(new DragonBoatApiError("VERSION_CONFLICT", "stale")), false);
 });

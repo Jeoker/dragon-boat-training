@@ -43,6 +43,67 @@ function get(context, action, parameters = {}) {
   return payload(context.doGet({ parameter: { action, request_id: `get_${action}_123`, ...parameters } }));
 }
 
+test("create-season recovery preserves a persisted result before the completion marker", async () => {
+  const b = await createBackend();
+  const token = login(b.context);
+  const update = b.context.updateSheetRecord_;
+  let fail = true;
+  b.context.updateSheetRecord_ = (sheet, record) => {
+    if (fail && sheet === "SystemRequests" && record.action === "createSeason" && record.status === "COMPLETED") {
+      fail = false;
+      throw new Error("completion marker unavailable");
+    }
+    return update(sheet, record);
+  };
+  assert.equal(createSeason(b.context, token, "create_partial_01").ok, false);
+  const journal = sheetRecords(b.spreadsheet, "SystemRequests").find(row => row.request_id === "create_partial_01");
+  const stored = JSON.parse(journal.result_json);
+  assert.ok(stored.season.season_id);
+  const replay = createSeason(b.context, token, "create_partial_01");
+  assert.deepEqual(replay.data, stored);
+  assert.equal(sheetRecords(b.spreadsheet, "Seasons").length, 1);
+});
+
+test("binding recovery accepts a tab ID but another season cannot reuse any tab of that file", async () => {
+  const b = await createBackend();
+  const token = login(b.context);
+  const binding = b.createFormBinding({ rows: [["2026-09-01", "Alice"]] });
+  const season = createSeason(b.context, token).data.season;
+  const input = { ...bindingBody(season, token, binding, "initializeSeason", "binding_partial_01"),
+    response_sheet: String(binding.responseSheet.getSheetId()) };
+  const saveResult = b.context.setSystemRequestResult_;
+  let fail = true;
+  b.context.setSystemRequestResult_ = (record, result) => {
+    if (fail && record.action === "initializeSeason" && result.season) { fail = false; throw new Error("result interrupted"); }
+    return saveResult(record, result);
+  };
+  assert.equal(post(b.context, input).ok, false);
+  assert.equal(post(b.context, input).ok, true);
+  assert.equal(b.triggers.length, 1);
+  assert.equal(post(b.context, { ...input, request_id: "different_init_01" }).error.code, "BINDING_LOCKED");
+  const second = createSeason(b.context, token, "second_season_01").data.season;
+  const secondBinding = b.createFormBinding({ formId: "second-form-12345678", spreadsheetId: binding.spreadsheetId, responseSheetName: "Other responses" });
+  assert.equal(post(b.context, bindingBody(second, token, secondBinding, "initializeSeason", "second_init_01")).error.code, "BINDING_ALREADY_USED");
+  assert.equal(sheetRecords(binding.runtimeSpreadsheet, "Members").length, 1);
+});
+
+test("legacy Form source drift stops import before new member rows can be misassigned", async () => {
+  const b = await createBackend();
+  const token = login(b.context);
+  const binding = b.createFormBinding({ rows: [["2026-09-01", "Alice"], ["2026-09-02", "Bob"]] });
+  const season = createSeason(b.context, token).data.season;
+  assert.equal(post(b.context, bindingBody(season, token, binding, "initializeSeason", "source_init_01")).ok, true);
+  const original = structuredClone(binding.responseSheet.rows);
+  binding.responseSheet.rows.splice(1, 0, ["2026-09-03", "Carol"]);
+  const sync = id => post(b.context, { action: "retrySeasonSync", request_id: id, session_token: token, season_id: season.season_id });
+  assert.equal(sync("source_drift_01").error.code, "BINDING_RESPONSES_CHANGED");
+  assert.equal(sheetRecords(binding.runtimeSpreadsheet, "Members").length, 2);
+  binding.responseSheet.rows = original;
+  binding.responseSheet.rows.push(["2026-09-03", "Carol"]);
+  assert.equal(sync("source_drift_01").ok, true);
+  assert.equal(sheetRecords(binding.runtimeSpreadsheet, "Members").length, 3);
+});
+
 test("P1 creates a draft, validates the real Form target, initializes tabs and imports members", async () => {
   const backend = await createBackend();
   const fixture = backend.createFormBinding({

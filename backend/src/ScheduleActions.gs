@@ -3,10 +3,11 @@ function sanitizeScheduleTemplates_(season, templates) {
     throw dragonBoatRequestError_("INVALID_REQUEST", "One to fourteen training templates are required.");
   }
   return templates.map(function (template) {
-    var dayOfWeek = Number(template.day_of_week);
-    if (!Number.isInteger(dayOfWeek) || dayOfWeek < 1 || dayOfWeek > 7) {
+    if (!template || typeof template !== "object" || Array.isArray(template) ||
+        !isRequestInteger_(template.day_of_week, 1, 7)) {
       throw dragonBoatRequestError_("INVALID_REQUEST", "Each template requires a weekday from 1 to 7.");
     }
+    var dayOfWeek = Number(template.day_of_week);
     var startTime = requireLocalTime_(template.start_time, "start_time");
     var endTime = requireLocalTime_(template.end_time, "end_time");
     if (endTime <= startTime) {

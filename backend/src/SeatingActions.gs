@@ -325,6 +325,22 @@ function claimSignupSeat_(slots, preference) {
   for (var index = 0; index < slots.length; index += 1) {
     if (!slots[index].claimed && seatMatchesSignupPreference_(slots[index].side, preference)) {
       slots[index].claimed = true;
+      slots[index].claimed_preference = preference;
+      return true;
+    }
+  }
+  // These claims only model unseated confirmations; actual Coach placements
+  // are excluded from slots. An Ambient claim can use the opposite empty side
+  // so a fixed-side signup is not blocked by an arbitrary matching order.
+  if (preference !== "AMBIENT") {
+    var flexible = slots.find(function (slot) {
+      return slot.side === preference && slot.claimed_preference === "AMBIENT";
+    });
+    var spare = slots.find(function (slot) { return !slot.claimed; });
+    if (flexible && spare) {
+      spare.claimed = true;
+      spare.claimed_preference = "AMBIENT";
+      flexible.claimed_preference = preference;
       return true;
     }
   }
@@ -579,13 +595,8 @@ function seatPlanRequestDigestSeats_(input) {
 }
 
 function persistP3Request_(actorId, request, digest, plan, result) {
-  var saved = { kind: "P3", season_id: plan.season_id, plan: plan, result: result };
-  if (JSON.stringify(saved).length > 45000) {
-    throw dragonBoatRequestError_("REQUEST_TOO_LARGE", "This change is too large to save safely.");
-  }
-  var transaction = beginSystemRequest_(actorId, request.action, request.request_id, digest, saved);
-  SpreadsheetApp.flush();
-  return applyP3Request_(transaction.record);
+  return persistBusinessPlan_(actorId, request, digest,
+    { kind: "P3", season_id: plan.season_id, plan: plan, result: result }, applyP3Request_);
 }
 
 function applyP3SeatingPlanParts_(record, season, plan) {
@@ -699,11 +710,7 @@ function saveSeatPlanDraft_(request) {
     validateSeatPlanSnapshot_(season, practice, snapshot, mode, false);
     var now = new Date().toISOString();
     var version = Number(state.seat_plan_version) + 1;
-    var rows = input.seats.map(function (seat) {
-      return { season_id: String(season.season_id), practice_id: String(practice.practice_id),
-        row_number: seat.row_number, side: seat.side, member_id: seat.member_id,
-        seat_plan_version: version, updated_by: actorId, updated_at: now };
-    });
+    var rows = seatPlanRowsForWrite_(season, practice, input.seats, version, actorId, now);
     var nextState = Object.assign({}, state, { seat_plan_version: version,
       coach_member_id: input.coach_member_id, steerer_member_id: input.steerer_member_id,
       updated_by: actorId, updated_at: now });

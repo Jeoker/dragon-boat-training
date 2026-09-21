@@ -113,6 +113,7 @@ export async function callGoogleBridgeProbe(
     envelope.payload_json = JSON.stringify({ challenge: `${challenge}-tampered` });
   }
   let response: Response;
+  let parsed: unknown;
   try {
     response = await fetch(bridgeUrl, {
       method: "POST",
@@ -121,7 +122,11 @@ export async function callGoogleBridgeProbe(
       redirect: "follow",
       signal: AbortSignal.timeout(10_000)
     });
+    parsed = await response.json();
   } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new ApiError("BRIDGE_INVALID_RESPONSE", "The Google bridge returned an unreadable response.", 502, true);
+    }
     throw new ApiError(
       "BRIDGE_UNAVAILABLE",
       "The Google bridge could not be reached.",
@@ -130,32 +135,34 @@ export async function callGoogleBridgeProbe(
     );
   }
 
-  let parsed: unknown;
-  try {
-    parsed = await response.json();
-  } catch {
-    throw new ApiError("BRIDGE_INVALID_RESPONSE", "The Google bridge returned an unreadable response.", 502, true);
+  if (!isRecord(parsed) || typeof parsed.ok !== "boolean" || !isRecord(parsed.meta) || parsed.meta.request_id !== requestId) {
+    throw new ApiError("BRIDGE_INVALID_RESPONSE", "The Google bridge returned an invalid envelope.", 502, true);
   }
-  const envelopeResponse = parsed as {
-    ok?: boolean;
-    data?: Record<string, unknown>;
-    error?: { code?: string; message?: string; retryable?: boolean };
-  };
-  if (!response.ok || envelopeResponse.ok !== true || !envelopeResponse.data) {
+  if (parsed.ok === false && isRecord(parsed.error) &&
+      typeof parsed.error.code === "string" && parsed.error.code && typeof parsed.error.message === "string" && parsed.error.message &&
+      typeof parsed.error.retryable === "boolean") {
     throw new ApiError(
-      envelopeResponse.error?.code || "BRIDGE_REJECTED",
-      envelopeResponse.error?.message || "The Google bridge rejected the request.",
+      parsed.error.code,
+      parsed.error.message,
       502,
-      envelopeResponse.error?.retryable === true
+      parsed.error.retryable
     );
   }
+  const receipt = parsed.data;
   if (
-    envelopeResponse.data.operation_id !== envelope.operation_id ||
-    envelopeResponse.data.payload_digest !== envelope.payload_digest ||
-    envelopeResponse.data.team_id !== env.TEAM_ID ||
-    Number(envelopeResponse.data.writer_epoch) !== Number(env.WRITER_EPOCH)
+    !response.ok || parsed.ok !== true || !isRecord(receipt) ||
+    receipt.status !== "verified" || receipt.protocol_version !== BRIDGE_PROTOCOL ||
+    receipt.binding_version !== envelope.binding_version ||
+    receipt.operation_id !== envelope.operation_id || receipt.challenge !== challenge ||
+    receipt.payload_digest !== envelope.payload_digest || receipt.team_id !== env.TEAM_ID ||
+    receipt.writer_epoch !== Number(env.WRITER_EPOCH) ||
+    typeof receipt.acknowledged_at !== "string" || !Number.isFinite(Date.parse(receipt.acknowledged_at))
   ) {
     throw new ApiError("BRIDGE_INVALID_RESPONSE", "The Google bridge response scope does not match.", 502, true);
   }
-  return envelopeResponse.data;
+  return receipt;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

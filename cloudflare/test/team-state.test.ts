@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { TeamState } from "../src/team-state";
+import { applySchema } from "../src/schema";
 
 function objectFor(name: string): DurableObjectStub {
   return env.TEAM_STATE.getByName(name);
@@ -32,6 +33,35 @@ async function state(stub: DurableObjectStub): Promise<Record<string, any>> {
 }
 
 describe("TeamState C0 persistence", () => {
+  it("never relabels an unknown or corrupt database schema as the current version", async () => {
+    const stub = objectFor("schema-version-guard");
+    await state(stub);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      for (const value of ["future", "", "0", "1.5", "2", "9007199254740992"]) {
+        context.storage.sql.exec("UPDATE app_meta SET value = ? WHERE key = 'schema_version'", value);
+        expect(() => applySchema(context.storage)).toThrow("Unsupported database schema");
+        expect(context.storage.sql.exec<{ value: string }>("SELECT value FROM app_meta WHERE key = 'schema_version'").one().value).toBe(value);
+      }
+      context.storage.sql.exec("UPDATE app_meta SET value = '1' WHERE key = 'schema_version'");
+      expect(() => applySchema(context.storage)).not.toThrow();
+    });
+  });
+
+  it("rejects coerced input without changing counters or creating jobs", async () => {
+    const stub = objectFor("strict-input-types");
+    for (const overrides of [
+      { amount: null }, { amount: true }, { amount: "2" }, { amount: [] },
+      { job_due_at_ms: false }, { fail_attempts: "3" }, { retry_delay_ms: [] },
+      { enqueue_job: "false" }, { simulate_failure: 1 }, { request_id: null }
+    ]) {
+      const response = await commit(stub, "strict_request_001", overrides);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ ok: false, error: { retryable: false },
+        meta: { contract_version: env.CONTRACT_VERSION } });
+    }
+    await expect(state(stub)).resolves.toMatchObject({ counter_value: 0, request_count: 0, audit_count: 0, outbox: [], jobs: [] });
+  });
+
   it("commits concurrent duplicate requests exactly once", async () => {
     const stub = objectFor("concurrent-idempotency");
     const [left, right] = await Promise.all([
@@ -42,7 +72,7 @@ describe("TeamState C0 persistence", () => {
     expect(right.status).toBe(200);
     const leftBody = await left.json();
     const rightBody = await right.json();
-    expect(leftBody).toEqual(rightBody);
+    expect((leftBody as { data: unknown }).data).toEqual((rightBody as { data: unknown }).data);
     await expect(state(stub)).resolves.toMatchObject({
       schema_version: 1,
       counter_value: 3,

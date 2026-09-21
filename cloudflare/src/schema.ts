@@ -69,7 +69,8 @@ export function applySchema(storage: DurableObjectStorage): void {
     const current = sql
       .exec<{ value: string }>("SELECT value FROM app_meta WHERE key = 'schema_version'")
       .toArray()[0];
-    if (current && Number(current.value) > APPLICATION_SCHEMA_VERSION) {
+    if (current && (!/^[1-9]\d*$/.test(current.value) || !Number.isSafeInteger(Number(current.value)) ||
+        Number(current.value) > APPLICATION_SCHEMA_VERSION)) {
       throw new Error(`Unsupported database schema version ${current.value}.`);
     }
     sql.exec(

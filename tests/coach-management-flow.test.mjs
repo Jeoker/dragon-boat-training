@@ -4,7 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { webcrypto } from "node:crypto";
 import ts from "typescript";
-import { DragonBoatApiError } from "../frontend/lib/api-client.js";
+import { DragonBoatApiError, isUncertainWriteError } from "../frontend/lib/api-client.js";
 import { validPracticeView, olderPracticeView } from "../frontend/lib/current-view.js";
 import { renderSeatPlan } from "../frontend/lib/seat-plan-view.js";
 import { renderSignupList, signupResultText } from "../frontend/lib/signup-view.js";
@@ -149,7 +149,7 @@ function makeHarness({ mutate, readWorkspace, readManagement, login, bootstrap, 
       clearTimeout(id) { timers.delete(id); timerDelays.delete(id); },
       confirm: () => true
     },
-    DragonBoatApiClient: Client, DragonBoatApiError,
+    DragonBoatApiClient: Client, DragonBoatApiError, isUncertainWriteError,
     createRequestId: () => `request_${++state.requestCounter}`,
     loadCoachSession: () => ({ token: "session_old" }),
     saveCoachSession(token) { state.savedSession = token; }, clearCoachSession() { state.savedSession = null; },
@@ -195,6 +195,29 @@ async function readySeating(harness) {
   await ready(harness);
   await settled(() => !harness.element("seat-console").hidden && harness.element("seat-draft-grid").children.length === 10);
 }
+
+test("binding previews cannot authorize changed inputs or restore private UI after logout", async () => {
+  let release;
+  const h = makeHarness({ mutate: async (_state, action, _payload, _options, envelope) => {
+    assert.equal(action, "validateSeasonBinding");
+    await new Promise((resolve) => { release = resolve; });
+    return envelope({ response_count: 1, preview_names: ["Private Member"] });
+  } });
+  await readySchedule(h);
+  const form = h.element("binding-form");
+  const pending = form.emit("submit");
+  await settled(() => Boolean(release));
+  form.fields.get("form").value = "changed-form";
+  form.emit("input");
+  release(); await pending;
+  assert.equal(h.element("initialize-button").disabled, true);
+  assert.equal(h.element("binding-status").textContent, "");
+  const loggedOutPreview = form.emit("submit");
+  await h.element("logout-button").emit("click");
+  release(); await loggedOutPreview;
+  assert.equal(h.element("initialize-button").disabled, true);
+  assert.equal(h.element("binding-status").textContent, "");
+});
 
 function poolButton(harness, memberId) {
   const button = harness.element("seat-pool").children.find((child) => child.dataset.memberId === memberId);

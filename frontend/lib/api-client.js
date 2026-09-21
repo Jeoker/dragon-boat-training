@@ -10,6 +10,13 @@ export class DragonBoatApiError extends Error {
   }
 }
 
+// A retryable transport/protocol failure never proves a write was rejected.
+// Every write flow must retain its original ID and payload in this state.
+export function isUncertainWriteError(error) {
+  return !(error instanceof DragonBoatApiError) || error.retryable ||
+    ["INVALID_RESPONSE", "CONTRACT_MISMATCH", "REQUEST_ABORTED"].includes(error.code);
+}
+
 export class DragonBoatApiClient {
   /**
    * @param {{
@@ -28,6 +35,9 @@ export class DragonBoatApiClient {
   }
 
   get(action, parameters = {}, options = {}) {
+    if (Object.hasOwn(parameters, "session_token") || Object.hasOwn(parameters, "coach_code")) {
+      throw new DragonBoatApiError("INVALID_REQUEST", "Credentials must be sent in a POST body.");
+    }
     const requestId = options.requestId || createRequestId();
     const url = new URL(this.baseUrl);
     url.searchParams.set("action", action);
@@ -96,7 +106,12 @@ export class DragonBoatApiClient {
 
       assertEnvelope(envelope, requestId);
 
-      if (!response.ok || envelope.ok !== true) {
+      if (!response.ok && envelope.ok === true) {
+        throw new DragonBoatApiError("INVALID_RESPONSE", "The HTTP status contradicts the service response.", {
+          requestId, retryable: true
+        });
+      }
+      if (envelope.ok !== true) {
         throw new DragonBoatApiError(
           envelope.error?.code || "REQUEST_FAILED",
           envelope.error?.message || "The training service rejected the request.",
@@ -122,6 +137,7 @@ export class DragonBoatApiClient {
       if (signal?.aborted) {
         throw new DragonBoatApiError("REQUEST_ABORTED", "The request was cancelled.", {
           cause: error,
+          retryable: true,
           requestId
         });
       }
@@ -167,14 +183,25 @@ export function normalizeApiUrl(value) {
 }
 
 function assertEnvelope(envelope, requestId) {
-  if (!envelope || typeof envelope !== "object" || typeof envelope.ok !== "boolean" || !envelope.meta) {
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!isObject(envelope) || typeof envelope.ok !== "boolean" || !isObject(envelope.meta)) {
     throw new DragonBoatApiError("INVALID_RESPONSE", "The training service response is incomplete.", { requestId, retryable: true });
   }
   if (envelope.meta.contract_version !== DRAGON_BOAT_CONTRACT_VERSION) {
     throw new DragonBoatApiError(
       "CONTRACT_MISMATCH",
       "The website and training service versions do not match.",
-      { requestId: envelope.meta.request_id || requestId, retryable: true }
+      { requestId, retryable: true }
     );
+  }
+  if (envelope.meta.request_id !== requestId || typeof envelope.meta.server_time !== "string" ||
+      !Number.isFinite(Date.parse(envelope.meta.server_time)) ||
+      (envelope.ok ? !isObject(envelope.data) || Object.hasOwn(envelope, "error") :
+        !isObject(envelope.error) || typeof envelope.error.code !== "string" || !envelope.error.code ||
+        typeof envelope.error.message !== "string" || !envelope.error.message ||
+        typeof envelope.error.retryable !== "boolean" || Object.hasOwn(envelope, "data"))) {
+    throw new DragonBoatApiError("INVALID_RESPONSE", "The training service response is incomplete or belongs to another request.", {
+      requestId, retryable: true
+    });
   }
 }

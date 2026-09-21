@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { sha256Base64Url } from "./crypto";
-import { ApiError, apiFailure, jsonResponse, readJsonObject, requireRequestId, requireString } from "./http";
+import { ApiError, apiFailure, apiSuccess, optionalBoolean, optionalInteger, readJsonObject, requireRequestId, requireString } from "./http";
 import { APPLICATION_SCHEMA_VERSION, applySchema } from "./schema";
 
 interface C0CommitInput {
@@ -47,16 +47,20 @@ export class TeamState extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    let requestId: string | null = null;
     try {
       if (request.method === "POST" && url.pathname === "/internal/c0/commit") {
-        return jsonResponse({ ok: true, data: await this.commit(await readJsonObject(request)) });
+        const input = await readJsonObject(request);
+        requestId = requireRequestId(input);
+        return apiSuccess(await this.commit(input), this.env, requestId);
       }
       if (request.method === "GET" && url.pathname === "/internal/c0/state") {
-        return jsonResponse({ ok: true, data: await this.readState() });
+        if (url.searchParams.has("request_id")) requestId = requireRequestId({ request_id: url.searchParams.get("request_id") });
+        return apiSuccess(await this.readState(), this.env, requestId);
       }
       throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
     } catch (error) {
-      return apiFailure(error);
+      return apiFailure(error, this.env, requestId);
     }
   }
 
@@ -72,32 +76,16 @@ export class TeamState extends DurableObject<Env> {
   }
 
   private parseCommit(input: Record<string, unknown>): C0CommitInput {
-    const amount = Number(input.amount ?? 1);
-    const due = Number(input.job_due_at_ms ?? 0);
-    const failAttempts = Number(input.fail_attempts ?? 0);
-    const retryDelay = Number(input.retry_delay_ms ?? 1_000);
-    if (!Number.isSafeInteger(amount) || amount < 1 || amount > 100) {
-      throw new ApiError("INVALID_REQUEST", "amount must be an integer from 1 to 100.");
-    }
-    if (!Number.isSafeInteger(due) || due < 0) {
-      throw new ApiError("INVALID_REQUEST", "job_due_at_ms is invalid.");
-    }
-    if (!Number.isSafeInteger(failAttempts) || failAttempts < 0 || failAttempts > 100) {
-      throw new ApiError("INVALID_REQUEST", "fail_attempts is invalid.");
-    }
-    if (!Number.isSafeInteger(retryDelay) || retryDelay < 0 || retryDelay > 3_600_000) {
-      throw new ApiError("INVALID_REQUEST", "retry_delay_ms is invalid.");
-    }
     return {
       requestId: requireRequestId(input),
       actorScope: requireString(input, "actor_scope", 1, 128),
       action: requireString(input, "action", 1, 80),
-      amount,
-      enqueueJob: input.enqueue_job === true,
-      jobDueAtMs: due,
-      failAttempts,
-      retryDelayMs: retryDelay,
-      simulateFailure: input.simulate_failure === true
+      amount: optionalInteger(input, "amount", 1, 1, 100),
+      enqueueJob: optionalBoolean(input, "enqueue_job"),
+      jobDueAtMs: optionalInteger(input, "job_due_at_ms", 0, 0, Number.MAX_SAFE_INTEGER),
+      failAttempts: optionalInteger(input, "fail_attempts", 0, 0, 100),
+      retryDelayMs: optionalInteger(input, "retry_delay_ms", 1_000, 0, 3_600_000),
+      simulateFailure: optionalBoolean(input, "simulate_failure")
     };
   }
 

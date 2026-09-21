@@ -144,6 +144,8 @@ Coach Mode 仍为四个面板：在“赛季与表单”显示最后同步时间
 
 目标代码组织：`cloudflare/` 放 Worker、DO、SQLite schema 与调度；`shared/` 放无 Google／Cloudflare 依赖的业务规则；`backend/` 保留 Apps Script 并逐步收敛为桥接；`contracts/` 放现行契约及迁移草案；`tests/` 按规则、DO、同步故障、真实 Google 和网页分层。C0 创建服务代码，核对已安装工具并锁定版本；依赖安装或 OAuth 完成不代表服务已经建立。
 
+C1 先按 [API 边界约定](contracts/README.md)冻结每个业务域的请求／响应 DTO 和运行时 schema，再逐层迁移。现有接口清单不是可执行 schema；新端统一不可变操作回执、当前视图和异步任务状态，旧动作通过显式兼容适配器承接。不得为统一字段而改变旧参数摘要、请求范围或重试结果。前端接测试端点前覆盖响应形状、代次隔离、权限和浏览器 CORS。
+
 ### C0 可执行工作清单
 
 | 顺序 | 实现内容 | 完成证据 |

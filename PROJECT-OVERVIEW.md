@@ -1,6 +1,6 @@
 # Dragon Boat Training 项目总览
 
-> 未来 agent 的首要入口。最后核对：2026-09-19。
+> 未来 agent 的首要入口。最后核对：2026-09-20。
 >
 > 本页说明项目为什么存在、必须遵守的顶层原则、目标与子目标、当前架构边界，以及从哪里继续工作。会频繁变化的部署版本、实测结果和下一步只在[当前进度](CURRENT-STATUS.md)维护；完整业务规则只在[项目说明](README.md)维护。
 
@@ -160,6 +160,7 @@ P0 至 P4 已完成相应阶段验收：连接与契约、建季排期、报名�
 | Epic 边界、工作包、依赖和阶段验收 | [epics/README.md](epics/README.md) |
 | 页面与交互细节 | [frontend-spec.md](frontend-spec.md) |
 | 现行 Apps Script 数据模型与恢复协议 | [google-sheets-backend-spec.md](google-sheets-backend-spec.md) |
+| API 输入输出、响应／重试语义及兼容边界 | [contracts/README.md](contracts/README.md)及对应动作清单 |
 | 后端构建、部署和真实测试限制 | [backend/README.md](backend/README.md) |
 | 某阶段的历史验收证据 | `tests/*-ACCEPTANCE.md` |
 

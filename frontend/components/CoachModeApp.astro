@@ -350,7 +350,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
 </div>
 
 <script>
-  import { DragonBoatApiClient, DragonBoatApiError, createRequestId } from "../lib/api-client.js";
+  import { DragonBoatApiClient, DragonBoatApiError, createRequestId, isUncertainWriteError } from "../lib/api-client.js";
   import { clearCoachSession, isCoachSessionError, loadCoachSession, saveCoachSession } from "../lib/coach-session.js";
   import { renderSignupList, signupResultText } from "../lib/signup-view.js";
   import { validPracticeView, olderPracticeView } from "../lib/current-view.js";
@@ -497,9 +497,9 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
   let schedulePreviewSequence = 0;
   let seasonChange: { action: string; input: Record<string, any>; message: string } | null = null;
   let bindingValidated = false;
+  let bindingReadVersion = 0;
   let seasonReadVersion = 0;
   let p2ReadVersion = 0;
-  let practiceReadVersion = 0;
   let p2SeasonId = "";
   let managedMembers: any[] = [];
   let managedRosterVersion = -1;
@@ -554,6 +554,8 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
       BINDING_FIELD_MISSING: "响应 Tab 中找不到所填的姓名列标题。",
       BINDING_FIELD_AMBIGUOUS: "姓名列标题重复，请先修正响应表。",
       BINDING_SCHEMA_CHANGED: "响应表的列结构已经改变，请检查后再同步。",
+      BINDING_RESPONSES_CHANGED: "已导入的原始回答被移动、修改或删除，请先核对来源行。姓名更正可在队员管理中操作。",
+      BINDING_ALREADY_USED: "这份表格已用于其他赛季、系统管理或归档。请为本季选择独立的响应表格。",
       BINDING_LOCKED: "赛季已经激活，不能替换它的表单绑定。",
       WEEK_START_NOT_MONDAY: "请选择一个周一作为本周起点。",
       WEEK_EMPTY: "请先添加至少一场有效训练，再确认整周。",
@@ -596,6 +598,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
   }
 
   function showLogin(message = "", state = "error", preserveDraft = false) {
+    invalidateBindingValidation();
     closeScheduleEditor();
     seasonScheduleForm?.reset();
     sessionToken = "";
@@ -656,7 +659,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
       pendingRequests.delete(key);
       return response;
     } catch (error) {
-      if (error instanceof DragonBoatApiError && !error.retryable && !isCoachSessionError(error) && !["INVALID_RESPONSE", "CONTRACT_MISMATCH"].includes(error.code)) pendingRequests.delete(key);
+      if (!isUncertainWriteError(error) && !isCoachSessionError(error)) pendingRequests.delete(key);
       throw error;
     } finally {
       managementWriting = false;
@@ -877,6 +880,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
   }
 
   function clearSeasonView() {
+    invalidateBindingValidation();
     closeScheduleEditor();
     currentSeasonData = null;
     clearP4View();
@@ -914,7 +918,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
     if (seasonSync) seasonSync.textContent = season.status === "OPEN"
       ? `${currentSeasonData.members.length} 名队员 · 名单版本 ${season.roster_version} · 最近同步 ${season.last_sync_at ? new Date(season.last_sync_at).toLocaleString() : "尚无"}`
       : season.status === "DRAFT" ? "连接完成后会自动激活赛季并导入已有回答。"
-        : "赛季已结束，名单和排期只读。既有训练的 24 小时最终排座更正窗口仍按各场结束时间计算；整季归档将在 P4 接入。";
+        : "赛季已结束，名单和排期只读。最终排座更正截止时间按各场训练结束后 24 小时计算；归档进度可在下方查看。";
     if (seasonScheduleForm) {
       seasonScheduleForm.hidden = !["DRAFT", "OPEN"].includes(season.status);
       for (const name of ["start_date", "end_date"]) {
@@ -926,9 +930,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
     if (syncButton) syncButton.hidden = season.status !== "OPEN";
     if (bindingBlock) bindingBlock.hidden = season.status !== "DRAFT";
     if (activeSeasonBlock) activeSeasonBlock.hidden = season.status !== "OPEN";
-    bindingValidated = false;
-    if (initializeButton) initializeButton.disabled = true;
-    setStatus(bindingStatus, "");
+    invalidateBindingValidation();
     if (season.status === "OPEN") {
       renderTemplates(currentSeasonData.templates);
       renderAdminWeeks(currentSeasonData.weeks);
@@ -964,7 +966,6 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
 
   function clearP2View() {
     p2ReadVersion += 1;
-    practiceReadVersion += 1;
     seatReadVersion += 1;
     p2SeasonId = "";
     managedMembers = [];
@@ -1145,46 +1146,13 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
     if (!client || !sessionToken || !p2SeasonId) return;
     const token = sessionToken, seasonId = p2SeasonId, revision = ++p2ReadVersion;
     const practiceId = draft?.practiceId || managedPracticePicker?.value || "";
-    let response;
-    try {
-      response = await client.post("getMemberWorkspace", { session_token: token, season_id: seasonId,
+    const response = await client.post("getMemberWorkspace", { session_token: token, season_id: seasonId,
         ...(practiceId ? { practice_id: practiceId } : {}), known_roster_version: managedRosterVersion });
-    } catch (error) {
-      if (!(error instanceof DragonBoatApiError) || error.code !== "UNSUPPORTED_ACTION") throw error;
-      // Rolling deployment: older service versions still supply the P2 reads.
-      await loadSeason(seasonId);
-      if (token !== sessionToken || seasonId !== p2SeasonId) return;
-      p2Practices = (currentSeasonData?.weeks || []).flatMap((week: any) => week.practices).filter((practice: any) => practice.schedule_published_at);
-      renderManagedPracticePicker(practiceId);
-      await loadManagedMembers(preserveInput ? captureP2Draft() : draft);
-      await loadManagedPractice(preserveInput ? captureP2Draft() : draft);
-      return;
-    }
     if (token !== sessionToken || seasonId !== p2SeasonId || revision !== p2ReadVersion) return;
     const latestDraft = preserveInput ? captureP2Draft() : draft;
     p2Practices = response.data.practices;
     renderManagedPracticePicker(practiceId);
     if (!applyManagedView(response.data, latestDraft)) throw new Error("管理视图不完整，请重新读取。");
-  }
-
-  async function loadManagedMembers(draft: any = null) {
-    if (!client || !sessionToken || !p2SeasonId) return;
-    const token = sessionToken;
-    const seasonId = p2SeasonId;
-    const revision = ++p2ReadVersion;
-    membersFresh = false;
-    const response = await client.post("listSeasonMembers", { session_token: token, season_id: seasonId });
-    if (token !== sessionToken || seasonId !== p2SeasonId || revision !== p2ReadVersion) return;
-    if (response.data.roster_version < managedRosterVersion) return;
-    managedMembers = response.data.members;
-    managedRosterVersion = response.data.roster_version;
-    membersFresh = true;
-    renderMemberPicker(draft?.memberId || memberPicker?.value);
-    renderMemberDetail(draft?.memberFields);
-    if (currentSeasonData?.season.season_id === seasonId) {
-      currentSeasonData.season.roster_version = response.data.roster_version;
-      if (seasonSync) seasonSync.textContent = `${managedMembers.length} 名队员 · 名单版本 ${response.data.roster_version} · 最近同步 ${currentSeasonData.season.last_sync_at ? new Date(currentSeasonData.season.last_sync_at).toLocaleString() : "尚无"}`;
-    }
   }
 
   function renderMemberPicker(preferred = "") {
@@ -1253,29 +1221,6 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
     }));
     managedPracticePicker.value = practices.some((practice: any) => practice.practice_id === old) ? old : practices[0]?.practice_id || "";
     if (!practices.length) setStatus(managedPracticeStatus, "本季尚无已发布训练。请先确认周计划或发布加场。");
-  }
-
-  async function loadManagedPractice(draft: any = null) {
-    if (!client || !sessionToken || !p2SeasonId) return;
-    const practiceId = managedPracticePicker?.value;
-    if (!practiceId) {
-      practiceFresh = false;
-      managedPractice = null;
-      if (managedPracticeDetail) managedPracticeDetail.hidden = true;
-      return updateP2Controls();
-    }
-    const token = sessionToken;
-    const seasonId = p2SeasonId;
-    const revision = ++practiceReadVersion;
-    setStatus(managedPracticeStatus, "正在读取最新训练报名……", "pending");
-    const response = await client.get("practice", { season_id: seasonId, practice_id: practiceId });
-    if (token !== sessionToken || seasonId !== p2SeasonId || revision !== practiceReadVersion || practiceId !== managedPracticePicker?.value) return;
-    const next = { ...response.data, generated_at: response.data.generated_at || response.meta?.server_time };
-    if (!validPracticeView(next, seasonId, practiceId)) throw new Error("训练视图不完整，请刷新。");
-    if (olderPracticeView(next, managedPractice)) return;
-    managedPractice = next;
-    practiceFresh = true;
-    renderManagedPractice(draft);
   }
 
   function renderManagedPractice(draft: any = null) {
@@ -1691,7 +1636,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
         setStatus(seatStatus, `服务器已经确认写入，但最新排座读取失败。请点击「重新读取已保存排座」，不会再次发送写入。${messageForError(error)}`, "error");
         return false;
       }
-      const uncertain = !(error instanceof DragonBoatApiError) || error.retryable || ["INVALID_RESPONSE", "CONTRACT_MISMATCH"].includes(error.code);
+      const uncertain = isUncertainWriteError(error);
       if (uncertain) {
         seatOutcomeUnknown = true;
       } else {
@@ -1829,8 +1774,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
         : { ...draft, memberFields: null, memberId: pending.payload.member_id };
       if (pending.result?.view_status !== "ready" || !applyManagedView(pending.result.current_view, resultDraft)) {
         setStatus(status, "服务器已确认保存，正在重新读取名册与报名……", "pending");
-        await loadManagedMembers(pending.kind === "signup" ? draft : { memberId: pending.payload.member_id });
-        await loadManagedPractice(pending.kind === "signup" ? { signupMemberId: pending.payload.member_id } : draft);
+        await readMemberWorkspace(resultDraft);
       }
       if (token !== sessionToken || p2Pending !== pending) return;
       p2Pending = null;
@@ -1850,14 +1794,13 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
         setStatus(status, `服务器已确认保存成功，但最新清单读取失败。请点击「重新读取已保存结果」，不会再次写入。${messageForError(error)}`, "error");
         return;
       }
-      const uncertain = !(error instanceof DragonBoatApiError) || error.retryable || ["INVALID_RESPONSE", "CONTRACT_MISMATCH"].includes(error.code);
+      const uncertain = isUncertainWriteError(error);
       if (uncertain) {
         setStatus(status, `${messageForError(error)} 操作结果尚未确认，原内容和请求编号已锁定。请点击下方重试按钮，不要刷新或重新提交。`, "error");
       } else {
         p2Pending = null;
         try {
-          await loadManagedMembers(draft);
-          await loadManagedPractice(draft);
+          await readMemberWorkspace(draft);
           if (!sessionToken) return;
           setStatus(status, `${messageForError(error)} 已刷新服务器状态并保留输入，请核对后重新确认。`, "error");
         } catch (refreshError) {
@@ -2526,7 +2469,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
           `登录已成功，但赛季入口读取失败。请点击「刷新」，无需重新登录。${messageForError(error)}`, "error");
       }
     } catch (error) {
-      const uncertain = !(error instanceof DragonBoatApiError) || error.retryable || ["INVALID_RESPONSE", "CONTRACT_MISMATCH"].includes(error.code);
+      const uncertain = isUncertainWriteError(error);
       if (!uncertain) pendingLogin = null;
       clearCoachSession();
       showLogin(`${messageForError(error)}${pendingLogin
@@ -2606,25 +2549,35 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
     }
   });
 
-  bindingForm?.addEventListener("input", () => {
+  function invalidateBindingValidation() {
+    bindingReadVersion++;
     bindingValidated = false;
     if (initializeButton) initializeButton.disabled = true;
-  });
+    setStatus(bindingStatus, "");
+  }
+  bindingForm?.addEventListener("input", invalidateBindingValidation);
   bindingForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!client || !sessionToken || !currentSeasonData) return;
+    invalidateBindingValidation();
+    const token = sessionToken, seasonId = currentSeasonData.season.season_id, revision = bindingReadVersion;
+    const input = formObject(bindingForm);
+    const stillCurrent = () => token === sessionToken && seasonId === currentSeasonData?.season.season_id &&
+      revision === bindingReadVersion && JSON.stringify(input) === JSON.stringify(formObject(bindingForm));
     setStatus(bindingStatus, "正在只读检查 Form、响应目标、Tab 和姓名列……", "pending");
     try {
       const response = await client.post("validateSeasonBinding", {
-        session_token: sessionToken,
-        season_id: currentSeasonData.season.season_id,
-        ...formObject(bindingForm)
+        session_token: token,
+        season_id: seasonId,
+        ...input
       });
+      if (!stillCurrent()) return;
       bindingValidated = true;
       if (initializeButton) initializeButton.disabled = false;
       const preview = response.data.preview_names.length ? `；预览：${response.data.preview_names.join("、")}` : "";
       setStatus(bindingStatus, `连接检查通过，共有 ${response.data.response_count} 条现有回答${preview}。`, "ready");
     } catch (error) {
+      if (!stillCurrent()) return;
       bindingValidated = false;
       if (initializeButton) initializeButton.disabled = true;
       if (!protectedError(error)) setStatus(bindingStatus, messageForError(error), "error");

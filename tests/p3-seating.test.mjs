@@ -198,6 +198,26 @@ function activeSignup(view, member) {
   return view.signups.find((signup) => signup.member_id === member.member_id);
 }
 
+test("a Coach-placed Ambient confirmation keeps its actual side reserved", async () => {
+  const f = await createFixture({ capacities: { left: 1, right: 1 } });
+  expectSuccess(f.mutate("signup", 0, "AMBIENT"));
+  f.saveDraft(f.workspace(), { seats: [{ row_number: 1, side: "LEFT", member_id: f.members[0].member_id }] });
+  assert.equal(expectSuccess(f.mutate("signup", 1, "LEFT")).signup.status, "WAITLISTED");
+  assert.equal(expectSuccess(f.mutate("signup", 2, "RIGHT")).signup.status, "CONFIRMED");
+  assert.equal(f.workspace().draft.seats[0].member_id, f.members[0].member_id);
+});
+
+test("an unseated Ambient confirmation does not reserve a particular side", async () => {
+  const f = await createFixture({ capacities: { left: 1, right: 1 } });
+  expectSuccess(f.mutate("signup", 0, "AMBIENT"));
+  f.saveDraft(f.workspace(), { seats: [] });
+  const left = expectSuccess(f.mutate("signup", 1, "LEFT"));
+  assert.equal(left.signup.status, "CONFIRMED", "Ambient can still be assigned to the empty right side");
+  assert.equal(f.workspace().draft.seats.length, 0, "signup allocation must not invent a Coach seat assignment");
+  const third = expectSuccess(f.mutate("signup", 2, "RIGHT"));
+  assert.equal(third.signup.status, "WAITLISTED");
+});
+
 function interruptOnceAfter(fixture, method, predicate) {
   const original = fixture.backend.context[method];
   let fired = false;

@@ -23,11 +23,20 @@ function createSeason_(request) {
       return readSystemRequestResult_(transaction.record);
     }
     var planned = readSystemRequestResult_(transaction.record);
-    var season = findSeasonById_(planned.season_id);
+    // The result may already be durable while the completion marker or audit
+    // write failed. Never interpret that result as a new creation plan.
+    if (planned.season) {
+      ensureSystemAuditEvent_(transaction.record, "SEASON_CREATED", "SUCCEEDED", {
+        season_id: planned.season.season_id
+      });
+      completeSystemRequest_(transaction.record);
+      return planned;
+    }
+    var season = findSeasonById_(seasonId);
     if (!season) {
       var now = new Date().toISOString();
       season = appendSheetRecord_("Seasons", {
-        season_id: planned.season_id,
+        season_id: seasonId,
         name: name,
         start_date: startDate,
         end_date: endDate,
@@ -80,6 +89,15 @@ function inspectSeasonBinding_(season, request) {
   var spreadsheetId = extractGoogleFileId_(request.spreadsheet, "spreadsheet");
   var responseSheetSelector = requireRequestString_(request, "response_sheet", 1, 200);
   var displayNameHeader = requireRequestString_(request, "display_name_header", 1, 200);
+  if (spreadsheetId === getRequiredScriptProperty_(DRAGON_BOAT_PROPERTY_KEYS_.SYSTEM_SPREADSHEET_ID) ||
+      getSheetRecords_("AnnualArchiveFiles").some(function (file) { return String(file.spreadsheet_id) === spreadsheetId; })) {
+    throw dragonBoatRequestError_("BINDING_ALREADY_USED", "Choose a separate season Spreadsheet, not a system or archive file.");
+  }
+  getSheetRecords_("Seasons").forEach(function (other) {
+    if (String(other.season_id) !== String(season.season_id) && String(other.runtime_spreadsheet_id) === spreadsheetId) {
+      throw dragonBoatRequestError_("BINDING_ALREADY_USED", "Each season requires its own operational Spreadsheet.");
+    }
+  });
   var form;
   var spreadsheet;
   try {
@@ -111,6 +129,9 @@ function inspectSeasonBinding_(season, request) {
   if (!responseSheet) {
     throw dragonBoatRequestError_("BINDING_RESPONSE_TAB_MISSING", "The response tab does not exist.");
   }
+  if (Object.prototype.hasOwnProperty.call(DRAGON_BOAT_RUNTIME_SHEET_HEADERS_, responseSheet.getName())) {
+    throw dragonBoatRequestError_("BINDING_RESPONSE_TAB_MISMATCH", "The response tab name is reserved for season data.");
+  }
 
   var linkedFormUrl = typeof responseSheet.getFormUrl === "function" ? responseSheet.getFormUrl() : "";
   if (!linkedFormUrl || extractGoogleFileId_(linkedFormUrl, "response tab form") !== formId) {
@@ -136,16 +157,6 @@ function inspectSeasonBinding_(season, request) {
   }
 
   var responseSheetIdValue = String(responseSheet.getSheetId());
-  getSheetRecords_("Seasons").forEach(function (other) {
-    if (
-      String(other.season_id) !== String(season.season_id) &&
-      String(other.runtime_spreadsheet_id) === spreadsheetId &&
-      String(other.response_sheet_id) === responseSheetIdValue
-    ) {
-      throw dragonBoatRequestError_("BINDING_ALREADY_USED", "This response tab is already bound to another season.");
-    }
-  });
-
   var preview = [];
   var lastRow = responseSheet.getLastRow();
   if (lastRow > 1) {
@@ -198,12 +209,24 @@ function initializeSeason_(request) {
     if (String(transaction.record.status) === "COMPLETED") {
       return readSystemRequestResult_(transaction.record);
     }
+    var saved = readSystemRequestResult_(transaction.record);
+    if (saved.season && saved.sync) {
+      ensureSystemAuditEvent_(transaction.record, "SEASON_INITIALIZED", "SUCCEEDED", {
+        season_id: saved.season.season_id, imported_count: saved.sync.imported_count,
+        binding_version: saved.season.binding_version
+      });
+      completeSystemRequest_(transaction.record);
+      return saved;
+    }
     if (
+      transaction.replayed &&
       String(season.status) === "OPEN" &&
       String(season.form_id) === requestedFormId &&
       String(season.runtime_spreadsheet_id) === requestedSpreadsheetId &&
-      String(season.response_sheet_name) === requestedResponseSheet
+      (String(season.response_sheet_name) === requestedResponseSheet || String(season.response_sheet_id) === requestedResponseSheet) &&
+      parseJsonObject_(season.field_mapping_json).display_name_header === requestedNameHeader
     ) {
+      if (!getOpenDefaultSeasonId_()) setDefaultSeasonId_(season.season_id, actorId);
       var recovered = {
         season: seasonManagementProjection_(season),
         sync: {
@@ -235,7 +258,8 @@ function initializeSeason_(request) {
     if (season.form_id && (
       String(season.form_id) !== binding.form_id ||
       String(season.runtime_spreadsheet_id) !== binding.runtime_spreadsheet_id ||
-      String(season.response_sheet_id) !== binding.response_sheet_id
+      String(season.response_sheet_id) !== binding.response_sheet_id ||
+      parseJsonObject_(season.field_mapping_json).display_name_header !== requestedNameHeader
     )) {
       throw dragonBoatRequestError_("BINDING_LOCKED", "Initialization already started with another binding.");
     }
@@ -309,18 +333,7 @@ function retrySeasonSync_(request) {
 }
 
 function syncSeasonMembersInternal_(season, source, actorId, requestId) {
-  var spreadsheet = getSeasonSpreadsheet_(season);
-  var responseSheet = null;
-  spreadsheet.getSheets().some(function (candidate) {
-    if (String(candidate.getSheetId()) === String(season.response_sheet_id)) {
-      responseSheet = candidate;
-      return true;
-    }
-    return false;
-  });
-  if (!responseSheet) {
-    throw dragonBoatRequestError_("BINDING_RESPONSE_TAB_MISSING", "The bound response tab no longer exists.");
-  }
+  var responseSheet = getBoundResponseSheet_(season);
   var headers = responseSheet.getRange(1, 1, 1, responseSheet.getLastColumn()).getValues()[0].map(function (value) {
     return String(value).trim();
   });
@@ -346,6 +359,16 @@ function syncSeasonMembersInternal_(season, source, actorId, requestId) {
   var now = new Date().toISOString();
   if (lastRow > 1) {
     var rows = responseSheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    // Legacy sources use row positions. Stop before importing if a previously
+    // mapped row was moved, edited or removed; C2 will migrate to Form IDs.
+    members.forEach(function (member) {
+      var sourceRow = Number(member.source_row_number);
+      if (!Number.isSafeInteger(sourceRow) || sourceRow < 2 ||
+          String(member.source_key) !== String(season.response_sheet_id) + ":" + sourceRow ||
+          !rows[sourceRow - 2] || String(rows[sourceRow - 2][nameColumn] || "").trim() !== String(member.source_display_name)) {
+        throw dragonBoatRequestError_("BINDING_RESPONSES_CHANGED", "Previously imported Form rows changed. Review their mapping before importing new members.");
+      }
+    });
     rows.forEach(function (row, index) {
       var rowNumber = index + 2;
       var sourceKey = String(season.response_sheet_id) + ":" + rowNumber;
@@ -375,6 +398,8 @@ function syncSeasonMembersInternal_(season, source, actorId, requestId) {
       sourceKeys[sourceKey] = true;
       imported += 1;
     });
+  } else if (members.length) {
+    throw dragonBoatRequestError_("BINDING_RESPONSES_CHANGED", "Previously imported Form responses are missing.");
   }
   var importState = findSeasonSheetRecord_(season, "ImportState", "season_id", season.season_id);
   var stateValues = {
@@ -407,6 +432,14 @@ function syncSeasonMembersInternal_(season, source, actorId, requestId) {
     roster_version: Number(season.roster_version),
     last_sync_at: now
   };
+}
+
+function getBoundResponseSheet_(season) {
+  var sheets = getSeasonSpreadsheet_(season).getSheets();
+  for (var index = 0; index < sheets.length; index += 1) {
+    if (String(sheets[index].getSheetId()) === String(season.response_sheet_id)) return sheets[index];
+  }
+  throw dragonBoatRequestError_("BINDING_RESPONSE_TAB_MISSING", "The bound response tab no longer exists.");
 }
 
 function ensureSeasonFormSubmitTrigger_(season) {

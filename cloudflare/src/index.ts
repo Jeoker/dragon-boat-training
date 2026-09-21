@@ -1,20 +1,7 @@
 import { constantTimeEqual } from "./crypto";
 import { callGoogleBridgeProbe, type C0BridgeProbeScenario } from "./bridge";
-import { ApiError, apiFailure, jsonResponse, readJsonObject, requireRequestId, requireString } from "./http";
+import { ApiError, apiFailure, apiSuccess, readJsonObject, requireRequestId, requireString } from "./http";
 export { TeamState } from "./team-state";
-
-function meta(env: Env, requestId: string | null = null): Record<string, unknown> {
-  return {
-    contract_version: env.CONTRACT_VERSION,
-    service_version: env.SERVICE_VERSION,
-    backend_instance: env.BACKEND_INSTANCE,
-    backend_generation: env.BACKEND_GENERATION,
-    writer_epoch: Number(env.WRITER_EPOCH),
-    environment: env.ENVIRONMENT,
-    server_time: new Date().toISOString(),
-    request_id: requestId
-  };
-}
 
 function requireC0Access(request: Request, env: Env): void {
   if (env.ENVIRONMENT === "production") {
@@ -30,20 +17,19 @@ function requireC0Access(request: Request, env: Env): void {
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
+    let requestId: string | null = null;
     try {
       if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-        return jsonResponse({ ok: true, data: { status: "available" }, meta: meta(env) });
+        if (url.searchParams.has("request_id")) requestId = requireRequestId({ request_id: url.searchParams.get("request_id") });
+        return apiSuccess({ status: "available" }, env, requestId);
       }
       if (url.pathname.startsWith("/internal/c0/")) {
         requireC0Access(request, env);
         if (request.method === "POST" && url.pathname === "/internal/c0/bridge-probe") {
           const input = await readJsonObject(request);
-          const requestId = requireRequestId(input);
+          requestId = requireRequestId(input);
           const challenge = requireString(input, "challenge", 1, 256);
-          const scenario =
-            typeof input.scenario === "string" && input.scenario.trim()
-              ? input.scenario.trim()
-              : "valid";
+          const scenario = input.scenario === undefined ? "valid" : requireString(input, "scenario", 1, 40);
           const allowedScenarios = new Set<C0BridgeProbeScenario>([
             "valid",
             "expired",
@@ -55,22 +41,20 @@ export default {
           if (!allowedScenarios.has(scenario as C0BridgeProbeScenario)) {
             throw new ApiError("INVALID_REQUEST", "The C0 bridge scenario is invalid.");
           }
-          return jsonResponse({
-            ok: true,
-            data: await callGoogleBridgeProbe(
-              env,
-              requestId,
-              challenge,
-              scenario as C0BridgeProbeScenario
-            ),
-            meta: meta(env, requestId)
-          });
+          return apiSuccess(await callGoogleBridgeProbe(
+            env,
+            requestId,
+            challenge,
+            scenario as C0BridgeProbeScenario
+          ), env, requestId);
         }
-        return env.TEAM_STATE.getByName(env.TEAM_ID).fetch(request);
+        if (url.pathname === "/internal/c0/commit" || url.pathname === "/internal/c0/state") {
+          return await env.TEAM_STATE.getByName(env.TEAM_ID).fetch(request);
+        }
       }
       throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
     } catch (error) {
-      return apiFailure(error);
+      return apiFailure(error, env, requestId);
     }
   }
 } satisfies ExportedHandler<Env>;

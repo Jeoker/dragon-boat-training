@@ -1,32 +1,6 @@
-// Business plans are persisted before the first write. The historical function
-// name remains because deployed signup request scopes intentionally stay P2.
-function recoverP2Requests_() {
-  var id = getScriptProperties_().getProperty(DRAGON_BOAT_PROPERTY_KEYS_.SYSTEM_SPREADSHEET_ID);
-  if (!id) return;
-  var spreadsheet = getSystemSpreadsheet_();
-  if (!spreadsheet.getSheetByName("SystemRequests")) return;
-  getSheetRecords_("SystemRequests").filter(function (record) {
-    var actor = String(record.actor_id);
-    return String(record.status) === "STARTED" &&
-      (actor.indexOf("P2:") === 0 || actor.indexOf("P3:") === 0 || actor.indexOf("P3_FREEZE:") === 0 || actor.indexOf("P1M:") === 0);
-  }).forEach(function (record) {
-    var saved = readSystemRequestResult_(record);
-    if (saved.kind === "P1_MANAGEMENT") applyScheduleRequest_(record);
-    else if (saved.kind === "P2") applyP2Request_(record);
-    else if (saved.kind === "P3") applyP3Request_(record);
-    else throw dragonBoatRequestError_("RECOVERY_REQUIRED", "A pending business change needs recovery.", true);
-  });
-}
-
 function persistP2Request_(actorId, request, digest, plan, result) {
-  var saved = { kind: "P2", season_id: plan.season_id, plan: plan, result: result };
-  // A Sheets cell has a finite size. Never begin a plan that cannot be journaled.
-  if (JSON.stringify(saved).length > 45000) {
-    throw dragonBoatRequestError_("REQUEST_TOO_LARGE", "This change is too large to save safely.");
-  }
-  var transaction = beginSystemRequest_(actorId, request.action, request.request_id, digest, saved);
-  SpreadsheetApp.flush();
-  return applyP2Request_(transaction.record);
+  return persistBusinessPlan_(actorId, request, digest,
+    { kind: "P2", season_id: plan.season_id, plan: plan, result: result }, applyP2Request_);
 }
 
 function applyP2Request_(record) {
@@ -162,13 +136,10 @@ function signupCounts_(rows, practice) {
   return result;
 }
 
-function canConfirmSignup_(preference, counts, seatAvailability) {
+function canConfirmSignup_(preference, counts) {
   return counts.confirmed < counts.total_capacity &&
     (preference !== "LEFT" || counts.left < counts.left_capacity) &&
-    (preference !== "RIGHT" || counts.right < counts.right_capacity) &&
-    (!seatAvailability || seatAvailability.some(function (slot) {
-      return !slot.claimed && seatMatchesSignupPreference_(slot.side, preference);
-    }));
+    (preference !== "RIGHT" || counts.right < counts.right_capacity);
 }
 
 function publicPractice_(request) {
@@ -282,7 +253,7 @@ function mutateSignup_(request) {
       var counts = signupCounts_(rows, practice);
       var seatAvailability = signupSeatAvailability_(season, practice, rows, memberId);
       rows.filter(function (row) { return row.status === "WAITLISTED"; }).sort(compareSignupQueue_).forEach(function (row) {
-        if (eligible[row.member_id] && canConfirmSignup_(row.preference, counts, seatAvailability) &&
+        if (eligible[row.member_id] && canConfirmSignup_(row.preference, counts) &&
             claimSignupSeat_(seatAvailability, row.preference)) {
           row.status = "CONFIRMED";
           row.updated_at = now;

@@ -12,102 +12,19 @@ function handleDragonBoatRequest_(method, event) {
   try {
     var request = parseDragonBoatRequest_(method, event);
     requestId = request.request_id;
-
-    if (method === "GET" && ["health", "bootstrap", "members", "practice", "historySeasons", "seasonHistory", "archivedPractice"].indexOf(request.action) < 0) {
+    var routes = dragonBoatRoutes_();
+    var route = Object.prototype.hasOwnProperty.call(routes, request.action) ? routes[request.action] : null;
+    if (!route) {
+      throw dragonBoatRequestError_("UNSUPPORTED_ACTION", "The requested action is not available.");
+    }
+    if (route.methods.indexOf(method) < 0) {
       throw dragonBoatRequestError_(
         "METHOD_NOT_ALLOWED",
-        "This action must be sent as a POST request."
+        "This action must be sent as a " + route.methods.join(" or ") + " request."
       );
     }
-
-    switch (request.action) {
-      case "health":
-        return dragonBoatSuccess_(dragonBoatHealth_(), requestId);
-      case "bootstrap":
-        return dragonBoatSuccess_(withDragonBoatScriptLock_(function () { return publicBootstrap_(request); }), requestId);
-      case "members":
-        return dragonBoatSuccess_(publicMembers_(request), requestId);
-      case "practice":
-        return dragonBoatSuccess_(publicPractice_(request), requestId);
-      case "historySeasons":
-        return dragonBoatSuccess_(publicHistorySeasons_(request), requestId);
-      case "seasonHistory":
-        return dragonBoatSuccess_(publicSeasonHistory_(request), requestId);
-      case "archivedPractice":
-        return dragonBoatSuccess_(publicArchivedPractice_(request), requestId);
-      case "signup":
-      case "signupByCoach":
-      case "updateSignup":
-      case "updateSignupByCoach":
-      case "cancelSignup":
-      case "cancelSignupByCoach":
-        return dragonBoatSuccess_(mutateSignup_(request), requestId);
-      case "listSeasonMembers":
-        return dragonBoatSuccess_(listSeasonMembers_(request), requestId);
-      case "getMemberWorkspace":
-        return dragonBoatSuccess_(getMemberWorkspace_(request), requestId);
-      case "getSeatingWorkspace":
-        return dragonBoatSuccess_(getSeatingWorkspace_(request), requestId);
-      case "saveSeatPlanDraft":
-        return dragonBoatSuccess_(saveSeatPlanDraft_(request), requestId);
-      case "publishSeatPlan":
-        return dragonBoatSuccess_(publishSeatPlan_(request), requestId);
-      case "getArchiveManagement":
-        return dragonBoatSuccess_(getArchiveManagement_(request), requestId);
-      case "retrySeasonArchive":
-        return dragonBoatSuccess_(retrySeasonArchive_(request), requestId);
-      case "appendHistoryCorrection":
-        return dragonBoatSuccess_(appendHistoryCorrection_(request), requestId);
-      case "listManagementAudit":
-        return dragonBoatSuccess_(listManagementAudit_(request), requestId);
-      case "updateMember":
-      case "restoreMemberName":
-      case "setMemberStatus":
-        return dragonBoatSuccess_(mutateMember_(request), requestId);
-      case "coachLogin":
-        return dragonBoatSuccess_(coachLogin_(request), requestId);
-      case "coachLogout":
-        return dragonBoatSuccess_(coachLogout_(request), requestId);
-      case "coachBootstrap":
-        return dragonBoatSuccess_(withDragonBoatScriptLock_(function () { return coachBootstrap_(request); }), requestId);
-      case "coachConnectivityWrite":
-        return dragonBoatSuccess_(coachConnectivityWrite_(request), requestId);
-      case "cloudflareBridgeProbe":
-        return dragonBoatSuccess_(cloudflareBridgeProbe_(request), requestId);
-      case "getSeasonManagement":
-        return dragonBoatSuccess_(withDragonBoatScriptLock_(function () { return getSeasonManagement_(request); }), requestId);
-      case "createSeason":
-        return dragonBoatSuccess_(createSeason_(request), requestId);
-      case "validateSeasonBinding":
-        return dragonBoatSuccess_(validateSeasonBindingAction_(request), requestId);
-      case "initializeSeason":
-        return dragonBoatSuccess_(initializeSeason_(request), requestId);
-      case "retrySeasonSync":
-        return dragonBoatSuccess_(retrySeasonSync_(request), requestId);
-      case "previewPracticeChange":
-        return dragonBoatSuccess_(previewPracticeChange_(request), requestId);
-      case "setDefaultSeason":
-      case "updateSeasonSchedule":
-      case "updatePractice":
-      case "cancelPractice":
-      case "updateScheduleTemplates":
-        return dragonBoatSuccess_(manageSchedule_(request), requestId);
-      case "updateTrainingWeek":
-        return dragonBoatSuccess_(updateTrainingWeek_(request), requestId);
-      case "confirmTrainingWeek":
-        return dragonBoatSuccess_(manageSchedule_(request), requestId);
-      case "publishTrainingWeek":
-        return dragonBoatSuccess_(manageSchedule_(request), requestId);
-      case "createPractice":
-        return dragonBoatSuccess_(manageSchedule_(request), requestId);
-      case "publishAdditionalPractice":
-        return dragonBoatSuccess_(manageSchedule_(request), requestId);
-      default:
-        throw dragonBoatRequestError_(
-          "UNSUPPORTED_ACTION",
-          "The requested action is not available."
-        );
-    }
+    validateDragonBoatInputTypes_(request);
+    return dragonBoatSuccess_(route.handle(request), requestId);
   } catch (error) {
     if (error && error.isDragonBoatRequestError) {
       return dragonBoatError_(
@@ -125,6 +42,71 @@ function handleDragonBoatRequest_(method, event) {
       requestId
     );
   }
+}
+
+// One allowlist owns routing and HTTP methods. Lazy handlers also let the
+// isolated bridge build expose its probe without loading business storage.
+function dragonBoatRoutes_() {
+  var routes = {};
+  function add(names, method, handle) {
+    names.split(" ").forEach(function (name) { routes[name] = { methods: method.split(" "), handle: handle }; });
+  }
+  add("health", "GET POST", function () { return dragonBoatHealth_(); });
+  add("bootstrap", "GET", function (r) { return withDragonBoatScriptLock_(function () { return publicBootstrap_(r); }); });
+  add("members", "GET", function (r) { return publicMembers_(r); });
+  add("practice", "GET", function (r) { return publicPractice_(r); });
+  add("historySeasons", "GET", function (r) { return publicHistorySeasons_(r); });
+  add("seasonHistory", "GET", function (r) { return publicSeasonHistory_(r); });
+  add("archivedPractice", "GET", function (r) { return publicArchivedPractice_(r); });
+  add("signup signupByCoach updateSignup updateSignupByCoach cancelSignup cancelSignupByCoach", "POST", function (r) { return mutateSignup_(r); });
+  add("updateMember restoreMemberName setMemberStatus", "POST", function (r) { return mutateMember_(r); });
+  add("listSeasonMembers", "POST", function (r) { return listSeasonMembers_(r); });
+  add("getMemberWorkspace", "POST", function (r) { return getMemberWorkspace_(r); });
+  add("getSeatingWorkspace", "POST", function (r) { return getSeatingWorkspace_(r); });
+  add("saveSeatPlanDraft", "POST", function (r) { return saveSeatPlanDraft_(r); });
+  add("publishSeatPlan", "POST", function (r) { return publishSeatPlan_(r); });
+  add("getArchiveManagement", "POST", function (r) { return getArchiveManagement_(r); });
+  add("retrySeasonArchive", "POST", function (r) { return retrySeasonArchive_(r); });
+  add("appendHistoryCorrection", "POST", function (r) { return appendHistoryCorrection_(r); });
+  add("listManagementAudit", "POST", function (r) { return listManagementAudit_(r); });
+  add("coachLogin", "POST", function (r) { return coachLogin_(r); });
+  add("coachLogout", "POST", function (r) { return coachLogout_(r); });
+  add("coachBootstrap", "POST", function (r) { return withDragonBoatScriptLock_(function () { return coachBootstrap_(r); }); });
+  add("coachConnectivityWrite", "POST", function (r) { return coachConnectivityWrite_(r); });
+  add("cloudflareBridgeProbe", "POST", function (r) { return cloudflareBridgeProbe_(r); });
+  add("getSeasonManagement", "POST", function (r) { return withDragonBoatScriptLock_(function () { return getSeasonManagement_(r); }); });
+  add("createSeason", "POST", function (r) { return createSeason_(r); });
+  add("validateSeasonBinding", "POST", function (r) { return validateSeasonBindingAction_(r); });
+  add("initializeSeason", "POST", function (r) { return initializeSeason_(r); });
+  add("retrySeasonSync", "POST", function (r) { return retrySeasonSync_(r); });
+  add("previewPracticeChange", "POST", function (r) { return previewPracticeChange_(r); });
+  add("updateTrainingWeek", "POST", function (r) { return updateTrainingWeek_(r); });
+  add("setDefaultSeason updateSeasonSchedule updatePractice cancelPractice updateScheduleTemplates confirmTrainingWeek publishTrainingWeek createPractice publishAdditionalPractice", "POST", function (r) { return manageSchedule_(r); });
+  return routes;
+}
+
+function validateDragonBoatInputTypes_(request) {
+  // Validate types without rewriting the values: historical request digests
+  // depend on the exact accepted JSON representation.
+  ["season_version", "settings_version", "week_version", "practice_version", "signup_version",
+    "member_version", "seat_plan_version", "published_revision", "history_version"].forEach(function (key) {
+    if (request[key] !== undefined && !isRequestInteger_(request[key], 0, Number.MAX_SAFE_INTEGER)) {
+      throw dragonBoatRequestError_("INVALID_REQUEST", "A non-negative integer " + key + " is required.");
+    }
+  });
+  if (request.known_roster_version !== undefined && request.known_roster_version !== -1 &&
+      !isRequestInteger_(request.known_roster_version, 0, Number.MAX_SAFE_INTEGER)) {
+    throw dragonBoatRequestError_("INVALID_REQUEST", "known_roster_version must be an integer, or -1 when unknown.");
+  }
+  ["include_current_view", "acknowledge_preference_mismatch"].forEach(function (key) {
+    if (request[key] !== undefined && typeof request[key] !== "boolean") {
+      throw dragonBoatRequestError_("INVALID_REQUEST", key + " must be a boolean.");
+    }
+  });
+  ["season_id", "practice_id", "week_id", "member_id"].forEach(function (key) {
+    if (key === "season_id" && request.action === "bootstrap" && request[key] === "") return;
+    if (request[key] !== undefined) requireRequestString_(request, key, 8, 128);
+  });
 }
 
 function dragonBoatHealth_() {
@@ -166,7 +148,7 @@ function parseDragonBoatRequest_(method, event) {
   }
 
   var requestId = typeof input.request_id === "string" ? input.request_id.trim() : "";
-  if (!requestId) {
+  if (!requestId && input.request_id === undefined && method === "GET") {
     requestId = createDragonBoatRequestId_();
   }
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(requestId)) {

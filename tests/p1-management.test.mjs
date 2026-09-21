@@ -123,6 +123,17 @@ test("P1 preview detects intervening signups and accepted changes preserve queue
   for (const [name, rows] of Object.entries(before)) assert.deepEqual(sheetRecords(f.binding.runtimeSpreadsheet, name), rows, name);
 });
 
+test("cancelled published practices do not prevent shortening a season", async () => {
+  const f = await fixture();
+  ok(f.open());
+  for (const practice of f.weekData().practices) ok(f.send("cancelPractice", f.preview("CANCEL", {}, practice)));
+  const season = f.management().season;
+  const updated = ok(f.send("updateSeasonSchedule", { season_id: season.season_id, season_version: season.season_version,
+    start_date: season.start_date, end_date: "2026-09-05" }));
+  assert.equal(updated.season.end_date, "2026-09-05");
+  assert.equal(f.weekData().practices.filter(practice => practice.cancelled).length, 2);
+});
+
 test("P1 schedule validation rejects altered previews and invalid ranges and invalid local times", async () => {
   const f = await fixture();
   const body = f.preview("UPDATE", { location: "Previewed" });

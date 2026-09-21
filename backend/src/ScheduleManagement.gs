@@ -42,13 +42,8 @@ function applyScheduleRequest_(record) {
 }
 
 function persistSchedulePlan_(scope, request, digest, plan, result) {
-  var saved = { kind: "P1_MANAGEMENT", plan: plan, result: result };
-  if (JSON.stringify(saved).length > 45000) {
-    throw dragonBoatRequestError_("REQUEST_TOO_LARGE", "This schedule change is too large to save safely.");
-  }
-  var transaction = beginSystemRequest_(scope, request.action, request.request_id, digest, saved);
-  SpreadsheetApp.flush();
-  return applyScheduleRequest_(transaction.record);
+  return persistBusinessPlan_(scope, request, digest,
+    { kind: "P1_MANAGEMENT", plan: plan, result: result }, applyScheduleRequest_);
 }
 
 function schedulePlanRow_(plan, sheet, key, row, runtime) {
@@ -176,7 +171,7 @@ function manageSchedule_(request) {
       var startAt = localDateTimeToIso_(startDate, "00:00", season.timezone);
       var practices = season.runtime_spreadsheet_id ? getSeasonSheetRecords_(season, "Practices") : [];
       if (practices.some(function (practice) {
-        return (!practice.cancelled_at || practice.schedule_published_at) &&
+        return !practice.cancelled_at &&
           (String(practice.start_at) < startAt || String(practice.end_at) > endAt);
       })) throw dragonBoatRequestError_("SEASON_SCHEDULE_CONFLICT", "Existing training or public history falls outside these dates. Resolve it before saving.");
       var patch = { season_id: season.season_id, start_date: startDate, end_date: endDate, season_ends_at: endAt,
