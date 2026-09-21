@@ -3,9 +3,11 @@ import { sha256Base64Url } from "./crypto";
 import { ApiError, apiFailure, apiSuccess, optionalBoolean, optionalInteger, readJsonObject, requireRequestId, requireString } from "./http";
 import { APPLICATION_SCHEMA_VERSION, applySchema } from "./schema";
 import {
-  C1_ACTIONS, C1_CONTRACT_VERSION, C1_SCHEDULE_ACTIONS, C1_SEATING_ACTIONS, C1_SIGNUP_ACTIONS
+  C1_ACTIONS, C1_CONTRACT_VERSION, C1_HISTORY_ACTIONS, C1_SCHEDULE_ACTIONS, C1_SEATING_ACTIONS,
+  C1_SIGNUP_ACTIONS
 } from "../../shared/c1-actions";
 import { C1Service } from "./c1-service";
+import { C1HistoryService } from "./c1-history-service";
 import { C1ScheduleService } from "./c1-schedule-service";
 import { C1SeatingService } from "./c1-seating-service";
 import { C1SignupService } from "./c1-signup-service";
@@ -72,6 +74,7 @@ export class TeamState extends DurableObject<Env> {
   }
 
   async repairScheduledWork(): Promise<void> {
+    new C1HistoryService(this.ctx, this.env).repairScheduledWork();
     await this.ensureNextAlarm();
   }
 
@@ -110,17 +113,37 @@ export class TeamState extends DurableObject<Env> {
           url.searchParams.get("season_id") || "", url.searchParams.get("practice_id") || ""),
         this.env, requestId, C1_CONTRACT_VERSION);
       }
+      if (isC1 && request.method === "GET" && url.pathname === "/internal/c1/public-history-seasons") {
+        requestId = requireRequestId({ request_id: url.searchParams.get("request_id") });
+        return apiSuccess(new C1HistoryService(this.ctx, this.env).publicHistorySeasons(
+          url.searchParams.get("limit"), url.searchParams.get("cursor")), this.env, requestId, C1_CONTRACT_VERSION);
+      }
+      if (isC1 && request.method === "GET" && url.pathname === "/internal/c1/public-season-history") {
+        requestId = requireRequestId({ request_id: url.searchParams.get("request_id") });
+        return apiSuccess(new C1HistoryService(this.ctx, this.env).publicSeasonHistory(
+          url.searchParams.get("season_id") || "", url.searchParams.get("limit"), url.searchParams.get("cursor")),
+        this.env, requestId, C1_CONTRACT_VERSION);
+      }
+      if (isC1 && request.method === "GET" && url.pathname === "/internal/c1/public-archived-practice") {
+        requestId = requireRequestId({ request_id: url.searchParams.get("request_id") });
+        return apiSuccess(new C1HistoryService(this.ctx, this.env).publicArchivedPractice(
+          url.searchParams.get("season_id") || "", url.searchParams.get("practice_id") || ""),
+        this.env, requestId, C1_CONTRACT_VERSION);
+      }
       if (isC1 && request.method === "POST") {
         const input = await readJsonObject(request);
         requestId = requireRequestId(input);
-        const data = Object.hasOwn(C1_SCHEDULE_ACTIONS, url.pathname)
+        const data = Object.hasOwn(C1_HISTORY_ACTIONS, url.pathname)
+          ? await new C1HistoryService(this.ctx, this.env).handle(url.pathname, input)
+          : Object.hasOwn(C1_SCHEDULE_ACTIONS, url.pathname)
           ? await new C1ScheduleService(this.ctx, this.env).handle(url.pathname, input)
           : Object.hasOwn(C1_SEATING_ACTIONS, url.pathname)
             ? await new C1SeatingService(this.ctx, this.env).handle(url.pathname, input)
           : Object.hasOwn(C1_SIGNUP_ACTIONS, url.pathname)
             ? await new C1SignupService(this.ctx, this.env).handle(url.pathname, input)
             : await new C1Service(this.ctx, this.env).handle(url.pathname, input);
-        await this.ensureNextAlarm();
+        if (c1Action?.writes) await this.repairScheduledWork();
+        else await this.ensureNextAlarm();
         return apiSuccess(data, this.env, requestId, C1_CONTRACT_VERSION);
       }
       throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
@@ -322,10 +345,15 @@ export class TeamState extends DurableObject<Env> {
   private async processClaimedJob(job: ClaimedJob): Promise<void> {
     let outboxId: string | null = null;
     let retryDelayMs = RECOVERY_ALARM_MS;
+    let rescheduleAtMs: number | null = null;
     try {
       const payload = parseJobJson(job.payload_json);
       if (job.job_type === "OPEN_TRAINING_WEEK") {
         await new C1ScheduleService(this.ctx, this.env).publishDueWeek(payload);
+      } else if (["FREEZE_PRACTICE_HISTORY", "COMPLETE_SEASON", "ARCHIVE_SEASON_HISTORY",
+        "FINALIZE_BACKUP_SNAPSHOT"].includes(job.job_type)) {
+        const outcome = await new C1HistoryService(this.ctx, this.env).processScheduledJob(job.job_type, payload);
+        rescheduleAtMs = outcome.reschedule_at_ms ?? null;
       } else if (job.job_type === "C0_MOCK_SYNC") {
         const c0Payload = parseC0MockSyncJob(payload);
         outboxId = c0Payload.outbox_id;
@@ -342,15 +370,23 @@ export class TeamState extends DurableObject<Env> {
           )
           .toArray()[0];
         if (!current || current.status !== "RUNNING" || current.lease_token !== job.lease_token) return;
-        this.ctx.storage.sql.exec(
-          `UPDATE scheduled_jobs
-              SET status = 'COMPLETED', lease_token = NULL, lease_until_ms = NULL,
-                  updated_at = ?, completed_at = ?, last_error = ''
-            WHERE job_id = ?`,
-          completedAt,
-          completedAt,
-          job.job_id
-        ).toArray();
+        if (rescheduleAtMs === null) {
+          this.ctx.storage.sql.exec(
+            `UPDATE scheduled_jobs
+                SET status = 'COMPLETED', lease_token = NULL, lease_until_ms = NULL,
+                    updated_at = ?, completed_at = ?, last_error = ''
+              WHERE job_id = ?`,
+            completedAt,
+            completedAt,
+            job.job_id
+          ).toArray();
+        } else {
+          this.ctx.storage.sql.exec(
+            `UPDATE scheduled_jobs
+                SET status = 'PENDING', due_at_ms = ?, lease_token = NULL, lease_until_ms = NULL,
+                    updated_at = ?, completed_at = NULL, last_error = ''
+              WHERE job_id = ?`, rescheduleAtMs, completedAt, job.job_id).toArray();
+        }
         if (outboxId) this.ctx.storage.sql.exec(
           `UPDATE sync_outbox SET status = 'CONFIRMED', attempt_count = ?, completed_at = ?, last_error = ''
             WHERE outbox_id = ?`, job.attempt_count, completedAt, outboxId).toArray();
@@ -381,6 +417,8 @@ export class TeamState extends DurableObject<Env> {
           job.attempt_count, message, outboxId).toArray();
       });
     }
+    try { new C1HistoryService(this.ctx, this.env).recordUsageSnapshot(); }
+    catch (error) { console.error("Usage snapshot failed", error instanceof Error ? error.message : "unknown error"); }
   }
 
   private nextJobDueAt(): number | null {

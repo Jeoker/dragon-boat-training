@@ -159,8 +159,9 @@ export class C1Service {
       identity.requestKey, actorScope, action, requestId, identity.payloadDigest, JSON.stringify(result), at, at
     ).toArray();
     sql.exec(
-      `INSERT INTO audit_events(event_id, request_key, actor_scope, action, details_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`, identity.eventId, identity.requestKey, actorScope, action, JSON.stringify(details), at
+      `INSERT INTO audit_events(event_id, request_key, actor_scope, action, details_json, created_at, season_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`, identity.eventId, identity.requestKey, actorScope, action,
+      JSON.stringify(details), at, typeof details.season_id === "string" ? details.season_id : null
     ).toArray();
   }
 

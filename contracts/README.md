@@ -4,9 +4,9 @@
 
 - [api-v1.json](api-v1.json)：现行 Apps Script 动作、权限、输入和输出清单。
 - [api-cloudflare-c0.json](api-cloudflare-c0.json)：Cloudflare C0 隔离测试接口，不是生产报名 API。
-- [api-cloudflare-c1.json](api-cloudflare-c1.json)：C1 核心、权限、排期、报名候补与排座切片的隔离接口。
+- [api-cloudflare-c1.json](api-cloudflare-c1.json)：C1 核心、权限、排期、报名候补、排座、冻结历史与运维切片的隔离接口。
 
-这些 JSON 文件是接口清单，不是可交给 JSON Schema 验证器执行的 schema。C1 的动作注册在 `shared/c1-actions.ts`，核心、排期、报名与排座 DTO／运行时解析分别在 `shared/c1-contract.ts`、`shared/c1-schedule-contract.ts`、`shared/c1-signup-contract.ts` 和 `shared/c1-seating-contract.ts`；服务端业务校验及客户端响应校验继续独立承担相应边界。测试核对代码与清单中的动作、方法和权限声明一致。不能把字段清单当成完整的类型或权限校验。C1 影子导入的 `transport_only` 表示本地／staging 隔离入口只使用统一的 `C1_TEST_KEY` 传输门；当前没有第二个未实现的 migration key，production 入口仍固定隐藏。
+这些 JSON 文件是接口清单，不是可交给 JSON Schema 验证器执行的 schema。C1 的动作注册在 `shared/c1-actions.ts`，核心、排期、报名、排座及历史 DTO／运行时解析分别在 `shared/c1-contract.ts`、`shared/c1-schedule-contract.ts`、`shared/c1-signup-contract.ts`、`shared/c1-seating-contract.ts` 和 `shared/c1-history-contract.ts`；服务端业务校验及客户端响应校验继续独立承担相应边界。测试核对代码与清单中的动作、方法和权限声明一致。不能把字段清单当成完整的类型或权限校验。C1 影子导入的 `transport_only` 表示本地／staging 隔离入口只使用统一的 `C1_TEST_KEY` 传输门；当前没有第二个未实现的 migration key，production 入口仍固定隐藏。
 
 ## 请求边界
 
@@ -15,7 +15,7 @@
 3. 所有 POST 必须带客户端生成的 `request_id`，8–128 位 ASCII 字母、数字、下划线或连字符。缺失或非法编号在业务动作前拒绝；GET 缺省时服务端可生成编号。正常客户端始终传入编号并验证响应关联。
 4. Apps Script 版本字段接受非负安全整数，保留规范十进制字符串兼容；不把 `null`、布尔值、数组、空串或小数转换成版本。明确的布尔选项只接受 JSON boolean。`known_roster_version=-1` 是旧页面的“未知”提示，不是业务版本。缺省 `bootstrap.season_id` 或旧客户端空串表示首页默认入口。
 5. Cloudflare JSON 数值字段只接受 number 安全整数，布尔字段只接受 boolean。不能以 TypeScript 类型断言代替运行时校验。迁移旧客户端时由适配器明确处理兼容，不静默转换原请求摘要。
-6. `limit` 必须为正整数，超过上限时截到上限；缺省值见动作清单。cursor 是不透明续页标识，客户端不构造、不解释。实体关联、必填字段、枚举和时间边界继续在业务层检查。
+6. `limit` 必须为正整数；缺省值、上限和超过上限时的拒绝或截断规则见动作清单。cursor 是不透明续页标识，客户端不构造、不解释。实体关联、必填字段、枚举和时间边界继续在业务层检查。
 
 ## 响应边界
 
@@ -53,6 +53,6 @@ Apps Script 业务失败可能仍是 HTTP 200，必须检查 envelope。客户�
 
 ## C1 接口设计约束
 
-C1.1–C1.4 已按业务域建立独立请求／响应 DTO、运行时解析、集中动作注册和契约测试；后续切片继续沿用这一结构。接口清单只描述边界，不能代替运行时类型系统。版本与选项、业务结果与当前视图、公开与管理投影分别建模。
+C1.1–C1.5 已按业务域建立独立请求／响应 DTO、运行时解析、集中动作注册和契约测试；后续切片继续沿用这一结构。接口清单只描述边界，不能代替运行时类型系统。版本与选项、业务结果与当前视图、公开与管理投影分别建模。
 
 新接口统一写入回执与可选视图；异步维护返回任务标识及任务状态。旧动作和历史日志由兼容适配器承接，不破坏重试摘要。接口清单中的服务版本、动作、方法、权限和直接业务错误必须由测试与实现对照；修改 `wrangler.jsonc` 后必须重新生成 Worker 类型。前端接入前验证完整业务响应形状、缓存代次、结果查询权限和浏览器 CORS。C0 探针的成功只证明持久化与桥接机制，不能替代这些业务契约验收。

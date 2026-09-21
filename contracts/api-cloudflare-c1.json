@@ -1,9 +1,9 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C1.1 core, C1.2 schedule, C1.3 signup and C1.4 seating local implementation; isolated migration API; not production",
-  "contract_version": "2026-09-20.c1",
-  "service_version": "0.5.0-c1-seating",
+  "status": "C1.1 core through C1.5 frozen history and operations local implementation; isolated migration API; not production",
+  "contract_version": "2026-09-21.c1.5",
+  "service_version": "0.6.0-c1-history",
   "transport_gate": "Every /internal/c1 route is absent in production and requires C1_TEST_KEY in local or staging. This gate is separate from the business authentication declared per action.",
   "response": {
     "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
@@ -246,6 +246,91 @@
       "request": ["request_id", "session_token", "season_id", "practice_id", "practice_version", "signup_version", "seat_plan_version", "published_revision", "acknowledge_preference_mismatch"],
       "response_result": ["season_id", "practice_id", "seat_plan_version", "published_revision"],
       "notes": "Publishes an immutable manual revision. Upcoming training requires every confirmed signup to be seated and explicit acknowledgement of side mismatches; final correction preserves signup history."
+    },
+    "/internal/c1/import-history": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "seasons", "practices", "corrections"],
+      "response_result": ["source_snapshot_id", "seasons", "practices", "corrections"],
+      "notes": "Imports immutable season and practice history plus continuous correction versions. Cancelled or unpublished schedule rows cannot enter history; the core season must already be ARCHIVED. Creates no Google outbox."
+    },
+    "/internal/c1/public-history-seasons": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "optional limit", "optional cursor"],
+      "response": ["seasons", "next_cursor", "total_count", "generated_at"],
+      "notes": "Keyset-paginated immutable season honor-wall directory. Defaults to 30 and returns at most 100 rows."
+    },
+    "/internal/c1/public-season-history": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "season_id", "optional limit", "optional cursor"],
+      "response": ["season", "practices", "next_cursor", "total_count", "generated_at"],
+      "notes": "Keyset-paginated uncancelled frozen practice summaries for one archived season."
+    },
+    "/internal/c1/public-archived-practice": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "season_id", "practice_id"],
+      "response": ["season", "practice", "final_status", "seat_plan", "corrections", "history_version", "archived_at"],
+      "notes": "Returns only display names captured from the final formal revision. Member IDs, private draft and signup history are never projected."
+    },
+    "/internal/c1/get-history-management": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id"],
+      "response": ["season", "archive_status", "season_archive", "practices", "generated_at"]
+    },
+    "/internal/c1/append-history-correction": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "history_version", "note"],
+      "response_result": ["season_id", "practice_id", "correction_id", "history_version"],
+      "notes": "Appends a single-line note and advances history_version without rewriting the frozen snapshot."
+    },
+    "/internal/c1/list-management-audit": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id", "optional limit", "optional cursor"],
+      "response": ["season_id", "events", "next_cursor", "scan_cap_reached", "generated_at"],
+      "notes": "Uses the indexed season identity and a stable created_at/event_id keyset cursor; returns at most 100 rows."
+    },
+    "/internal/c1/create-backup-snapshot": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token"],
+      "response_result": ["snapshot_id", "manifest"],
+      "notes": "Captures an immutable transaction-consistent private snapshot into bounded JSON chunks, then creates SHA-256 chunk digests and a manifest. The same request resumes an interrupted finalization."
+    },
+    "/internal/c1/get-backup-chunk": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "snapshot_id", "chunk_index"],
+      "response": ["snapshot_id", "manifest", "chunk"]
+    },
+    "/internal/c1/verify-backup-snapshot": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "snapshot_id", "content_digest"],
+      "response": ["snapshot_id", "verified", "expected_content_digest", "chunk_count", "record_count", "verified_at"]
+    },
+    "/internal/c1/get-operations": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token"],
+      "response": ["schema_version", "database_size_bytes", "counts", "usage", "generated_at"],
+      "notes": "Returns application-level daily storage and row-count observations. It does not claim to replace Cloudflare account billing or platform quota metrics."
     }
   },
   "errors": [
@@ -260,11 +345,13 @@
     "PRACTICE_NOT_PUBLIC", "PRACTICE_NOT_PUBLISHABLE", "INVALID_TIME_RANGE", "PREVIEW_STALE",
     "SIGNUP_CLOSED", "SIGNUP_EXISTS", "SIGNUP_NOT_ACTIVE", "SIGNUP_RATE_LIMITED",
     "INVALID_SEAT_PLAN", "ROLE_SIGNUP_CONFLICT", "SEAT_MEMBER_NOT_CONFIRMED", "SEAT_PLAN_INCOMPLETE",
-    "PREFERENCE_ACK_REQUIRED", "SEAT_PLAN_FROZEN",
+    "PREFERENCE_ACK_REQUIRED", "SEAT_PLAN_FROZEN", "INVALID_CURSOR", "ARCHIVE_NOT_DUE",
+    "HISTORY_NOT_READY", "HISTORY_NOT_FOUND", "BACKUP_NOT_READY", "BACKUP_CHUNK_NOT_FOUND",
+    "BACKUP_INTEGRITY_ERROR",
     "VERSION_CONFLICT", "INTERNAL_ERROR"
   ],
   "not_yet_in_this_slice": [
-    "season activation and Google binding", "default-season mutation", "immutable freeze snapshots and history",
+    "season activation and Google binding", "default-season mutation", "complete migration regression and staging acceptance",
     "Google import/export execution", "production or Pages routing", "browser CORS"
   ]
 }

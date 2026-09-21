@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 5;
+export const APPLICATION_SCHEMA_VERSION = 6;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -239,6 +239,83 @@ function applyC1SeatingSchema(sql: SqlStorage): void {
   `).toArray();
 }
 
+function applyC1HistorySchema(sql: SqlStorage): void {
+  const auditColumns = sql.exec<{ name: string }>("PRAGMA table_info(audit_events)").toArray();
+  if (!auditColumns.some((column) => column.name === "season_id")) {
+    sql.exec("ALTER TABLE audit_events ADD COLUMN season_id TEXT;").toArray();
+    sql.exec(`UPDATE audit_events SET season_id=json_extract(details_json, '$.season_id')
+      WHERE json_valid(details_json) AND json_type(details_json, '$.season_id')='text'`).toArray();
+  }
+  sql.exec(`
+    CREATE INDEX IF NOT EXISTS audit_events_season_idx
+      ON audit_events(season_id, created_at DESC, event_id DESC);
+    CREATE TABLE IF NOT EXISTS practice_history (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      history_version INTEGER NOT NULL CHECK (history_version >= 1),
+      final_status TEXT NOT NULL CHECK (final_status IN ('FROZEN', 'UNPUBLISHED')),
+      frozen_revision INTEGER NOT NULL CHECK (frozen_revision >= 0),
+      snapshot_json TEXT NOT NULL, frozen_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id)
+    );
+    CREATE INDEX IF NOT EXISTS practice_history_season_idx
+      ON practice_history(season_id, frozen_at DESC, practice_id DESC);
+    CREATE INDEX IF NOT EXISTS practices_history_maintenance_idx
+      ON practices(season_id, end_at, practice_id)
+      WHERE schedule_published_at IS NOT NULL AND cancelled_at IS NULL;
+    CREATE TABLE IF NOT EXISTS history_corrections (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      correction_id TEXT NOT NULL UNIQUE,
+      history_version INTEGER NOT NULL CHECK (history_version >= 2),
+      note TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id, history_version),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practice_history(season_id, practice_id)
+    );
+    CREATE TABLE IF NOT EXISTS season_history (
+      season_id TEXT PRIMARY KEY, archive_year INTEGER NOT NULL,
+      practice_count INTEGER NOT NULL CHECK (practice_count >= 0),
+      published_practice_count INTEGER NOT NULL CHECK (published_practice_count >= 0),
+      snapshot_json TEXT NOT NULL, archived_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES seasons(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS season_history_public_idx
+      ON season_history(archive_year DESC, archived_at DESC, season_id DESC);
+    CREATE TABLE IF NOT EXISTS history_migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+    CREATE TABLE IF NOT EXISTS usage_snapshots (
+      usage_date TEXT PRIMARY KEY, captured_at TEXT NOT NULL,
+      database_size_bytes INTEGER NOT NULL CHECK (database_size_bytes >= 0),
+      request_count INTEGER NOT NULL CHECK (request_count >= 0),
+      audit_count INTEGER NOT NULL CHECK (audit_count >= 0),
+      outbox_pending INTEGER NOT NULL CHECK (outbox_pending >= 0),
+      jobs_pending INTEGER NOT NULL CHECK (jobs_pending >= 0),
+      history_practice_count INTEGER NOT NULL CHECK (history_practice_count >= 0),
+      history_season_count INTEGER NOT NULL CHECK (history_season_count >= 0)
+    );
+    CREATE TABLE IF NOT EXISTS backup_snapshots (
+      snapshot_id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK (status IN ('BUILDING', 'READY')),
+      schema_version INTEGER NOT NULL, request_key TEXT NOT NULL, request_id TEXT NOT NULL,
+      actor_scope TEXT NOT NULL, payload_digest TEXT NOT NULL, event_id TEXT NOT NULL,
+      table_count INTEGER NOT NULL CHECK (table_count >= 0),
+      record_count INTEGER NOT NULL CHECK (record_count >= 0),
+      chunk_count INTEGER NOT NULL CHECK (chunk_count >= 0),
+      content_digest TEXT NOT NULL DEFAULT '', manifest_json TEXT NOT NULL,
+      created_at TEXT NOT NULL, completed_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS backup_snapshot_chunks (
+      snapshot_id TEXT NOT NULL, chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+      table_name TEXT NOT NULL, row_offset INTEGER NOT NULL CHECK (row_offset >= 0),
+      row_count INTEGER NOT NULL CHECK (row_count >= 0), payload_json TEXT NOT NULL,
+      payload_digest TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (snapshot_id, chunk_index),
+      FOREIGN KEY (snapshot_id) REFERENCES backup_snapshots(snapshot_id)
+    );
+  `).toArray();
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -254,6 +331,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 3) applyC1ScheduleSchema(sql);
     if (currentVersion < 4) applyC1SignupSchema(sql);
     if (currentVersion < 5) applyC1SeatingSchema(sql);
+    if (currentVersion < 6) applyC1HistorySchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

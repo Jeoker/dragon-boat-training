@@ -1,4 +1,4 @@
-export const C1_CONTRACT_VERSION = "2026-09-20.c1";
+export const C1_CONTRACT_VERSION = "2026-09-21.c1.5";
 
 export const C1_CORE_ACTIONS = {
   "/internal/c1/import-core": { method: "POST", authentication: "transport_only", writes: true },
@@ -43,6 +43,21 @@ export const C1_SEATING_ACTIONS = {
   "/internal/c1/publish-seat-plan": { method: "POST", authentication: "session_token", writes: true }
 } as const;
 
+export const C1_HISTORY_ACTIONS = {
+  "/internal/c1/import-history": { method: "POST", authentication: "transport_only", writes: true },
+  "/internal/c1/public-history-seasons": { method: "GET", authentication: "public", writes: false },
+  "/internal/c1/public-season-history": { method: "GET", authentication: "public", writes: false },
+  "/internal/c1/public-archived-practice": { method: "GET", authentication: "public", writes: false },
+  "/internal/c1/get-history-management": { method: "POST", authentication: "session_token", writes: false },
+  "/internal/c1/append-history-correction": { method: "POST", authentication: "session_token", writes: true },
+  "/internal/c1/list-management-audit": { method: "POST", authentication: "session_token", writes: false },
+  "/internal/c1/create-backup-snapshot": { method: "POST", authentication: "session_token", writes: true },
+  "/internal/c1/get-backup-chunk": { method: "POST", authentication: "session_token", writes: false },
+  "/internal/c1/verify-backup-snapshot": { method: "POST", authentication: "session_token", writes: false },
+  "/internal/c1/get-operations": { method: "POST", authentication: "session_token", writes: false }
+} as const;
+
 export const C1_ACTIONS = {
-  ...C1_CORE_ACTIONS, ...C1_SCHEDULE_ACTIONS, ...C1_SIGNUP_ACTIONS, ...C1_SEATING_ACTIONS
+  ...C1_CORE_ACTIONS, ...C1_SCHEDULE_ACTIONS, ...C1_SIGNUP_ACTIONS, ...C1_SEATING_ACTIONS,
+  ...C1_HISTORY_ACTIONS
 } as const;
