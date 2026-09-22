@@ -159,7 +159,7 @@ describe("TeamState C0 persistence", () => {
       await instance.repairScheduledWork();
     });
 
-    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await runInDurableObject(stub, async (instance: TeamState) => instance.alarm());
     await runInDurableObject(stub, async (_instance: TeamState, durableState) => {
       const jobs = durableState.storage.sql.exec<{
         job_id: string; status: string; attempt_count: number; last_error: string;

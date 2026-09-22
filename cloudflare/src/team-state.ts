@@ -6,11 +6,13 @@ import {
   C1_ACTIONS, C1_CONTRACT_VERSION, C1_HISTORY_ACTIONS, C1_SCHEDULE_ACTIONS, C1_SEATING_ACTIONS,
   C1_SIGNUP_ACTIONS
 } from "../../shared/c1-actions";
+import { C2_ACTIONS, C2_CONTRACT_VERSION } from "../../shared/c2-actions";
 import { C1Service } from "./c1-service";
 import { C1HistoryService } from "./c1-history-service";
 import { C1ScheduleService } from "./c1-schedule-service";
 import { C1SeatingService } from "./c1-seating-service";
 import { C1SignupService } from "./c1-signup-service";
+import { C2SyncService } from "./c2-sync-service";
 
 interface C0CommitInput {
   requestId: string;
@@ -82,6 +84,7 @@ export class TeamState extends DurableObject<Env> {
     const url = new URL(request.url);
     let requestId: string | null = null;
     const isC1 = url.pathname.startsWith("/internal/c1/");
+    const isC2 = url.pathname.startsWith("/internal/c2/");
     try {
       if (request.method === "POST" && url.pathname === "/internal/c0/commit") {
         const input = await readJsonObject(request);
@@ -93,9 +96,14 @@ export class TeamState extends DurableObject<Env> {
         return apiSuccess(await this.readState(), this.env, requestId);
       }
       const c1Action = isC1 ? C1_ACTIONS[url.pathname as keyof typeof C1_ACTIONS] : undefined;
+      const c2Action = isC2 ? C2_ACTIONS[url.pathname as keyof typeof C2_ACTIONS] : undefined;
       if (isC1 && !c1Action) throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
+      if (isC2 && !c2Action) throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
       if (c1Action && request.method !== c1Action.method) {
         throw new ApiError("METHOD_NOT_ALLOWED", `This action requires ${c1Action.method}.`, 405);
+      }
+      if (c2Action && request.method !== c2Action.method) {
+        throw new ApiError("METHOD_NOT_ALLOWED", `This action requires ${c2Action.method}.`, 405);
       }
       if (isC1 && request.method === "GET" && url.pathname === "/internal/c1/public-roster") {
         requestId = requireRequestId({ request_id: url.searchParams.get("request_id") });
@@ -146,9 +154,18 @@ export class TeamState extends DurableObject<Env> {
         else await this.ensureNextAlarm();
         return apiSuccess(data, this.env, requestId, C1_CONTRACT_VERSION);
       }
+      if (isC2 && request.method === "POST") {
+        const input = await readJsonObject(request);
+        requestId = requireRequestId(input);
+        const data = await new C2SyncService(this.ctx, this.env).handle(url.pathname, input);
+        if (c2Action?.writes) await this.repairScheduledWork();
+        else await this.ensureNextAlarm();
+        return apiSuccess(data, this.env, requestId, C2_CONTRACT_VERSION);
+      }
       throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
     } catch (error) {
-      return apiFailure(error, this.env, requestId, isC1 ? C1_CONTRACT_VERSION : this.env.CONTRACT_VERSION);
+      return apiFailure(error, this.env, requestId, isC2 ? C2_CONTRACT_VERSION :
+        isC1 ? C1_CONTRACT_VERSION : this.env.CONTRACT_VERSION);
     }
   }
 

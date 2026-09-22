@@ -23,7 +23,8 @@ const BACKUP_TABLES = [
   "signup_migration_snapshots", "seat_plan_states", "seat_plan_draft_seats", "seat_plan_revisions",
   "seat_plan_revision_seats", "seat_plan_revision_names", "seating_migration_snapshots",
   "practice_history", "history_corrections", "season_history", "history_migration_snapshots",
-  "usage_snapshots"
+  "usage_snapshots", "sync_bindings", "sync_baselines", "source_imports", "sync_conflicts",
+  "sync_batches", "sync_batch_items", "sync_migration_snapshots"
 ] as const;
 
 interface HistoryJobOutcome { reschedule_at_ms?: number; }

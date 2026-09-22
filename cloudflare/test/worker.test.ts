@@ -15,11 +15,11 @@ describe("Cloudflare C0 Worker", () => {
       ok: true,
       data: { status: "available" },
       meta: {
-        contract_version: "2026-09-19.c0",
-        backend_instance: "dragon-boat-training-staging",
-      backend_generation: "cf-c1-staging-2",
-        writer_epoch: 0,
-        environment: "staging"
+        contract_version: env.CONTRACT_VERSION,
+        backend_instance: env.BACKEND_INSTANCE,
+        backend_generation: env.BACKEND_GENERATION,
+        writer_epoch: Number(env.WRITER_EPOCH),
+        environment: env.ENVIRONMENT
       }
     });
   });

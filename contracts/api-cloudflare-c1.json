@@ -1,9 +1,9 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C1.1 through C1.5 implementation under C1.6 isolated acceptance; not production",
+  "status": "C1.1 through C1.6 accepted; retained while C2.1 sync foundation is implemented; not production",
   "contract_version": "2026-09-21.c1.5",
-  "service_version": "0.7.0-c1-acceptance",
+  "service_version": "0.8.0-c2-sync-foundation",
   "transport_gate": "Every /internal/c1 route is absent in production and requires C1_TEST_KEY in local or staging. This gate is separate from the business authentication declared per action.",
   "response": {
     "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
@@ -351,7 +351,7 @@
     "VERSION_CONFLICT", "INTERNAL_ERROR"
   ],
   "not_yet_in_this_slice": [
-    "season activation and Google binding", "default-season mutation", "complete migration regression and staging acceptance",
+    "season activation and Google binding", "default-season mutation",
     "Google import/export execution", "production or Pages routing", "browser CORS"
   ]
 }

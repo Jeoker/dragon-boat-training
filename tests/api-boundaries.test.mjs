@@ -33,6 +33,21 @@ test("the C1 manifest matches its executable action registry", async () => {
   }
 });
 
+test("the C2 manifest matches its executable action registry", async () => {
+  const contract = JSON.parse(await readFile(new URL("../contracts/api-cloudflare-c2.json", import.meta.url), "utf8"));
+  const source = await readFile(new URL("../shared/c2-actions.ts", import.meta.url), "utf8");
+  const javascript = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+  }).outputText;
+  const executable = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
+  assert.equal(contract.contract_version, executable.C2_CONTRACT_VERSION);
+  assert.deepEqual(Object.keys(contract.actions).sort(), Object.keys(executable.C2_ACTIONS).sort());
+  for (const [path, definition] of Object.entries(contract.actions)) {
+    assert.deepEqual({ method: definition.method, authentication: definition.authentication, writes: definition.writes },
+      executable.C2_ACTIONS[path], path);
+  }
+});
+
 test("the C1 manifest and generated Worker types match the Wrangler service versions", async () => {
   const contract = JSON.parse(await readFile(new URL("../contracts/api-cloudflare-c1.json", import.meta.url), "utf8"));
   const configText = await readFile(new URL("../cloudflare/wrangler.jsonc", import.meta.url), "utf8");
@@ -45,6 +60,14 @@ test("the C1 manifest and generated Worker types match the Wrangler service vers
   assert.equal(contract.service_version, stagingVersion);
   assert.match(generatedTypes, new RegExp(`SERVICE_VERSION: [^;]*${JSON.stringify(stagingVersion).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.match(generatedTypes, new RegExp(`SERVICE_VERSION: [^;]*${JSON.stringify(productionVersion).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+});
+
+test("the C2 manifest uses the configured staging service version", async () => {
+  const contract = JSON.parse(await readFile(new URL("../contracts/api-cloudflare-c2.json", import.meta.url), "utf8"));
+  const configText = await readFile(new URL("../cloudflare/wrangler.jsonc", import.meta.url), "utf8");
+  const parsed = ts.parseConfigFileTextToJson("cloudflare/wrangler.jsonc", configText);
+  assert.equal(parsed.error, undefined);
+  assert.equal(contract.service_version, parsed.config.vars.SERVICE_VERSION);
 });
 
 test("the C1 manifest lists every error raised directly by its business services", async () => {
@@ -60,6 +83,14 @@ test("the C1 manifest lists every error raised directly by its business services
     [...source.matchAll(/new ApiError\("([A-Z0-9_]+)"/g)].map((match) => match[1])));
 
   for (const code of raised) assert.ok(contract.errors.includes(code), `Missing C1 error ${code}`);
+  assert.ok(contract.errors.includes("INVALID_JSON"));
+});
+
+test("the C2 manifest lists every error raised directly by its business service", async () => {
+  const contract = JSON.parse(await readFile(new URL("../contracts/api-cloudflare-c2.json", import.meta.url), "utf8"));
+  const source = await readFile(new URL("../cloudflare/src/c2-sync-service.ts", import.meta.url), "utf8");
+  const raised = new Set([...source.matchAll(/new ApiError\("([A-Z0-9_]+)"/g)].map((match) => match[1]));
+  for (const code of raised) assert.ok(contract.errors.includes(code), `Missing C2 error ${code}`);
   assert.ok(contract.errors.includes("INVALID_JSON"));
 });
 

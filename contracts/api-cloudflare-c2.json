@@ -1,0 +1,43 @@
+{
+  "document_type": "api-contract-manifest",
+  "conventions": "contracts/README.md",
+  "status": "C2.1 sync foundation local implementation; isolated metadata API; not production",
+  "contract_version": "2026-09-21.c2.1",
+  "service_version": "0.8.0-c2-sync-foundation",
+  "transport_gate": "Every /internal/c2 route is absent in production and requires C2_TEST_KEY in local or staging. This gate is independent from the Coach session required by management reads.",
+  "response": {
+    "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
+    "operation_result": "A mutation returns an immutable operation receipt and result. Sync metadata import does not call Google or consume outbox."
+  },
+  "actions": {
+    "/internal/c2/import-sync-foundation": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "bindings", "baselines", "source_imports"],
+      "response_result": ["source_snapshot_id", "bindings", "baselines", "source_imports"],
+      "notes": "Versioned shadow import for unique per-season Google Form and Spreadsheet bindings, numeric Sheet tab IDs, explicit field mappings, normalized dependency-group baselines and exact stable Form or legacy source identities. Omitted rows are not deletions. It creates no Google outbox and performs no external I/O."
+    },
+    "/internal/c2/get-sync-overview": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id"],
+      "response": ["season_id", "binding", "counts", "schema_version", "generated_at"],
+      "notes": "Protected C2.1 diagnostic projection. File identifiers remain private. Counts cover the active binding, review sources, open conflicts, pending batches and pending business outbox."
+    }
+  },
+  "errors": [
+    "INVALID_JSON", "INVALID_REQUEST", "INVALID_REQUEST_ID", "METHOD_NOT_ALLOWED", "NOT_FOUND",
+    "C2_ACCESS_DENIED", "CONFIGURATION_ERROR", "IDEMPOTENCY_CONFLICT", "SESSION_INVALID",
+    "SESSION_EXPIRED", "SESSION_REVOKED", "SEASON_NOT_FOUND", "IMPORT_REFERENCE_MISSING",
+    "IMPORT_VERSION_REGRESSION", "IMPORT_CONFLICT", "IMPORT_SNAPSHOT_CONFLICT",
+    "SYNC_BINDING_NOT_FOUND", "SYNC_BINDING_STALE", "SYNC_BINDING_IDENTITY_CONFLICT", "SYNC_MAPPING_INVALID",
+    "SOURCE_IDENTITY_INVALID", "SOURCE_IDENTITY_CONFLICT", "INTERNAL_ERROR"
+  ],
+  "not_yet_in_this_slice": [
+    "Google bridge reads or writes", "Form answer import", "outbox batching or confirmation",
+    "conflict creation or resolution", "pause or resume actions", "annual Google export",
+    "production or Pages routing", "browser CORS"
+  ]
+}

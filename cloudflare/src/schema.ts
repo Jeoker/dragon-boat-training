@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 6;
+export const APPLICATION_SCHEMA_VERSION = 7;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -316,6 +316,95 @@ function applyC1HistorySchema(sql: SqlStorage): void {
   `).toArray();
 }
 
+function applyC2SyncFoundationSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS sync_bindings (
+      season_id TEXT PRIMARY KEY, binding_version INTEGER NOT NULL CHECK (binding_version >= 1),
+      form_id TEXT NOT NULL UNIQUE, runtime_spreadsheet_id TEXT NOT NULL UNIQUE,
+      response_sheet_id TEXT NOT NULL, response_sheet_name TEXT NOT NULL,
+      field_mapping_json TEXT NOT NULL CHECK (json_valid(field_mapping_json)), schema_fingerprint TEXT NOT NULL,
+      export_paused INTEGER NOT NULL DEFAULT 0 CHECK (export_paused IN (0, 1)),
+      last_pull_at TEXT, last_push_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES seasons(season_id)
+    );
+    CREATE TABLE IF NOT EXISTS sync_baselines (
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      entity_type TEXT NOT NULL CHECK (entity_type IN
+        ('SEASON', 'MEMBER', 'SIGNUP', 'PRACTICE', 'SEAT_PLAN_DRAFT', 'HISTORY')),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      baseline_json TEXT NOT NULL CHECK (json_valid(baseline_json)), baseline_digest TEXT NOT NULL,
+      cloud_version INTEGER NOT NULL CHECK (cloud_version >= 0), sheet_digest TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, binding_version, entity_type, entity_id, dependency_group),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS sync_baselines_entity_idx
+      ON sync_baselines(season_id, entity_type, entity_id, dependency_group);
+    CREATE TABLE IF NOT EXISTS source_imports (
+      stable_source_id TEXT PRIMARY KEY, season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      source_type TEXT NOT NULL CHECK (source_type IN ('FORM_RESPONSE', 'LEGACY_ROW')),
+      source_external_id TEXT NOT NULL, source_digest TEXT NOT NULL,
+      source_version INTEGER NOT NULL CHECK (source_version >= 1), member_id TEXT,
+      status TEXT NOT NULL CHECK (status IN ('IMPORTED', 'REVIEW_REQUIRED')),
+      imported_at TEXT, updated_at TEXT NOT NULL,
+      CHECK ((status = 'IMPORTED' AND member_id IS NOT NULL AND imported_at IS NOT NULL) OR
+             (status = 'REVIEW_REQUIRED' AND member_id IS NULL AND imported_at IS NULL)),
+      UNIQUE (season_id, binding_version, source_type, source_external_id),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id),
+      FOREIGN KEY (season_id, member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE INDEX IF NOT EXISTS source_imports_status_idx
+      ON source_imports(season_id, status, updated_at, stable_source_id);
+    CREATE TABLE IF NOT EXISTS sync_conflicts (
+      conflict_id TEXT PRIMARY KEY, season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      entity_type TEXT NOT NULL CHECK (entity_type IN
+        ('SEASON', 'MEMBER', 'SIGNUP', 'PRACTICE', 'SEAT_PLAN_DRAFT', 'HISTORY')),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      baseline_json TEXT NOT NULL CHECK (json_valid(baseline_json)),
+      cloud_json TEXT NOT NULL CHECK (json_valid(cloud_json)),
+      google_json TEXT NOT NULL CHECK (json_valid(google_json)),
+      cloud_version INTEGER NOT NULL CHECK (cloud_version >= 0), google_digest TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('OPEN', 'RESOLVED', 'SUPERSEDED')),
+      created_at TEXT NOT NULL, resolved_at TEXT,
+      resolution_json TEXT CHECK (resolution_json IS NULL OR json_valid(resolution_json)),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS sync_conflicts_open_idx
+      ON sync_conflicts(season_id, status, created_at, conflict_id);
+    CREATE TABLE IF NOT EXISTS sync_batches (
+      batch_id TEXT PRIMARY KEY, season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      writer_epoch INTEGER NOT NULL CHECK (writer_epoch >= 0),
+      direction TEXT NOT NULL CHECK (direction IN ('CLOUDFLARE_TO_GOOGLE', 'GOOGLE_TO_CLOUDFLARE')),
+      status TEXT NOT NULL CHECK (status IN
+        ('PREPARED', 'SENT', 'PARTIAL', 'CONFIRMED', 'FAILED', 'SUPERSEDED')),
+      payload_digest TEXT NOT NULL, first_outbox_id TEXT, last_outbox_id TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      completed_at TEXT,
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS sync_batches_status_idx
+      ON sync_batches(season_id, status, updated_at, batch_id);
+    CREATE TABLE IF NOT EXISTS sync_batch_items (
+      batch_id TEXT NOT NULL, item_index INTEGER NOT NULL CHECK (item_index >= 0),
+      entity_type TEXT NOT NULL CHECK (entity_type IN
+        ('SEASON', 'MEMBER', 'SIGNUP', 'PRACTICE', 'SEAT_PLAN_DRAFT', 'HISTORY')),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      expected_sheet_digest TEXT NOT NULL,
+      target_json TEXT NOT NULL CHECK (json_valid(target_json)), target_digest TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPLIED', 'VERIFIED', 'FAILED', 'SUPERSEDED')),
+      receipt_json TEXT CHECK (receipt_json IS NULL OR json_valid(receipt_json)), updated_at TEXT NOT NULL,
+      PRIMARY KEY (batch_id, item_index),
+      FOREIGN KEY (batch_id) REFERENCES sync_batches(batch_id)
+    );
+    CREATE TABLE IF NOT EXISTS sync_migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+  `).toArray();
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -332,6 +421,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 4) applyC1SignupSchema(sql);
     if (currentVersion < 5) applyC1SeatingSchema(sql);
     if (currentVersion < 6) applyC1HistorySchema(sql);
+    if (currentVersion < 7) applyC2SyncFoundationSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

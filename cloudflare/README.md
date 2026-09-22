@@ -7,7 +7,7 @@
 - 默认配置名为 `dragon-boat-training-api-staging`，供本地和隔离 staging 使用。
 - production 必须显式执行带 `--env production` 的脚本。两个环境拥有不同的 Worker 名称、Durable Object 命名空间、数据和 secret。
 - `.dev.vars`、Wrangler 本地状态、干运行产物和覆盖率目录均被忽略。仓库只保留 `.dev.vars.example`。
-- C0 内部测试入口仅在非 production 且请求提供 `C0_TEST_KEY` 时可用。C1 隔离业务入口另用 `C1_TEST_KEY`，并在内部继续验证 Coach Code 或新后端 session；两类入口在 production 均固定返回 `NOT_FOUND`。
+- C0 内部测试入口仅在非 production 且请求提供 `C0_TEST_KEY` 时可用。C1 隔离业务入口另用 `C1_TEST_KEY`，并在内部继续验证 Coach Code 或新后端 session；C2 使用独立 `C2_TEST_KEY`，受保护读取还要求 C1 Coach session。三类入口在 production 均固定返回 `NOT_FOUND`。
 
 ## 本地命令
 
@@ -24,7 +24,7 @@ npm run cf:accept:c1-staging
 
 `npm run cf:deploy:staging` 创建或更新隔离 staging。`npm run cf:accept:c1-staging` 使用 Git 忽略的 `.dev.vars` 执行显式远端验收；跨部署只读复验增加 `-- --verify-only`。该脚本不会随普通测试运行。`npm run cf:deploy:production` 只保留为明确的后续命令；C4 前不得用它接管生产业务。Cloudflare 和 Google secret 分别通过平台配置，不写入代码、Wrangler vars 或日志。
 
-账户首次部署还需要在 Cloudflare Dashboard 启用一个 `workers.dev` 子域；Worker 上传成功不代表该公网地址已经可用。staging 的 `C0_TEST_KEY`、`C1_TEST_KEY`、`COACH_CODE_SECRET`、`SESSION_SECRET`、`GOOGLE_BRIDGE_URL` 和 `GOOGLE_BRIDGE_SECRET` 必须用 Wrangler secret 或平台 secret 配置，不能加入 `wrangler.jsonc`。远端验收使用的 `C1_ACCEPTANCE_COACH_CODE` 只放在本地 `.dev.vars`，不上传为 Worker secret。Code secret 只核对迁入的旧摘要；新后端 session 使用独立 secret。`wrangler dev --remote` 可以验证 Worker 本身，但当前 Wrangler 不支持以该模式访问 Durable Objects SQLite，因此远端 DO 验收必须走已部署的 staging 地址。
+账户首次部署还需要在 Cloudflare Dashboard 启用一个 `workers.dev` 子域；Worker 上传成功不代表该公网地址已经可用。staging 的 `C0_TEST_KEY`、`C1_TEST_KEY`、`C2_TEST_KEY`、`COACH_CODE_SECRET`、`SESSION_SECRET`、`GOOGLE_BRIDGE_URL` 和 `GOOGLE_BRIDGE_SECRET` 必须用 Wrangler secret 或平台 secret 配置，不能加入 `wrangler.jsonc`。远端验收使用的 `C1_ACCEPTANCE_COACH_CODE` 只放在本地 `.dev.vars`，不上传为 Worker secret。Code secret 只核对迁入的旧摘要；新后端 session 使用独立 secret。`wrangler dev --remote` 可以验证 Worker 本身，但当前 Wrangler 不支持以该模式访问 Durable Objects SQLite，因此远端 DO 验收必须走已部署的 staging 地址。
 
 ## C0 已验证边界
 
@@ -85,3 +85,9 @@ schema v6 增加不可变训练历史、历史说明、赛季荣誉墙索引、�
 受保护备份在单个 SQLite 事务中截取业务、不可变请求、审计、outbox、任务和迁移状态，按一百行分块并生成 SHA-256 分块摘要和 manifest 摘要；读取和校验都要求有效 Coach 会话。短期 `coach_sessions`、公开限流状态、备份自身表不进入导出。C1.6 已在 125 名成员样本上下载并复算 191 条记录、29 个分块，且跨 Worker deployment 保持同一备份。这个结果只覆盖当前小团队规模，不代表无界数据量。备份内容仍含私人业务数据，必须由后续运维流程下载到仓库外的私有位置；Google 年度文件和外部存储导出属于 C2。
 
 C0 桥接小样使用 `2026-09-19.bridge.v1` 信封；签名绑定方向、团队、绑定版本、`writer_epoch`、时间戳、nonce、操作编号及负载摘要。传输 nonce 与操作幂等编号分离。staging 的受保护探针允许选择有效、过期、篡改负载、错团队、错 binding 和错代次场景，以验证真实 Google 拒绝路径；production 固定关闭这些入口。当前 Apps Script 端只保存少量 C0 回执用于证明协议，C2 必须改用正式持久表和分段业务回执。
+
+## C2.1 同步基础
+
+schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、稳定 Form／旧来源映射、冲突、同步批次和迁移快照。v6 原地升级保留全部 C1 数据，C1 备份范围也包含这些新表。`shared/c2-sync-rules.ts` 是唯一三方比较规则：以确认基线 `B`、Cloudflare 当前值 `C` 和 Google 值 `G` 按依赖组判断导出、自动导入、业务校验、人工确认、拒绝或冲突；删行和未映射字段不会被猜测成有效操作。
+
+`import-sync-foundation` 只接收受控影子元数据，不访问 Google、不创建或确认 outbox。它保留稳定绑定和来源身份，拒绝版本倒退、同版本漂移、跨赛季复用 Form／Spreadsheet、非法 Sheet tab ID、错误实体身份及来源重新指派。`get-sync-overview` 需要有效 Coach session，仅返回私有绑定和计数诊断。当前源码服务版本为 `0.8.0-c2-sync-foundation`、隔离代次为 `cf-c2-staging-3`，尚未部署；已部署 staging 仍保留 C1.6 版本。实现和本地证据见 [C2.1 验收](../tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)。
