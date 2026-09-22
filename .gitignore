@@ -11,3 +11,4 @@ cloudflare/.dev.vars.*
 cloudflare/.wrangler/
 **/.wrangler-dry-run/
 cloudflare/coverage/
+cloudflare/.acceptance-artifacts/

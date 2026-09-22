@@ -1,9 +1,9 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C1.1 core through C1.5 frozen history and operations local implementation; isolated migration API; not production",
+  "status": "C1.1 through C1.5 implementation under C1.6 isolated acceptance; not production",
   "contract_version": "2026-09-21.c1.5",
-  "service_version": "0.6.0-c1-history",
+  "service_version": "0.7.0-c1-acceptance",
   "transport_gate": "Every /internal/c1 route is absent in production and requires C1_TEST_KEY in local or staging. This gate is separate from the business authentication declared per action.",
   "response": {
     "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",

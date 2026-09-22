@@ -37,7 +37,7 @@
 
 ## 接续点
 
-本报告当时的下一实现切片为 C1.3 报名与候补迁移；C1.3–C1.5 现已完成，见[报名验收](C1-SIGNUP-ACCEPTANCE.md)、[排座验收](C1-SEATING-ACCEPTANCE.md)和[历史验收](C1-HISTORY-ACCEPTANCE.md)，当前接续点为 C1.6 隔离阶段验收。后续继续沿用本轮确定的边界：请求摘要不依赖可变默认值，已完成请求先重放，业务行／回执／审计／outbox 同事务提交，任务逐条隔离失败；C4 前不改变生产写入归属。
+本报告当时的下一实现切片为 C1.3 报名与候补迁移；C1.3–C1.6 现已完成，见[报名验收](C1-SIGNUP-ACCEPTANCE.md)、[排座验收](C1-SEATING-ACCEPTANCE.md)、[历史验收](C1-HISTORY-ACCEPTANCE.md)和 [C1.6 验收](C1-STAGING-ACCEPTANCE.md)，当前接续点为 C2 Google 桥接与双向同步。后续继续沿用本轮确定的边界：请求摘要不依赖可变默认值，已完成请求先重放，业务行／回执／审计／outbox 同事务提交，任务逐条隔离失败；C4 前不改变生产写入归属。
 
 ## 文档一致性复核
 

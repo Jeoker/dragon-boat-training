@@ -15,6 +15,7 @@
     "cf:check": "tsc --project cloudflare/tsconfig.json --noEmit",
     "cf:test": "vitest run --config cloudflare/vitest.config.ts",
     "cf:dev": "wrangler dev --config cloudflare/wrangler.jsonc --env=",
+    "cf:accept:c1-staging": "node --env-file=cloudflare/.dev.vars tests/live-c1-staging-acceptance.mjs",
     "cf:deploy:staging": "wrangler deploy --config cloudflare/wrangler.jsonc --env=",
     "cf:deploy:production": "wrangler deploy --config cloudflare/wrangler.jsonc --env production",
     "cf:dry-run": "wrangler deploy --config cloudflare/wrangler.jsonc --env= --dry-run --outdir cloudflare/.wrangler-dry-run"

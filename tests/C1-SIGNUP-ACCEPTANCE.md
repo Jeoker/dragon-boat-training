@@ -36,6 +36,6 @@ Cloudflare Workers／Durable Object 官方本地运行时验证：
 
 ## 尚未完成
 
-C1.4 已完成 Coach／Steerer 角色、私有排座草稿、正式与系统 revision、报名和船位原子联动及 24 小时写入边界，见[排座验收](C1-SEATING-ACCEPTANCE.md)。C1.5 的不可变最终快照、公开历史与运维工具也已完成，见[历史验收](C1-HISTORY-ACCEPTANCE.md)；C1.6 的完整迁移回归及远端 staging 验收尚未开始。
+C1.4 已完成 Coach／Steerer 角色、私有排座草稿、正式与系统 revision、报名和船位原子联动及 24 小时写入边界，见[排座验收](C1-SEATING-ACCEPTANCE.md)。C1.5 的不可变最终快照、公开历史与运维工具也已完成，见[历史验收](C1-HISTORY-ACCEPTANCE.md)；C1.6 完整迁移回归及远端 staging 验收随后完成，见 [C1.6 验收](C1-STAGING-ACCEPTANCE.md)。
 
 默认赛季修改、赛季激活、Google 双向同步、浏览器 CORS 和 Pages 路由仍不在本切片。本轮只使用虚构 Coach、赛季、成员、地点和时间，没有迁入真实成员或 Code，没有配置新 secrets，也没有部署 Worker。现有生产 Apps Script、Pages API 和 Google 文件均未改变。

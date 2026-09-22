@@ -37,4 +37,4 @@
 
 ## 接续点
 
-C1.5 冻结历史与运维现已完成，见[历史验收](C1-HISTORY-ACCEPTANCE.md)。下一步 C1.6 做完整迁移回归与隔离 staging 验收，C2 才接 Google 双向同步；C4 前不改变生产 Pages API 或写入归属。
+C1.5 冻结历史与运维以及 C1.6 完整迁移回归与隔离 staging 验收现已完成，见[历史验收](C1-HISTORY-ACCEPTANCE.md)和 [C1.6 验收](C1-STAGING-ACCEPTANCE.md)。下一步为 C2 Google 双向同步；C4 前不改变生产 Pages API 或写入归属。

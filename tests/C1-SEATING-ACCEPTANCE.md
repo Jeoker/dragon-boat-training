@@ -37,4 +37,4 @@ Cloudflare Workers／Durable Object 官方本地运行时验证：
 
 C1.4 本身只依据服务器当前时间标记 `FROZEN` 并拒绝修改；C1.5 现已另行持久化训练最终姓名／座位快照，并建立公开历史索引、分页审计、受保护备份、任务恢复和用量记录，见[历史验收](C1-HISTORY-ACCEPTANCE.md)。读取 C1.4 当前投影仍不等同于读取永久年度档案。
 
-C1.6 的完整迁移回归和远端 staging 验收，以及默认赛季修改、赛季激活、Google 双向同步、浏览器 CORS 和 Pages 路由仍未完成。本轮只使用虚构 Coach、赛季、成员、地点和时间，没有迁入真实成员或 Code，没有配置新 secrets，也没有部署 Worker。现有生产 Apps Script、Pages API 和 Google 文件均未改变。
+C1.6 的完整迁移回归和远端 staging 验收随后完成，见 [C1.6 验收](C1-STAGING-ACCEPTANCE.md)。默认赛季修改、赛季激活、Google 双向同步、浏览器 CORS 和 Pages 路由仍未完成。本切片本身只使用虚构 Coach、赛季、成员、地点和时间，没有迁入真实成员或 Code；后续 C1.6 只为隔离 staging 配置随机测试 secrets。现有生产 Apps Script、Pages API 和 Google 文件均未改变。

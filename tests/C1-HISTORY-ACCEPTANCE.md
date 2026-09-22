@@ -36,8 +36,8 @@ Cloudflare Workers／Durable Object 官方本地运行时验证：
 
 验收时 Cloudflare 测试 **65／65**，其中 C1.5 专项 **6／6**；项目 Node 测试 **184／184**。Cloudflare 类型检查、类型生成和 dry-run、Astro 检查与三个页面构建、Apps Script 业务及独立桥接构建均通过。JSON 清单可解析，Git whitespace 检查通过。
 
-## 尚未完成
+## 后续状态
 
-C1.6 仍需用完整迁移样本做跨域回归，并部署隔离 staging 验证真实远端 Durable Object 重启、任务故障注入、备份下载／校验和规模边界。当前备份生成会在一个事务中读取完整小团队数据集；在 C1.6 的规模测试前，不把它描述为已验证的大数据导出器。
+C1.6 随后已使用完整迁移样本完成隔离 staging 跨域回归、跨 Worker deployment 持久化、任务故障注入、备份下载／校验和小团队规模边界，见 [C1.6 验收](C1-STAGING-ACCEPTANCE.md)。当前备份生成仍会在一个事务中读取完整数据集；125 名成员样本通过不等于已验证大数据导出器。
 
 默认赛季修改、赛季激活、Google 双向同步、年度 Google 文件、浏览器 CORS 和 Pages 路由仍未实现。C1.5 没有配置新 secret，没有迁入真实成员或 Coach Code，也没有部署 Worker；现有生产 Apps Script、Pages API 和 Google 文件均未改变。

@@ -3,3 +3,4 @@ C0_TEST_KEY=replace-with-a-local-only-value
 C1_TEST_KEY=replace-with-a-different-local-only-value
 COACH_CODE_SECRET=use-the-legacy-code-secret-only-in-the-authorized-environment
 SESSION_SECRET=replace-with-a-new-random-session-secret
+C1_ACCEPTANCE_COACH_CODE=replace-with-a-staging-only-coach-code

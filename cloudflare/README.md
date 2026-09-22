@@ -1,6 +1,6 @@
 # Cloudflare 数据服务
 
-这里是 C0 起建立的 Worker、`TeamState` Durable Object、SQLite schema 和持久调度代码。C1.1–C1.5 已在本地加入核心身份、赛季／成员、排期、报名候补、排座、冻结历史和运维切片；生产仍使用 Apps Script，本目录的实现不代表已经切换写入归属。
+这里是 C0 起建立的 Worker、`TeamState` Durable Object、SQLite schema 和持久调度代码。C1.1–C1.6 已加入并在隔离 staging 验收核心身份、赛季／成员、排期、报名候补、排座、冻结历史和运维；生产仍使用 Apps Script，本目录的实现不代表已经切换写入归属。
 
 ## 环境边界
 
@@ -17,17 +17,18 @@ npm run cf:check
 npm run cf:test
 npm run cf:dry-run
 npm run cf:dev
+npm run cf:accept:c1-staging
 ```
 
 修改 `cloudflare/wrangler.jsonc` 的变量或绑定后必须重新运行 `npm run cf:types` 并提交生成的 `worker-configuration.d.ts`。契约测试会核对 staging 服务版本、接口清单和生成类型，避免配置与说明静默漂移。
 
-`npm run cf:deploy:staging` 创建或更新隔离 staging。`npm run cf:deploy:production` 只保留为明确的后续命令；C4 前不得用它接管生产业务。Cloudflare 和 Google secret 分别通过平台配置，不写入代码、Wrangler vars 或日志。
+`npm run cf:deploy:staging` 创建或更新隔离 staging。`npm run cf:accept:c1-staging` 使用 Git 忽略的 `.dev.vars` 执行显式远端验收；跨部署只读复验增加 `-- --verify-only`。该脚本不会随普通测试运行。`npm run cf:deploy:production` 只保留为明确的后续命令；C4 前不得用它接管生产业务。Cloudflare 和 Google secret 分别通过平台配置，不写入代码、Wrangler vars 或日志。
 
-账户首次部署还需要在 Cloudflare Dashboard 启用一个 `workers.dev` 子域；Worker 上传成功不代表该公网地址已经可用。staging 的 `C0_TEST_KEY`、`C1_TEST_KEY`、`COACH_CODE_SECRET`、`SESSION_SECRET`、`GOOGLE_BRIDGE_URL` 和 `GOOGLE_BRIDGE_SECRET` 必须用 Wrangler secret 或平台 secret 配置，不能加入 `wrangler.jsonc`。Code secret 只核对迁入的旧摘要；新后端 session 使用独立 secret。`wrangler dev --remote` 可以验证 Worker 本身，但当前 Wrangler 不支持以该模式访问 Durable Objects SQLite，因此远端 DO 验收必须走已部署的 staging 地址。
+账户首次部署还需要在 Cloudflare Dashboard 启用一个 `workers.dev` 子域；Worker 上传成功不代表该公网地址已经可用。staging 的 `C0_TEST_KEY`、`C1_TEST_KEY`、`COACH_CODE_SECRET`、`SESSION_SECRET`、`GOOGLE_BRIDGE_URL` 和 `GOOGLE_BRIDGE_SECRET` 必须用 Wrangler secret 或平台 secret 配置，不能加入 `wrangler.jsonc`。远端验收使用的 `C1_ACCEPTANCE_COACH_CODE` 只放在本地 `.dev.vars`，不上传为 Worker secret。Code secret 只核对迁入的旧摘要；新后端 session 使用独立 secret。`wrangler dev --remote` 可以验证 Worker 本身，但当前 Wrangler 不支持以该模式访问 Durable Objects SQLite，因此远端 DO 验收必须走已部署的 staging 地址。
 
 ## C0 已验证边界
 
-SQLite schema v1 包含不可变请求结果、审计、outbox、持久任务和用于验收的原子计数器。alarm 每次领取有界任务，使用租约和尝试次数识别迟到结果；失败会在应用层继续排期。C1.1–C1.5 已在相同事务结构中加入核心、排期、报名候补、排座、冻结历史和运维规则；C1.6 做隔离阶段完整验收，C2 才接入完整 Google 同步。
+SQLite schema v1 包含不可变请求结果、审计、outbox、持久任务和用于验收的原子计数器。alarm 每次领取有界任务，使用租约和尝试次数识别迟到结果；失败会在应用层继续排期。C1.1–C1.5 已在相同事务结构中加入核心、排期、报名候补、排座、冻结历史和运维规则；C1.6 已完成隔离 staging 全链路、跨 deployment 持久化、故障恢复和备份验收，C2 才接入完整 Google 同步。证据见 [C1.6 验收](../tests/C1-STAGING-ACCEPTANCE.md)。
 
 ## C1 核心切片
 
@@ -81,6 +82,6 @@ schema v6 增加不可变训练历史、历史说明、赛季荣誉墙索引、�
 
 历史自动任务在影子阶段默认关闭：`writer_epoch=0` 且内部 `history_maintenance_enabled` 未开启时，只允许历史影子导入和读取，不会把导入数据当成当前写入权。C4 切换时才允许正式启用；C1.5 的本地专项测试显式开启该内部设置以验证冻结、重试与归档。修复扫描只检查未取消且尚未冻结的已发布训练，待执行任务的到期时间会随训练时间调整；应用用量统计每小时最多刷新一次，避免每次写入重复全库计数。
 
-受保护备份在单个 SQLite 事务中截取业务、不可变请求、审计、outbox、任务和迁移状态，按一百行分块并生成 SHA-256 分块摘要和 manifest 摘要；读取和校验都要求有效 Coach 会话。短期 `coach_sessions`、公开限流状态、备份自身表不进入导出。备份内容仍含私人业务数据，必须由后续运维流程下载到仓库外的私有位置；Google 年度文件和外部存储导出属于 C2。当前实现适合小团队数据量，C1.6 还要在隔离 staging 验证真实 DO 重启、故障注入和规模边界。
+受保护备份在单个 SQLite 事务中截取业务、不可变请求、审计、outbox、任务和迁移状态，按一百行分块并生成 SHA-256 分块摘要和 manifest 摘要；读取和校验都要求有效 Coach 会话。短期 `coach_sessions`、公开限流状态、备份自身表不进入导出。C1.6 已在 125 名成员样本上下载并复算 191 条记录、29 个分块，且跨 Worker deployment 保持同一备份。这个结果只覆盖当前小团队规模，不代表无界数据量。备份内容仍含私人业务数据，必须由后续运维流程下载到仓库外的私有位置；Google 年度文件和外部存储导出属于 C2。
 
 C0 桥接小样使用 `2026-09-19.bridge.v1` 信封；签名绑定方向、团队、绑定版本、`writer_epoch`、时间戳、nonce、操作编号及负载摘要。传输 nonce 与操作幂等编号分离。staging 的受保护探针允许选择有效、过期、篡改负载、错团队、错 binding 和错代次场景，以验证真实 Google 拒绝路径；production 固定关闭这些入口。当前 Apps Script 端只保存少量 C0 回执用于证明协议，C2 必须改用正式持久表和分段业务回执。

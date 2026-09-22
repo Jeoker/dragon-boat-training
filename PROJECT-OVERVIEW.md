@@ -134,7 +134,7 @@ P0 至 P4 已完成相应阶段验收：连接与契约、建季排期、报名�
 | C3 | 在 Coach Mode 增加同步概览、暂停导出、冲突预览与解决，并完成双端全流程 |
 | C4 | 影子迁移和对账后切换唯一写入归属，阻止旧端点误写，演练保留新数据的回退 |
 
-**C0 已验收，C1.1 核心至 C1.5 冻结历史与运维已完成本地切片，下一开发阶段是 C1.6 隔离阶段完整验收；没有部署本轮 C1 staging 或 Cloudflare 生产 Worker，也没有改变生产写入归属。** 精确完成度必须读取[当前进度](CURRENT-STATUS.md)。只有 C4 门槛全部通过后，Cloudflare 才能被描述为生产业务权威。完整设计和同步协议见[Cloudflare 迁移计划](cloudflare-migration-plan.md)。
+**C0 与 C1.1–C1.6 已验收：核心、排期、报名候补、排座、冻结历史和运维已在隔离 Cloudflare staging 完成全链路、跨部署持久化、故障恢复与备份验证。下一开发阶段是 C2 Google 桥接与双向同步；Cloudflare production Worker 未接管业务，Pages 和生产写入归属没有改变。** 精确完成度必须读取[当前进度](CURRENT-STATUS.md)。只有 C4 门槛全部通过后，Cloudflare 才能被描述为生产业务权威。完整设计和同步协议见[Cloudflare 迁移计划](cloudflare-migration-plan.md)。
 
 ## 7. 明确不在当前范围内的内容
 
