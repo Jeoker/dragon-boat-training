@@ -1,7 +1,6 @@
 import {
   parseImportSeatingSnapshot, parsePublishSeatPlan, parseSaveSeatPlanDraft, parseSeatingWorkspace,
-  type ImportSeatingSnapshotRequest, type PublishSeatPlanRequest, type SaveSeatPlanDraftRequest,
-  type SeatSnapshot, type SeatSide, type SeatingRevisionSnapshot
+  type ImportSeatingSnapshotRequest, type SeatSnapshot, type SeatSide, type SeatingRevisionSnapshot
 } from "../../shared/c1-seating-contract";
 import { canonicalJson } from "../../shared/c1-rules";
 import { ApiError } from "./http";
@@ -291,7 +290,7 @@ function writeRevision(sql: SqlStorage, practice: Record<string, unknown>, revis
 export class C1SeatingService {
   private readonly core: C1Service;
 
-  constructor(private readonly ctx: DurableObjectState, private readonly env: Env) {
+  constructor(private readonly ctx: DurableObjectState, env: Env) {
     this.core = new C1Service(ctx, env);
   }
 

@@ -2,6 +2,8 @@
 
 > 状态：2026-09-21，本地实现、代码审查与验证完成；未部署本轮 staging，未连接 Google、Pages 或生产写入路径。
 
+> 2026-09-25 后续代码审查已修正来源跨绑定版本、绑定运行元数据及同步值边界；最新本地验证计数见[后续审查记录](POST-C2.1-CODE-REVIEW.md)。以下计数和修正清单保留原阶段验收时点的证据。
+
 ## 实现边界
 
 - SQLite schema v7 在 v6 之上增加 `sync_bindings`、`sync_baselines`、`source_imports`、`sync_conflicts`、`sync_batches`、`sync_batch_items` 和 `sync_migration_snapshots`；v1–v6 数据原地保留，受保护备份包含新增同步表。

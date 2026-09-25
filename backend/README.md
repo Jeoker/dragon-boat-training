@@ -38,7 +38,7 @@
 
 ## 第一次测试部署
 
-1. 使用队伍长期控制的 Google 账号创建独立 Apps Script 测试项目。可以预先创建测试 Spreadsheet，也可以让初始化函数自动建立默认名为 `Dragon Boat Training - P0 Test System` 的私有文件。
+1. 使用项目所有者长期控制且已授权的 Google 账号创建独立 Apps Script 测试项目；当前可用个人账号，不要求团队邮箱。可以预先创建测试 Spreadsheet，也可以让初始化函数自动建立默认名为 `Dragon Boat Training - P0 Test System` 的私有文件。
 2. 在 Apps Script 的 Script Properties 中设置：
    - 可选 `DRAGON_BOAT_SYSTEM_SPREADSHEET_ID`；留空时自动创建
    - 可选 `DRAGON_BOAT_SYSTEM_SPREADSHEET_NAME`；仅在自动创建时使用

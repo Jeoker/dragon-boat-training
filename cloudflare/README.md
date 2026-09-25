@@ -88,6 +88,8 @@ C0 桥接小样使用 `2026-09-19.bridge.v1` 信封；签名绑定方向、团�
 
 ## C2.1 同步基础
 
+概览响应中的 `binding_current` 明确标识所存绑定是否匹配赛季当前版本；旧绑定仍可诊断，但其旧版基线不计入当前基线数。
+
 schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、稳定 Form／旧来源映射、冲突、同步批次和迁移快照。v6 原地升级保留全部 C1 数据，C1 备份范围也包含这些新表。`shared/c2-sync-rules.ts` 是唯一三方比较规则：以确认基线 `B`、Cloudflare 当前值 `C` 和 Google 值 `G` 按依赖组判断导出、自动导入、业务校验、人工确认、拒绝或冲突；删行和未映射字段不会被猜测成有效操作。
 
-`import-sync-foundation` 只接收受控影子元数据，不访问 Google、不创建或确认 outbox。它保留稳定绑定和来源身份，拒绝版本倒退、同版本漂移、跨赛季复用 Form／Spreadsheet、非法 Sheet tab ID、错误实体身份及来源重新指派。`get-sync-overview` 需要有效 Coach session，仅返回私有绑定和计数诊断。当前源码服务版本为 `0.8.0-c2-sync-foundation`、隔离代次为 `cf-c2-staging-3`，尚未部署；已部署 staging 仍保留 C1.6 版本。实现和本地证据见 [C2.1 验收](../tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)。
+`import-sync-foundation` 只接收受控影子元数据，不访问 Google、不创建或确认 outbox。它保留稳定绑定和来源身份，拒绝版本倒退、同版本身份或映射漂移、跨赛季复用 Form／Spreadsheet、非法 Sheet tab ID、错误实体身份及来源重新指派。同一绑定版本可更新响应 Tab 名称、暂停标志和同步时间，但必须推进 `updated_at`，同步时间不可倒退；更换字段映射须提升绑定版本，不能更换文件或 Tab 身份。Form 和旧行来源的稳定键跨绑定版本保留，同一来源内容未变时无需提高来源版本。`get-sync-overview` 需要有效 Coach session；基线计数只看当前绑定版本，来源计数覆盖整个赛季。当前源码服务版本为 `0.8.0-c2-sync-foundation`、隔离代次为 `cf-c2-staging-3`，尚未部署；已部署 staging 仍保留 C1.6 版本。实现和本地证据见 [C2.1 验收](../tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)。

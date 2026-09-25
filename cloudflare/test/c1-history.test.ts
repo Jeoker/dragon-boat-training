@@ -144,7 +144,7 @@ describe("C1.5 frozen history and operations slice", () => {
     });
     await runAlarm(stub);
     await runInDurableObject(stub, async (_instance: TeamState, context) => {
-      for (const [index, year] of [2019, 2018].entries()) {
+      for (const year of [2019, 2018]) {
         const seasonId = `season_history_extra_${year}`;
         const date = `${year}-08-31`;
         context.storage.sql.exec(

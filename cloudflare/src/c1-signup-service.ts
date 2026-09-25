@@ -1,11 +1,11 @@
 import {
   parseCoachSignupMutation, parseImportSignupSnapshot, parseSignupMutation,
   type ImportSignupSnapshotRequest, type SignupMutationRequest, type SignupSnapshot,
-  type SignupStateSnapshot, type SignupStatus
+  type SignupStateSnapshot
 } from "../../shared/c1-signup-contract";
 import { canonicalJson } from "../../shared/c1-rules";
 import { ApiError } from "./http";
-import { C1Service, type AuthenticatedCoach, type C1RequestIdentity } from "./c1-service";
+import { C1Service } from "./c1-service";
 import { C1SeatingService, publicSeatPlanProjection } from "./c1-seating-service";
 import { firstRow, operationReceipt, parseContract, queueOrder, signupProjection, type SqlRow } from "./c1-support";
 
@@ -75,7 +75,7 @@ export class C1SignupService {
   private readonly core: C1Service;
   private readonly seating: C1SeatingService;
 
-  constructor(private readonly ctx: DurableObjectState, private readonly env: Env) {
+  constructor(private readonly ctx: DurableObjectState, env: Env) {
     this.core = new C1Service(ctx, env);
     this.seating = new C1SeatingService(ctx, env);
   }

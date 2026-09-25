@@ -10,6 +10,7 @@ export interface SyncFieldDefinition {
   dependency_group: string;
   kind: SyncValueKind;
   google_policy: GoogleChangePolicy;
+  allowed_values?: readonly string[];
 }
 
 export interface SyncRecord {
@@ -56,7 +57,8 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
     { field: "start_date", dependency_group: "SEASON_BOUNDARY", kind: "DATE", google_policy: "REVIEW" },
     { field: "end_date", dependency_group: "SEASON_BOUNDARY", kind: "DATE", google_policy: "REVIEW" },
     { field: "timezone", dependency_group: "SEASON_BOUNDARY", kind: "TEXT", google_policy: "REVIEW" },
-    { field: "status", dependency_group: "SEASON_LIFECYCLE", kind: "STATUS", google_policy: "REVIEW" },
+    { field: "status", dependency_group: "SEASON_LIFECYCLE", kind: "STATUS", google_policy: "REVIEW",
+      allowed_values: ["DRAFT", "OPEN", "COMPLETED", "ARCHIVED"] },
     ...version(["binding_version", "season_version", "roster_version"])
   ],
   MEMBER: [
@@ -64,13 +66,15 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
     { field: "source_display_name", dependency_group: "FORM_SOURCE", kind: "TEXT", google_policy: "REJECT" },
     { field: "display_name_override", dependency_group: "MEMBER_NAME", kind: "OPTIONAL_TEXT", google_policy: "AUTO" },
     { field: "default_preference", dependency_group: "MEMBER_DEFAULT_PREFERENCE", kind: "PREFERENCE", google_policy: "AUTO" },
-    { field: "status", dependency_group: "MEMBER_STATUS", kind: "STATUS", google_policy: "REVIEW" },
+    { field: "status", dependency_group: "MEMBER_STATUS", kind: "STATUS", google_policy: "REVIEW",
+      allowed_values: ["ACTIVE", "INACTIVE"] },
     ...version(["member_version"])
   ],
   SIGNUP: [
     ...identity(["season_id", "practice_id", "member_id"]),
     { field: "preference", dependency_group: "SIGNUP_STATE", kind: "PREFERENCE", google_policy: "VALIDATE" },
-    { field: "status", dependency_group: "SIGNUP_STATE", kind: "STATUS", google_policy: "REVIEW" },
+    { field: "status", dependency_group: "SIGNUP_STATE", kind: "STATUS", google_policy: "REVIEW",
+      allowed_values: ["CONFIRMED", "WAITLISTED", "CANCELLED"] },
     { field: "queue_at", dependency_group: "SIGNUP_QUEUE", kind: "INSTANT", google_policy: "REJECT" },
     { field: "queue_sequence", dependency_group: "SIGNUP_QUEUE", kind: "INTEGER", google_policy: "REJECT" },
     ...version(["signup_version"])
@@ -103,7 +107,8 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
   ]
 };
 
-export function normalizeSyncValue(value: unknown, kind: SyncValueKind): unknown {
+export function normalizeSyncValue(value: unknown, kind: SyncValueKind,
+  allowedValues?: readonly string[]): unknown {
   if (kind === "TEXT" || kind === "OPTIONAL_TEXT") {
     if ((value === null || value === undefined || value === "") && kind === "OPTIONAL_TEXT") return "";
     if (typeof value !== "string") throw new Error("Expected text.");
@@ -113,7 +118,10 @@ export function normalizeSyncValue(value: unknown, kind: SyncValueKind): unknown
   }
   if (kind === "INTEGER") {
     if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
-    if (typeof value === "string" && /^(0|[1-9]\d*)$/u.test(value)) return Number(value);
+    if (typeof value === "string" && /^(0|[1-9]\d*)$/u.test(value)) {
+      const parsed = Number(value);
+      if (Number.isSafeInteger(parsed)) return parsed;
+    }
     throw new Error("Expected a non-negative integer.");
   }
   if (kind === "BOOLEAN") {
@@ -161,10 +169,12 @@ export function normalizeSyncValue(value: unknown, kind: SyncValueKind): unknown
     if (typeof value !== "string" || !/^[A-Z][A-Z_]{1,39}$/u.test(value.trim().toUpperCase())) {
       throw new Error("Expected a normalized status.");
     }
-    return value.trim().toUpperCase();
+    const status = value.trim().toUpperCase();
+    if (allowedValues && !allowedValues.includes(status)) throw new Error("Expected a valid status.");
+    return status;
   }
   if (typeof value === "string") {
-    try { return JSON.parse(value); }
+    try { value = JSON.parse(value); }
     catch { throw new Error("Expected valid JSON."); }
   }
   if (value === null || typeof value !== "object") throw new Error("Expected a JSON object or array.");
@@ -177,7 +187,7 @@ function same(left: unknown, right: unknown): boolean {
 
 function normalizedGroup(record: SyncRecord, definitions: SyncFieldDefinition[]): SyncRecord {
   return Object.fromEntries(definitions.map((definition) => [definition.field,
-    normalizeSyncValue(record[definition.field], definition.kind)]));
+    normalizeSyncValue(record[definition.field], definition.kind, definition.allowed_values)]));
 }
 
 function groupOutcome(definitions: SyncFieldDefinition[], baseline: SyncRecord,

@@ -16,15 +16,15 @@
       "writes": true,
       "request": ["request_id", "source_snapshot_id", "bindings", "baselines", "source_imports"],
       "response_result": ["source_snapshot_id", "bindings", "baselines", "source_imports"],
-      "notes": "Versioned shadow import for unique per-season Google Form and Spreadsheet bindings, numeric Sheet tab IDs, explicit field mappings, normalized dependency-group baselines and exact stable Form or legacy source identities. Omitted rows are not deletions. It creates no Google outbox and performs no external I/O."
+      "notes": "Versioned shadow import for unique per-season Google Form and Spreadsheet bindings, numeric Sheet tab IDs, explicit field mappings, normalized dependency-group baselines and exact stable Form or legacy source identities. Stable sources survive a binding-version increase without changing source_version when their content is unchanged. Same-version binding metadata may advance, but identity and mapping cannot drift; timestamps cannot regress. Omitted rows are not deletions. It creates no Google outbox and performs no external I/O."
     },
     "/internal/c2/get-sync-overview": {
       "method": "POST",
       "authentication": "session_token",
       "writes": false,
       "request": ["request_id", "session_token", "season_id"],
-      "response": ["season_id", "binding", "counts", "schema_version", "generated_at"],
-      "notes": "Protected C2.1 diagnostic projection. File identifiers remain private. Counts cover the active binding, review sources, open conflicts, pending batches and pending business outbox."
+      "response": ["season_id", "binding", "binding_current", "counts", "schema_version", "generated_at"],
+      "notes": "Protected C2.1 diagnostic projection. File identifiers remain private. binding_current shows whether the stored binding matches the season version. Baseline count uses the active binding version; source counts cover the entire season, including unmoved mappings from older binding versions. Conflict, batch and business outbox counts cover the season."
     }
   },
   "errors": [

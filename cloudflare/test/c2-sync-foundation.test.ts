@@ -59,7 +59,8 @@ function foundation(requestId = "c2_foundation_import_001", snapshotId = "c2_fou
       runtime_spreadsheet_id: "spreadsheet_c2_fixture_001", response_sheet_id: "0",
       response_sheet_name: "Form Responses 1", field_mapping: { display_name_header: "Name" },
       schema_fingerprint: "sha256_v1:c2-schema_fixture_001", export_paused: false,
-      last_pull_at: null, last_push_at: null, created_at: at, updated_at: at }],
+      last_pull_at: null as string | null, last_push_at: null as string | null,
+      created_at: at, updated_at: at }],
     baselines: [{ season_id: seasonId, binding_version: 1, entity_type: "MEMBER",
       entity_id: "member_c2_alice_01", dependency_group: "MEMBER_NAME",
       baseline: { display_name_override: "" }, cloud_version: 1,
@@ -142,6 +143,13 @@ describe("C2.1 sync foundation", () => {
     expect(() => normalizeSyncValue("2026-02-30", "DATE")).toThrow("real ISO date");
     expect(() => normalizeSyncValue("2026-02-30T12:00:00-05:00", "INSTANT")).toThrow("real ISO instant");
     expect(() => normalizeSyncValue("2026-02-28", "INSTANT")).toThrow("time zone");
+    expect(() => normalizeSyncValue("9007199254740993", "INTEGER")).toThrow("non-negative integer");
+    expect(() => normalizeSyncValue("null", "JSON")).toThrow("JSON object or array");
+    expect(() => normalizeSyncValue('"name"', "JSON")).toThrow("JSON object or array");
+    const invalidStatus = compareSyncRecord({ entity_type: "MEMBER", baseline,
+      cloudflare: baseline, google: { ...baseline, status: "SUSPENDED" } });
+    expect(invalidStatus.groups).toContainEqual(expect.objectContaining({
+      dependency_group: "MEMBER_STATUS", outcome: "REVIEW_REQUIRED" }));
     expect(() => formResponseSourceId("short", "form_fixture_001", "response_fixture_001"))
       .toThrow("season_id is not a stable identifier");
   });
@@ -209,6 +217,84 @@ describe("C2.1 sync foundation", () => {
         open_conflicts: 0, pending_batches: 0, pending_outbox: 0 } } });
   });
 
+  it("keeps stable Form and legacy source identities across a binding version change", async () => {
+    const testEnv = teamEnv("binding-upgrade-sources");
+    await seed(testEnv, "binding_upgrade_001");
+    const first = foundation("c2_binding_upgrade_001", "c2_binding_snapshot_001");
+    expect((await call("/internal/c2/import-sync-foundation", first, testEnv)).status).toBe(200);
+    const stub = testEnv.TEAM_STATE.getByName(testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec("UPDATE seasons SET binding_version=2 WHERE season_id='season_c2_open_2026'").toArray();
+    });
+    const login = await call("/internal/c1/coach-login", {
+      request_id: "c2_binding_upgrade_login", coach_code: "local-test-coach-code"
+    }, testEnv, "C1");
+    const token = (await json(login)).data.result.session_token;
+    const staleOverview = await call("/internal/c2/get-sync-overview", {
+      request_id: "c2_binding_upgrade_stale_overview", session_token: token,
+      season_id: "season_c2_open_2026"
+    }, testEnv);
+    expect(await json(staleOverview)).toMatchObject({ data: { binding_current: false,
+      counts: { baselines: 0, imported_sources: 1, sources_needing_review: 1 } } });
+    const upgraded = foundation("c2_binding_upgrade_002", "c2_binding_snapshot_002");
+    upgraded.bindings[0].binding_version = 2;
+    upgraded.bindings[0].field_mapping.display_name_header = "Full Name";
+    upgraded.bindings[0].schema_fingerprint = "sha256_v1:c2_schema_fixture_002";
+    upgraded.bindings[0].updated_at = "2026-09-22T13:00:00.000Z";
+    upgraded.baselines = [];
+    upgraded.source_imports = [structuredClone(first.source_imports[0])];
+    upgraded.source_imports[0].binding_version = 2;
+    expect((await call("/internal/c2/import-sync-foundation", upgraded, testEnv)).status).toBe(200);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const sources = context.storage.sql.exec<{ binding_version: number; stable_source_id: string }>(
+        "SELECT binding_version, stable_source_id FROM source_imports ORDER BY stable_source_id").toArray();
+      expect(sources).toHaveLength(2);
+      expect(sources.find((row) => row.stable_source_id === first.source_imports[0].stable_source_id)
+        ?.binding_version).toBe(2);
+    });
+    const overview = await call("/internal/c2/get-sync-overview", {
+      request_id: "c2_binding_upgrade_overview", session_token: token,
+      season_id: "season_c2_open_2026"
+    }, testEnv);
+    expect(await json(overview)).toMatchObject({ data: { binding: { binding_version: 2 }, binding_current: true,
+      counts: { baselines: 0, imported_sources: 1, sources_needing_review: 1 } } });
+    const stale = foundation("c2_binding_upgrade_003", "c2_binding_snapshot_003");
+    stale.bindings = [];
+    stale.baselines = [];
+    stale.source_imports = [structuredClone(first.source_imports[0])];
+    expect(await json(await call("/internal/c2/import-sync-foundation", stale, testEnv)))
+      .toMatchObject({ error: { code: "SYNC_BINDING_NOT_FOUND" } });
+  });
+
+  it("updates same-version operational binding metadata without changing its mapping", async () => {
+    const testEnv = teamEnv("binding-metadata");
+    await seed(testEnv, "binding_metadata_001");
+    const original = foundation("c2_metadata_001", "c2_metadata_snapshot_001");
+    expect((await call("/internal/c2/import-sync-foundation", original, testEnv)).status).toBe(200);
+    const refreshed = foundation("c2_metadata_002", "c2_metadata_snapshot_002");
+    refreshed.baselines = [];
+    refreshed.source_imports = [];
+    refreshed.bindings[0].response_sheet_name = "Renamed responses";
+    refreshed.bindings[0].export_paused = true;
+    refreshed.bindings[0].last_pull_at = "2026-09-22T12:00:00.000Z";
+    refreshed.bindings[0].updated_at = "2026-09-22T13:00:00.000Z";
+    expect((await call("/internal/c2/import-sync-foundation", refreshed, testEnv)).status).toBe(200);
+    const changedMapping = structuredClone(refreshed);
+    changedMapping.request_id = "c2_metadata_003";
+    changedMapping.source_snapshot_id = "c2_metadata_snapshot_003";
+    changedMapping.bindings[0].field_mapping.display_name_header = "Changed Name";
+    changedMapping.bindings[0].updated_at = "2026-09-23T13:00:00.000Z";
+    expect(await json(await call("/internal/c2/import-sync-foundation", changedMapping, testEnv)))
+      .toMatchObject({ error: { code: "IMPORT_CONFLICT" } });
+    const stalePull = structuredClone(refreshed);
+    stalePull.request_id = "c2_metadata_004";
+    stalePull.source_snapshot_id = "c2_metadata_snapshot_004";
+    stalePull.bindings[0].last_pull_at = "2026-09-21T12:00:00.000Z";
+    stalePull.bindings[0].updated_at = "2026-09-23T13:00:00.000Z";
+    expect(await json(await call("/internal/c2/import-sync-foundation", stalePull, testEnv)))
+      .toMatchObject({ error: { code: "IMPORT_VERSION_REGRESSION" } });
+  });
+
   it("rejects binding drift, malformed baselines and stable source reassignment", async () => {
     const testEnv = teamEnv("foundation-conflicts");
     await seed(testEnv, "conflict_001");
@@ -260,6 +346,14 @@ describe("C2.1 sync foundation", () => {
     expect(await json(await call("/internal/c2/import-sync-foundation", badBaseline, testEnv)))
       .toMatchObject({ error: { code: "SYNC_MAPPING_INVALID" } });
 
+    const badStatus: any = foundation("c2_conflict_status_012", "c2_conflict_snapshot_012");
+    badStatus.bindings = [];
+    badStatus.source_imports = [];
+    badStatus.baselines[0].dependency_group = "MEMBER_STATUS";
+    badStatus.baselines[0].baseline = { status: "SUSPENDED" };
+    expect(await json(await call("/internal/c2/import-sync-foundation", badStatus, testEnv)))
+      .toMatchObject({ error: { code: "SYNC_MAPPING_INVALID" } });
+
     const wrongIdentity: any = foundation("c2_conflict_identity_010", "c2_conflict_snapshot_010");
     wrongIdentity.bindings = [];
     wrongIdentity.source_imports = [];
@@ -285,6 +379,14 @@ describe("C2.1 sync foundation", () => {
     wrongLegacyIdentity.source_imports[0].stable_source_id =
       "LEGACY_ROW:season_c2_open_2026:wrong-tab:3";
     expect(await json(await call("/internal/c2/import-sync-foundation", wrongLegacyIdentity, testEnv)))
+      .toMatchObject({ error: { code: "SOURCE_IDENTITY_INVALID" } });
+
+    const invalidFormResponse = foundation("c2_conflict_source_011", "c2_conflict_snapshot_011");
+    invalidFormResponse.bindings = [];
+    invalidFormResponse.baselines = [];
+    invalidFormResponse.source_imports = [structuredClone(original.source_imports[0])];
+    invalidFormResponse.source_imports[0].source_external_id = "short";
+    expect(await json(await call("/internal/c2/import-sync-foundation", invalidFormResponse, testEnv)))
       .toMatchObject({ error: { code: "SOURCE_IDENTITY_INVALID" } });
 
     const drift = structuredClone(original);

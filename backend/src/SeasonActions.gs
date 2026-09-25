@@ -94,8 +94,13 @@ function inspectSeasonBinding_(season, request) {
     throw dragonBoatRequestError_("BINDING_ALREADY_USED", "Choose a separate season Spreadsheet, not a system or archive file.");
   }
   getSheetRecords_("Seasons").forEach(function (other) {
-    if (String(other.season_id) !== String(season.season_id) && String(other.runtime_spreadsheet_id) === spreadsheetId) {
-      throw dragonBoatRequestError_("BINDING_ALREADY_USED", "Each season requires its own operational Spreadsheet.");
+    if (String(other.season_id) !== String(season.season_id)) {
+      if (String(other.form_id) === formId) {
+        throw dragonBoatRequestError_("BINDING_ALREADY_USED", "Each season requires its own Google Form.");
+      }
+      if (String(other.runtime_spreadsheet_id) === spreadsheetId) {
+        throw dragonBoatRequestError_("BINDING_ALREADY_USED", "Each season requires its own operational Spreadsheet.");
+      }
     }
   });
   var form;

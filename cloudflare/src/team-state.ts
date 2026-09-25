@@ -80,6 +80,14 @@ export class TeamState extends DurableObject<Env> {
     await this.ensureNextAlarm();
   }
 
+  private handleC1Post(path: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (Object.hasOwn(C1_HISTORY_ACTIONS, path)) return new C1HistoryService(this.ctx, this.env).handle(path, input);
+    if (Object.hasOwn(C1_SCHEDULE_ACTIONS, path)) return new C1ScheduleService(this.ctx, this.env).handle(path, input);
+    if (Object.hasOwn(C1_SEATING_ACTIONS, path)) return new C1SeatingService(this.ctx, this.env).handle(path, input);
+    if (Object.hasOwn(C1_SIGNUP_ACTIONS, path)) return new C1SignupService(this.ctx, this.env).handle(path, input);
+    return new C1Service(this.ctx, this.env).handle(path, input);
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     let requestId: string | null = null;
@@ -141,15 +149,7 @@ export class TeamState extends DurableObject<Env> {
       if (isC1 && request.method === "POST") {
         const input = await readJsonObject(request);
         requestId = requireRequestId(input);
-        const data = Object.hasOwn(C1_HISTORY_ACTIONS, url.pathname)
-          ? await new C1HistoryService(this.ctx, this.env).handle(url.pathname, input)
-          : Object.hasOwn(C1_SCHEDULE_ACTIONS, url.pathname)
-          ? await new C1ScheduleService(this.ctx, this.env).handle(url.pathname, input)
-          : Object.hasOwn(C1_SEATING_ACTIONS, url.pathname)
-            ? await new C1SeatingService(this.ctx, this.env).handle(url.pathname, input)
-          : Object.hasOwn(C1_SIGNUP_ACTIONS, url.pathname)
-            ? await new C1SignupService(this.ctx, this.env).handle(url.pathname, input)
-            : await new C1Service(this.ctx, this.env).handle(url.pathname, input);
+        const data = await this.handleC1Post(url.pathname, input);
         if (c1Action?.writes) await this.repairScheduledWork();
         else await this.ensureNextAlarm();
         return apiSuccess(data, this.env, requestId, C1_CONTRACT_VERSION);

@@ -87,6 +87,25 @@ test("binding recovery accepts a tab ID but another season cannot reuse any tab 
   assert.equal(sheetRecords(binding.runtimeSpreadsheet, "Members").length, 1);
 });
 
+test("another season cannot reuse the same Google Form with a different Spreadsheet", async () => {
+  const b = await createBackend();
+  const token = login(b.context);
+  const firstBinding = b.createFormBinding({ rows: [["2026-09-01", "Alice"]] });
+  const firstSeason = createSeason(b.context, token, "form_owner_season_001").data.season;
+  assert.equal(post(b.context, bindingBody(firstSeason, token, firstBinding,
+    "initializeSeason", "form_owner_binding_001")).ok, true);
+  const secondSeason = createSeason(b.context, token, "form_reuse_season_002").data.season;
+  const reusedForm = b.createFormBinding({ formId: firstBinding.formId,
+    spreadsheetId: "another-spreadsheet-12345678" });
+  for (const action of ["validateSeasonBinding", "initializeSeason"]) {
+    const response = post(b.context, bindingBody(secondSeason, token, reusedForm,
+      action, `form_reuse_${action}`));
+    assert.equal(response.error.code, "BINDING_ALREADY_USED");
+  }
+  assert.equal(sheetRecords(b.spreadsheet, "Seasons").find((row) =>
+    row.season_id === secondSeason.season_id).form_id, "");
+});
+
 test("legacy Form source drift stops import before new member rows can be misassigned", async () => {
   const b = await createBackend();
   const token = login(b.context);

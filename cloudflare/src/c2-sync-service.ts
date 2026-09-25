@@ -16,19 +16,30 @@ function same(left: unknown, right: unknown): boolean {
   return canonicalJson(left) === canonicalJson(right);
 }
 
-function bindingComparable(row: Record<string, unknown>): Record<string, unknown> {
+function bindingComparable(row: SyncBindingSnapshot | Record<string, unknown>): Record<string, unknown> {
   return {
     season_id: row.season_id, binding_version: Number(row.binding_version), form_id: row.form_id,
     runtime_spreadsheet_id: row.runtime_spreadsheet_id, response_sheet_id: row.response_sheet_id,
     response_sheet_name: row.response_sheet_name,
-    field_mapping: typeof row.field_mapping_json === "string" ? JSON.parse(row.field_mapping_json) : row.field_mapping,
+    field_mapping: "field_mapping_json" in row && typeof row.field_mapping_json === "string"
+      ? JSON.parse(row.field_mapping_json) : row.field_mapping,
     schema_fingerprint: row.schema_fingerprint, export_paused: Number(row.export_paused) === 1 || row.export_paused === true,
     last_pull_at: row.last_pull_at ?? null, last_push_at: row.last_push_at ?? null,
     created_at: row.created_at, updated_at: row.updated_at
   };
 }
 
-function sourceComparable(row: Record<string, unknown>): Record<string, unknown> {
+function bindingIdentityComparable(row: SyncBindingSnapshot | Record<string, unknown>): Record<string, unknown> {
+  const { response_sheet_name: _name, export_paused: _paused, last_pull_at: _pull,
+    last_push_at: _push, updated_at: _updated, ...identity } = bindingComparable(row);
+  return identity;
+}
+
+function timestampRegressed(previous: unknown, next: string | null): boolean {
+  return previous != null && (next == null || Date.parse(next) < Date.parse(String(previous)));
+}
+
+function sourceComparable(row: SourceImportSnapshot | Record<string, unknown>): Record<string, unknown> {
   return {
     stable_source_id: row.stable_source_id, season_id: row.season_id,
     binding_version: Number(row.binding_version), source_type: row.source_type,
@@ -38,10 +49,15 @@ function sourceComparable(row: Record<string, unknown>): Record<string, unknown>
   };
 }
 
+function sourceContentComparable(row: SourceImportSnapshot | Record<string, unknown>): Record<string, unknown> {
+  const { binding_version: _bindingVersion, ...content } = sourceComparable(row);
+  return content;
+}
+
 export class C2SyncService {
   private readonly core: C1Service;
 
-  constructor(private readonly ctx: DurableObjectState, private readonly env: Env) {
+  constructor(private readonly ctx: DurableObjectState, env: Env) {
     this.core = new C1Service(ctx, env);
   }
 
@@ -83,8 +99,19 @@ export class C2SyncService {
     if (binding.binding_version < Number(existing.binding_version)) {
       throw new ApiError("IMPORT_VERSION_REGRESSION", "The sync binding snapshot is older than stored state.", 409);
     }
-    if (binding.binding_version === Number(existing.binding_version) && !same(bindingComparable(existing), binding)) {
-      throw new ApiError("IMPORT_CONFLICT", "The same sync binding version contains different data.", 409);
+    if (binding.binding_version === Number(existing.binding_version)) {
+      if (!same(bindingIdentityComparable(existing), bindingIdentityComparable(binding))) {
+        throw new ApiError("IMPORT_CONFLICT", "The same sync binding version contains different identity or mapping data.", 409);
+      }
+      if (!same(bindingComparable(existing), binding) &&
+          Date.parse(binding.updated_at) <= Date.parse(String(existing.updated_at))) {
+        throw new ApiError("IMPORT_CONFLICT", "Changed binding metadata requires a newer updated_at.", 409);
+      }
+    }
+    if (timestampRegressed(existing.last_pull_at, binding.last_pull_at) ||
+        timestampRegressed(existing.last_push_at, binding.last_push_at) ||
+        Date.parse(binding.updated_at) < Date.parse(String(existing.updated_at))) {
+      throw new ApiError("IMPORT_VERSION_REGRESSION", "The sync binding timestamps cannot move backward.", 409);
     }
     if (["form_id", "runtime_spreadsheet_id", "response_sheet_id"].some((field) =>
       String(existing[field]) !== String(binding[field as keyof SyncBindingSnapshot])) ||
@@ -108,7 +135,7 @@ export class C2SyncService {
     let normalized: Record<string, unknown>;
     try {
       normalized = Object.fromEntries(definitions.map((definition) => [definition.field,
-        normalizeSyncValue(baseline.baseline[definition.field], definition.kind)]));
+        normalizeSyncValue(baseline.baseline[definition.field], definition.kind, definition.allowed_values)]));
     } catch {
       throw new ApiError("SYNC_MAPPING_INVALID", "A baseline contains an invalid mapped value.", 409);
     }
@@ -159,7 +186,13 @@ export class C2SyncService {
   private validateSource(source: SourceImportSnapshot, binding: SyncBindingSnapshot | Record<string, unknown>): void {
     if (source.source_type === "FORM_RESPONSE") {
       const formId = String("form_id" in binding ? binding.form_id : "");
-      if (source.stable_source_id !== formResponseSourceId(source.season_id, formId, source.source_external_id)) {
+      let expectedId: string;
+      try {
+        expectedId = formResponseSourceId(source.season_id, formId, source.source_external_id);
+      } catch {
+        throw new ApiError("SOURCE_IDENTITY_INVALID", "The Form response identifier is invalid.", 409);
+      }
+      if (source.stable_source_id !== expectedId) {
         throw new ApiError("SOURCE_IDENTITY_INVALID", "The Form response stable source identity is invalid.", 409);
       }
     } else if (source.stable_source_id !== `LEGACY_ROW:${source.season_id}:${source.source_external_id}`) {
@@ -182,10 +215,14 @@ export class C2SyncService {
     if (source.source_version < Number(existing.source_version)) {
       throw new ApiError("IMPORT_VERSION_REGRESSION", "The source mapping snapshot is older than stored state.", 409);
     }
-    if (source.source_version === Number(existing.source_version) && !same(sourceComparable(existing), source)) {
+    if (source.binding_version < Number(existing.binding_version)) {
+      throw new ApiError("IMPORT_VERSION_REGRESSION", "The source binding snapshot is older than stored state.", 409);
+    }
+    if (source.source_version === Number(existing.source_version) &&
+        !same(sourceContentComparable(existing), sourceContentComparable(source))) {
       throw new ApiError("IMPORT_CONFLICT", "The same source mapping version contains different data.", 409);
     }
-    if (String(existing.season_id) !== source.season_id || Number(existing.binding_version) !== source.binding_version ||
+    if (String(existing.season_id) !== source.season_id ||
         String(existing.source_type) !== source.source_type || String(existing.source_external_id) !== source.source_external_id ||
         (existing.member_id && source.member_id && String(existing.member_id) !== source.member_id)) {
       throw new ApiError("SOURCE_IDENTITY_CONFLICT", "A stable source identity cannot be reassigned.", 409);
@@ -273,7 +310,8 @@ export class C2SyncService {
         `INSERT INTO source_imports(stable_source_id, season_id, binding_version, source_type,
            source_external_id, source_digest, source_version, member_id, status, imported_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(stable_source_id) DO UPDATE SET source_digest=excluded.source_digest,
+         ON CONFLICT(stable_source_id) DO UPDATE SET binding_version=excluded.binding_version,
+           source_digest=excluded.source_digest,
            source_version=excluded.source_version, member_id=excluded.member_id, status=excluded.status,
            imported_at=excluded.imported_at, updated_at=excluded.updated_at`,
         row.stable_source_id, row.season_id, row.binding_version, row.source_type,
@@ -292,24 +330,26 @@ export class C2SyncService {
   private async getOverview(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     const input = parseContract(() => parseSyncOverview(raw));
     await this.core.authenticateSession(input.session_token);
-    const season = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT season_id FROM seasons WHERE season_id=?", input.season_id);
+    const season = firstRow<SqlRow>(this.ctx.storage.sql,
+      "SELECT season_id, binding_version FROM seasons WHERE season_id=?", input.season_id);
     if (!season) throw new ApiError("SEASON_NOT_FOUND", "The season does not exist.", 404);
     const binding = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM sync_bindings WHERE season_id=?", input.season_id);
     const count = (query: string, ...values: SqlStorageValue[]) =>
       Number(this.ctx.storage.sql.exec<{ count: number }>(query, ...values).one().count);
-    const bindingVersion = Number(binding?.binding_version ?? 0);
+    const bindingCurrent = !!binding && Number(binding.binding_version) === Number(season.binding_version);
     return {
       season_id: input.season_id,
       binding: binding ? bindingComparable(binding) : null,
+      binding_current: bindingCurrent,
       counts: {
-        baselines: binding ? count("SELECT COUNT(*) AS count FROM sync_baselines WHERE season_id=? AND binding_version=?",
-          input.season_id, bindingVersion) : 0,
-        imported_sources: binding ? count(
-          "SELECT COUNT(*) AS count FROM source_imports WHERE season_id=? AND binding_version=? AND status='IMPORTED'",
-          input.season_id, bindingVersion) : 0,
-        sources_needing_review: binding ? count(
-          "SELECT COUNT(*) AS count FROM source_imports WHERE season_id=? AND binding_version=? AND status='REVIEW_REQUIRED'",
-          input.season_id, bindingVersion) : 0,
+        baselines: bindingCurrent ? count("SELECT COUNT(*) AS count FROM sync_baselines WHERE season_id=? AND binding_version=?",
+          input.season_id, Number(season.binding_version)) : 0,
+        imported_sources: count(
+          "SELECT COUNT(*) AS count FROM source_imports WHERE season_id=? AND status='IMPORTED'",
+          input.season_id),
+        sources_needing_review: count(
+          "SELECT COUNT(*) AS count FROM source_imports WHERE season_id=? AND status='REVIEW_REQUIRED'",
+          input.season_id),
         open_conflicts: count("SELECT COUNT(*) AS count FROM sync_conflicts WHERE season_id=? AND status='OPEN'", input.season_id),
         pending_batches: count(
           "SELECT COUNT(*) AS count FROM sync_batches WHERE season_id=? AND status IN ('PREPARED','SENT','PARTIAL','FAILED')",
