@@ -92,4 +92,10 @@ C0 桥接小样使用 `2026-09-19.bridge.v1` 信封；签名绑定方向、团�
 
 schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、稳定 Form／旧来源映射、冲突、同步批次和迁移快照。v6 原地升级保留全部 C1 数据，C1 备份范围也包含这些新表。`shared/c2-sync-rules.ts` 是唯一三方比较规则：以确认基线 `B`、Cloudflare 当前值 `C` 和 Google 值 `G` 按依赖组判断导出、自动导入、业务校验、人工确认、拒绝或冲突；删行和未映射字段不会被猜测成有效操作。
 
-`import-sync-foundation` 只接收受控影子元数据，不访问 Google、不创建或确认 outbox。它保留稳定绑定和来源身份，拒绝版本倒退、同版本身份或映射漂移、跨赛季复用 Form／Spreadsheet、非法 Sheet tab ID、错误实体身份及来源重新指派。同一绑定版本可更新响应 Tab 名称、暂停标志和同步时间，但必须推进 `updated_at`，同步时间不可倒退；更换字段映射须提升绑定版本，不能更换文件或 Tab 身份。Form 和旧行来源的稳定键跨绑定版本保留，同一来源内容未变时无需提高来源版本。`get-sync-overview` 需要有效 Coach session；基线计数只看当前绑定版本，来源计数覆盖整个赛季。当前源码服务版本为 `0.8.0-c2-sync-foundation`、隔离代次为 `cf-c2-staging-3`，尚未部署；已部署 staging 仍保留 C1.6 版本。实现和本地证据见 [C2.1 验收](../tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)。
+`import-sync-foundation` 只接收受控影子元数据，不访问 Google、不创建或确认 outbox。它保留稳定绑定和来源身份，拒绝版本倒退、同版本身份或映射漂移、跨赛季复用 Form／Spreadsheet、非法 Sheet tab ID、错误实体身份及来源重新指派。同一绑定版本可更新响应 Tab 名称、暂停标志和同步时间，但必须推进 `updated_at`，同步时间不可倒退；更换字段映射须提升绑定版本，不能更换文件或 Tab 身份。Form 和旧行来源的稳定键跨绑定版本保留，同一来源内容未变时无需提高来源版本。`get-sync-overview` 需要有效 Coach session；基线计数只看当前绑定版本，来源计数覆盖整个赛季。实现和本地证据见 [C2.1 验收](../tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)。
+
+## C2.2 Form 来源导入
+
+当前本地源码服务版本 `0.9.0-c2-form-import`、schema v8、隔离代次 `cf-c2-staging-4`；已部署 staging 仍为 C1.6。`pull-form-responses` 经签名 Apps Script 桥接读取当前绑定 Form；Cloudflare 校验页范围并在同一事务里提交成员、来源、核查、游标和回执。按回答 ID 保持稳定身份，以时间加回答 ID 排序，24 小时重叠补扫；同一请求 ID 重放结果。旧行不能用姓名推断关联，需 Coach 在 `resolve-form-source` 显式确认。业务 outbox 仍只是待同步，未写 Google。
+
+十分钟 staging 定时器已写入配置，但 `C2_FORM_POLL_ENABLED=false`；production 无该定时器和 C2 路由。启用前须完成独立 Google 文件、真实 Web App 和触发器测试；当前没有 `onFormSubmit` 通知路径。具体证据与待验收项见 [C2.2 本地记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。

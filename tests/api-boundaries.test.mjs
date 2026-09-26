@@ -8,7 +8,8 @@ test("every production action and HTTP method matches the executable route regis
   const { context } = await createBackend({ setup: false });
   const contract = JSON.parse(await readFile(new URL("../contracts/api-v1.json", import.meta.url), "utf8"));
   const routes = context.dragonBoatRoutes_();
-  assert.deepEqual(Object.keys(routes).filter(name => name !== "cloudflareBridgeProbe").sort(), Object.keys(contract.actions).sort());
+  assert.deepEqual(Object.keys(routes).filter(name => !["cloudflareBridgeProbe", "cloudflareReadFormResponses"].includes(name)).sort(),
+    Object.keys(contract.actions).sort());
   for (const [name, definition] of Object.entries(contract.actions)) {
     assert.deepEqual([...routes[name].methods], definition.methods, name);
   }

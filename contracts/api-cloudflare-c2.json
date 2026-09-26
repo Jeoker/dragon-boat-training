@@ -1,9 +1,9 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C2.1 sync foundation local implementation; isolated metadata API; not production",
-  "contract_version": "2026-09-21.c2.1",
-  "service_version": "0.8.0-c2-sync-foundation",
+  "status": "C2.2 Form source import local implementation; isolated test API; not deployed or production",
+  "contract_version": "2026-09-25.c2.2",
+  "service_version": "0.9.0-c2-form-import",
   "transport_gate": "Every /internal/c2 route is absent in production and requires C2_TEST_KEY in local or staging. This gate is independent from the Coach session required by management reads.",
   "response": {
     "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
@@ -25,6 +25,30 @@
       "request": ["request_id", "session_token", "season_id"],
       "response": ["season_id", "binding", "binding_current", "counts", "schema_version", "generated_at"],
       "notes": "Protected C2.1 diagnostic projection. File identifiers remain private. binding_current shows whether the stored binding matches the season version. Baseline count uses the active binding version; source counts cover the entire season, including unmoved mappings from older binding versions. Conflict, batch and business outbox counts cover the season."
+    },
+    "/internal/c2/pull-form-responses": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "season_id", "optional limit"],
+      "response_result": ["season_id", "binding_version", "created", "updated", "reviewed", "unchanged", "has_more", "watermark_ms", "next_after_at_ms", "next_after_id"],
+      "notes": "Signed, read-only Apps Script Form page; the Worker verifies response scope and atomically commits members, stable source mappings, review observations, the cursor and an immutable receipt. A 24-hour overlap and (timestamp, response ID) page cursor avoid missing equal-timestamp answers; retries reuse the same request ID. Only local or isolated staging test key may call it."
+    },
+    "/internal/c2/poll-active-forms": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id"],
+      "response": ["polled", "results"],
+      "notes": "Ten-minute staging scheduler entrypoint, disabled by default and unavailable in production. It processes at most four current bound open or completed seasons using the same transactional pull path; failed seasons report RETRY_REQUIRED so the scheduled invocation retries later."
+    },
+    "/internal/c2/resolve-form-source": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "response_id", "member_id", "source_version"],
+      "response_result": ["season_id", "response_id", "member_id", "source_version"],
+      "notes": "Coach resolution for a reviewed Form answer. Requires current source version, an existing same-season member and no prior Form mapping for that member; it preserves the member identity and name override. It is a protected C2 staging action, not a normal join approval."
     }
   },
   "errors": [
@@ -33,10 +57,12 @@
     "SESSION_EXPIRED", "SESSION_REVOKED", "SEASON_NOT_FOUND", "IMPORT_REFERENCE_MISSING",
     "IMPORT_VERSION_REGRESSION", "IMPORT_CONFLICT", "IMPORT_SNAPSHOT_CONFLICT",
     "SYNC_BINDING_NOT_FOUND", "SYNC_BINDING_STALE", "SYNC_BINDING_IDENTITY_CONFLICT", "SYNC_MAPPING_INVALID",
-    "SOURCE_IDENTITY_INVALID", "SOURCE_IDENTITY_CONFLICT", "INTERNAL_ERROR"
+    "SOURCE_IDENTITY_INVALID", "SOURCE_IDENTITY_CONFLICT", "FORM_IMPORT_CLOSED",
+    "FORM_IMPORT_STALE", "FORM_SOURCE_REVIEW_REQUIRED", "FORM_POLL_DISABLED", "BRIDGE_CONFIGURATION_REQUIRED",
+    "BRIDGE_UNAVAILABLE", "BRIDGE_INVALID_RESPONSE", "INTERNAL_ERROR"
   ],
   "not_yet_in_this_slice": [
-    "Google bridge reads or writes", "Form answer import", "outbox batching or confirmation",
+    "Google Sheet comparison or writes", "outbox batching or confirmation",
     "conflict creation or resolution", "pause or resume actions", "annual Google export",
     "production or Pages routing", "browser CORS"
   ]

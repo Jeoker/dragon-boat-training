@@ -9,6 +9,8 @@ import { ApiError } from "./http";
 import { C1Service } from "./c1-service";
 import { firstRow, operationReceipt, parseContract, type SqlRow } from "./c1-support";
 import { APPLICATION_SCHEMA_VERSION } from "./schema";
+import { C2FormService } from "./c2-form-service";
+import { requireRequestId } from "./http";
 
 interface PreparedBaseline extends SyncBaselineSnapshot { baseline_digest: string; }
 
@@ -57,14 +59,43 @@ function sourceContentComparable(row: SourceImportSnapshot | Record<string, unkn
 export class C2SyncService {
   private readonly core: C1Service;
 
-  constructor(private readonly ctx: DurableObjectState, env: Env) {
+  constructor(private readonly ctx: DurableObjectState, private readonly env: Env) {
     this.core = new C1Service(ctx, env);
   }
 
   async handle(path: string, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (path === "/internal/c2/import-sync-foundation") return this.importFoundation(raw);
     if (path === "/internal/c2/get-sync-overview") return this.getOverview(raw);
+    if (path === "/internal/c2/pull-form-responses") return new C2FormService(this.ctx, this.env).pull(raw);
+    if (path === "/internal/c2/poll-active-forms") return this.pollActiveForms(raw);
+    if (path === "/internal/c2/resolve-form-source") return new C2FormService(this.ctx, this.env).resolve(raw);
     throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
+  }
+
+  private async pollActiveForms(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const requestId = requireRequestId(raw);
+    if (String(this.env.C2_FORM_POLL_ENABLED) !== "true" || this.env.ENVIRONMENT === "production") {
+      throw new ApiError("FORM_POLL_DISABLED", "Automatic Form polling is disabled.", 409);
+    }
+    const seasons = this.ctx.storage.sql.exec<{ season_id: string }>(
+      `SELECT b.season_id FROM sync_bindings b JOIN seasons s ON s.season_id=b.season_id
+       LEFT JOIN form_import_cursors c ON c.season_id=b.season_id
+       WHERE s.status IN ('OPEN','COMPLETED') AND s.binding_version=b.binding_version
+       ORDER BY COALESCE(c.last_read_at_ms, 0), b.season_id LIMIT 4`).toArray();
+    const results: Array<{ season_id: string; status: string; has_more?: boolean }> = [];
+    for (const season of seasons) {
+      try {
+        const result = await new C2FormService(this.ctx, this.env).pull({
+          request_id: `c2_${await sha256Base64Url(`${requestId}\n${season.season_id}`)}`,
+          season_id: season.season_id, limit: 100
+        });
+        const data = result.result as { has_more: boolean };
+        results.push({ season_id: season.season_id, status: "COMMITTED", has_more: data.has_more });
+      } catch {
+        results.push({ season_id: season.season_id, status: "RETRY_REQUIRED" });
+      }
+    }
+    return { polled: results.length, results };
   }
 
   private bindingFor(seasonId: string, bindingVersion: number,

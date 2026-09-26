@@ -4,17 +4,19 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-19",
   "workers_dev": true,
+  "triggers": { "crons": ["*/10 * * * *"] },
   "observability": {
     "enabled": true
   },
   "vars": {
     "ENVIRONMENT": "staging",
-    "SERVICE_VERSION": "0.8.0-c2-sync-foundation",
+    "SERVICE_VERSION": "0.9.0-c2-form-import",
     "CONTRACT_VERSION": "2026-09-19.c0",
     "BACKEND_INSTANCE": "dragon-boat-training-staging",
-    "BACKEND_GENERATION": "cf-c2-staging-3",
+    "BACKEND_GENERATION": "cf-c2-staging-4",
     "WRITER_EPOCH": "0",
-    "TEAM_ID": "pentasus"
+    "TEAM_ID": "pentasus",
+    "C2_FORM_POLL_ENABLED": "false"
   },
   "durable_objects": {
     "bindings": [
@@ -33,6 +35,7 @@
   "env": {
     "production": {
       "name": "dragon-boat-training-api",
+      "triggers": { "crons": [] },
       "vars": {
         "ENVIRONMENT": "production",
         "SERVICE_VERSION": "0.1.0-c0",
@@ -40,7 +43,8 @@
         "BACKEND_INSTANCE": "dragon-boat-training-production",
         "BACKEND_GENERATION": "cf-c0-production-1",
         "WRITER_EPOCH": "0",
-        "TEAM_ID": "pentasus"
+        "TEAM_ID": "pentasus",
+        "C2_FORM_POLL_ENABLED": "false"
       },
       "durable_objects": {
         "bindings": [

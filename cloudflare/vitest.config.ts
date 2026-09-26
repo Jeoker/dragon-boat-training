@@ -12,7 +12,9 @@ export default defineConfig({
           C2_TEST_KEY: "local-c2-test-key",
           COACH_CODE_SECRET: "local-c1-coach-secret",
           SESSION_SECRET: "local-c1-session-secret",
-          COACH_SESSION_TTL_SECONDS: "28800"
+          COACH_SESSION_TTL_SECONDS: "28800",
+          GOOGLE_BRIDGE_URL: "https://script.google.com/macros/s/local-fixture/exec",
+          GOOGLE_BRIDGE_SECRET: "local-test-bridge-secret"
         }
       }
     })

@@ -5,7 +5,7 @@ export const BRIDGE_PROTOCOL = "2026-09-19.bridge.v1";
 export const BRIDGE_DIRECTION = "CLOUDFLARE_TO_GOOGLE";
 
 interface BridgeEnvelope {
-  action: "cloudflareBridgeProbe";
+  action: "cloudflareBridgeProbe" | "cloudflareReadFormResponses";
   request_id: string;
   protocol_version: string;
   direction: string;
@@ -52,10 +52,11 @@ export async function createBridgeEnvelope(input: {
   bindingVersion?: string;
   timestampMs?: number;
   nonce?: string;
+  action?: BridgeEnvelope["action"];
 }): Promise<BridgeEnvelope> {
   const payloadJson = JSON.stringify(input.payload);
   const unsigned = {
-    action: "cloudflareBridgeProbe" as const,
+    action: input.action ?? "cloudflareBridgeProbe",
     request_id: input.requestId,
     protocol_version: BRIDGE_PROTOCOL,
     direction: BRIDGE_DIRECTION,

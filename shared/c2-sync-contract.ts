@@ -58,6 +58,17 @@ export interface ImportSyncFoundationRequest {
 }
 
 export interface SyncOverviewRequest extends SessionRequest { season_id: string; }
+export interface PullFormResponsesRequest {
+  request_id: string;
+  season_id: string;
+  limit: number;
+}
+export interface ResolveFormSourceRequest extends SessionRequest {
+  season_id: string;
+  response_id: string;
+  member_id: string;
+  source_version: number;
+}
 
 const ENTITY_TYPES = ["SEASON", "MEMBER", "SIGNUP", "PRACTICE", "SEAT_PLAN_DRAFT", "HISTORY"] as const;
 
@@ -188,4 +199,24 @@ export function parseImportSyncFoundation(value: unknown): ImportSyncFoundationR
 export function parseSyncOverview(value: unknown): SyncOverviewRequest {
   const input = object(value);
   return { ...sessionRequest(input), season_id: identifier(input, "season_id") };
+}
+
+export function parsePullFormResponses(value: unknown): PullFormResponsesRequest {
+  const input = object(value);
+  const limit = input.limit === undefined ? 50 : integer(input, "limit", 1);
+  if (limit > 100) throw new ContractValidationError("limit must not exceed 100.", "limit");
+  return { request_id: requestId(input), season_id: identifier(input, "season_id"), limit };
+}
+
+export function parseResolveFormSource(value: unknown): ResolveFormSourceRequest {
+  const input = object(value);
+  const responseId = string(input, "response_id", 8, 256);
+  if (!/^[A-Za-z0-9_-]+$/u.test(responseId)) {
+    throw new ContractValidationError("response_id is invalid.", "response_id");
+  }
+  return {
+    ...sessionRequest(input), season_id: identifier(input, "season_id"),
+    response_id: responseId, member_id: identifier(input, "member_id"),
+    source_version: integer(input, "source_version", 1)
+  };
 }

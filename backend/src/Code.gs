@@ -74,6 +74,9 @@ function dragonBoatRoutes_() {
   add("coachBootstrap", "POST", function (r) { return withDragonBoatScriptLock_(function () { return coachBootstrap_(r); }); });
   add("coachConnectivityWrite", "POST", function (r) { return coachConnectivityWrite_(r); });
   add("cloudflareBridgeProbe", "POST", function (r) { return cloudflareBridgeProbe_(r); });
+  if (typeof cloudflareReadFormResponses_ === "function") {
+    add("cloudflareReadFormResponses", "POST", function (r) { return cloudflareReadFormResponses_(r); });
+  }
   add("getSeasonManagement", "POST", function (r) { return withDragonBoatScriptLock_(function () { return getSeasonManagement_(r); }); });
   add("createSeason", "POST", function (r) { return createSeason_(r); });
   add("validateSeasonBinding", "POST", function (r) { return validateSeasonBindingAction_(r); });

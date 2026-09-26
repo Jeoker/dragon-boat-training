@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 7;
+export const APPLICATION_SCHEMA_VERSION = 8;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -405,6 +405,36 @@ function applyC2SyncFoundationSchema(sql: SqlStorage): void {
   `).toArray();
 }
 
+function applyC2FormImportSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS form_import_cursors (
+      season_id TEXT PRIMARY KEY, binding_version INTEGER NOT NULL CHECK (binding_version >= 1),
+      watermark_ms INTEGER NOT NULL DEFAULT 0 CHECK (watermark_ms >= 0),
+      window_start_ms INTEGER, scan_baseline_ms INTEGER,
+      after_at_ms INTEGER NOT NULL DEFAULT 0 CHECK (after_at_ms >= 0),
+      after_id TEXT NOT NULL DEFAULT '', last_read_at_ms INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE TABLE IF NOT EXISTS form_import_receipts (
+      operation_id TEXT PRIMARY KEY, request_key TEXT NOT NULL UNIQUE,
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      request_digest TEXT NOT NULL, response_digest TEXT NOT NULL,
+      result_json TEXT NOT NULL CHECK (json_valid(result_json)), committed_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id),
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+    CREATE INDEX IF NOT EXISTS form_import_receipts_season_idx
+      ON form_import_receipts(season_id, committed_at, operation_id);
+    CREATE TABLE IF NOT EXISTS form_source_observations (
+      stable_source_id TEXT PRIMARY KEY, season_id TEXT NOT NULL,
+      submitted_at TEXT NOT NULL, display_name TEXT NOT NULL,
+      source_digest TEXT NOT NULL, review_reason TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL,
+      FOREIGN KEY (stable_source_id) REFERENCES source_imports(stable_source_id)
+    );
+  `).toArray();
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -422,6 +452,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 5) applyC1SeatingSchema(sql);
     if (currentVersion < 6) applyC1HistorySchema(sql);
     if (currentVersion < 7) applyC2SyncFoundationSchema(sql);
+    if (currentVersion < 8) applyC2FormImportSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

@@ -68,5 +68,18 @@ export default {
       return apiFailure(error, env, requestId, url.pathname.startsWith("/internal/c2/") ? C2_CONTRACT_VERSION :
         url.pathname.startsWith("/internal/c1/") ? C1_CONTRACT_VERSION : env.CONTRACT_VERSION);
     }
+  },
+  async scheduled(controller, env): Promise<void> {
+    if (env.ENVIRONMENT === "production" || String(env.C2_FORM_POLL_ENABLED) !== "true") return;
+    const response = await env.TEAM_STATE.getByName(env.TEAM_ID).fetch(new Request(
+      "https://internal.example/internal/c2/poll-active-forms", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ request_id: `c2_poll_${controller.scheduledTime}` })
+      }));
+    if (!response.ok) throw new Error("Scheduled Form polling did not complete.");
+    const body = await response.json() as { data?: { results?: Array<{ status: string }> } };
+    if (body.data?.results?.some((item) => item.status === "RETRY_REQUIRED")) {
+      throw new Error("Scheduled Form polling has retryable failures.");
+    }
   }
 } satisfies ExportedHandler<Env>;

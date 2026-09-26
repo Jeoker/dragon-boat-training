@@ -21,6 +21,7 @@
 - `src/ArchiveActions.gs`：到期冻结、分批归档检查点、单场及整季私有快照、年度归档文件、公开荣誉墙索引与缓存、更正说明、归档健康及分页操作记录。
 - `src/TimeUtils.gs`：赛季时区、日历边界及本地训练时间解析。
 - `src/Setup.gs`：一次性初始化及新增／重置个人 Coach Code。
+- `src/FormBridge.gs`：C2.2 只读 Form 回答分页桥接，仅纳入完整后端构建；不进入独立 C0 探针。
 - `src/appsscript.json`：V8 运行时配置。
 - `.clasp.json.example`：测试项目配置示例；真实 Script ID 不提交仓库。
 - `build.mjs`：按固定顺序生成可直接粘贴到网页编辑器的单文件构建结果；从仓库根目录运行 `npm run build:backend`。
@@ -61,6 +62,8 @@
 探针 manifest 额外声明仅限项目所有者的 Execution API，并提供 `configureC0BridgeProbe` 和不返回 secret 的配置检查函数；匿名 Web App 仍只能依赖签名信封进入 `cloudflareBridgeProbe`。默认 GCP 项目在 C0 实测中不允许 `clasp run`，因此实际初始值通过 Apps Script Project Settings 写入；若未来改用标准 GCP 项目，才可使用该辅助函数。配置函数不进入正式后端构建，不返回或记录 secret。
 
 共享 secret 不出现在请求正文、源码、`wrangler.jsonc`、日志或验收报告中。C0 只验证签名、时间窗、nonce、操作幂等、归属和 Content Service 重定向；Form／Sheet 分段读写、正式回执表及同步恢复属于 C2。生产 Apps Script 在 C4 写入交接前仍是唯一业务后端，不能因为桥接探针存在就关闭旧逻辑。
+
+C2.2 的完整后端源码另外注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。它尚未部署或连到测试 Google 文件；当前独立桥接探针 deployment 仍只验证 C0，不具备此路由。连接和验收门槛见 [C2.2 本地记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 
 本地使用 clasp 时，把 `.clasp.json.example` 复制为 `.clasp.json` 并替换测试 Script ID；`rootDir` 已指向 `src`。真实 `.clasp.json`、Code、会话令牌和 Spreadsheet ID 不提交仓库。
 
