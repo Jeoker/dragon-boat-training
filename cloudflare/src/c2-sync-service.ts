@@ -67,9 +67,38 @@ export class C2SyncService {
     if (path === "/internal/c2/import-sync-foundation") return this.importFoundation(raw);
     if (path === "/internal/c2/get-sync-overview") return this.getOverview(raw);
     if (path === "/internal/c2/pull-form-responses") return new C2FormService(this.ctx, this.env).pull(raw);
+    if (path === "/internal/c2/form-submit-notification") return this.formSubmitNotification(raw);
     if (path === "/internal/c2/poll-active-forms") return this.pollActiveForms(raw);
     if (path === "/internal/c2/resolve-form-source") return new C2FormService(this.ctx, this.env).resolve(raw);
     throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
+  }
+
+  private async formSubmitNotification(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const requestId = requireRequestId(raw);
+    const seasonId = String(raw.season_id ?? "");
+    const bindingVersion = Number(raw.binding_version);
+    const formId = String(raw.form_id ?? "");
+    const responseId = String(raw.response_id ?? "");
+    const binding = firstRow<SqlRow>(this.ctx.storage.sql,
+      `SELECT b.form_id, b.binding_version FROM sync_bindings b
+       JOIN seasons s ON s.season_id=b.season_id AND s.binding_version=b.binding_version
+       WHERE b.season_id=? AND s.status IN ('OPEN','COMPLETED')`, seasonId);
+    if (!binding || String(binding.form_id) !== formId || Number(binding.binding_version) !== bindingVersion) {
+      throw new ApiError("SYNC_BINDING_NOT_FOUND", "The Form notification does not match an active binding.", 409);
+    }
+    const stableId = formResponseSourceId(seasonId, formId, responseId);
+    const pages: Array<Record<string, unknown>> = [];
+    for (let index = 0; index < 4; index += 1) {
+      const page = await new C2FormService(this.ctx, this.env).pull({
+        request_id: `${requestId}_${index}`, season_id: seasonId, limit: 100
+      });
+      pages.push(page.result as Record<string, unknown>);
+      const observed = firstRow<SqlRow>(this.ctx.storage.sql,
+        "SELECT 1 AS present FROM source_imports WHERE stable_source_id=?", stableId);
+      if (observed) return { season_id: seasonId, response_id: responseId, observed: true, pages };
+      if (!(page.result as { has_more?: boolean }).has_more) break;
+    }
+    throw new ApiError("FORM_NOTIFICATION_PENDING", "The submitted Form response is not visible yet.", 503, true);
   }
 
   private async pollActiveForms(raw: Record<string, unknown>): Promise<Record<string, unknown>> {

@@ -1,10 +1,10 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C2.2 Form source import local implementation; isolated test API; not deployed or production",
+  "status": "C2.2 Form source import and signed submit notification deployed only to the dedicated c2test Worker; original staging and production unchanged",
   "contract_version": "2026-09-25.c2.2",
   "service_version": "0.9.0-c2-form-import",
-  "transport_gate": "Every /internal/c2 route is absent in production and requires C2_TEST_KEY in local or staging. This gate is independent from the Coach session required by management reads.",
+  "transport_gate": "C2 routes are absent in production. Local or staging diagnostic routes require C2_TEST_KEY; the Form notification instead verifies a fresh Google bridge HMAC, team and writer epoch before reaching the DO. This gate is independent from the Coach session required by management reads.",
   "response": {
     "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
     "operation_result": "A mutation returns an immutable operation receipt and result. Sync metadata import does not call Google or consume outbox."
@@ -34,6 +34,14 @@
       "response_result": ["season_id", "binding_version", "created", "updated", "reviewed", "unchanged", "has_more", "watermark_ms", "next_after_at_ms", "next_after_id"],
       "notes": "Signed, read-only Apps Script Form page; the Worker verifies response scope and atomically commits members, stable source mappings, review observations, the cursor and an immutable receipt. A 24-hour overlap and (timestamp, response ID) page cursor avoid missing equal-timestamp answers; retries reuse the same request ID. Only local or isolated staging test key may call it."
     },
+    "/internal/c2/form-submit-notification": {
+      "method": "POST",
+      "authentication": "signed_notification",
+      "writes": true,
+      "request": ["protocol_version", "team_id", "writer_epoch", "season_id", "binding_version", "form_id", "response_id", "timestamp_ms", "nonce", "signature"],
+      "response": ["season_id", "response_id", "observed", "pages"],
+      "notes": "An installable Google Forms submit trigger signs a fresh notification with the existing bridge secret. The Worker verifies its scope before reaching the DO, checks the current season binding, then uses the normal transactional Form pull; the response must be observed or a retryable failure is returned. This staging-only route does not expose the C2 transport key to Google. Installation is explicit while the production Apps Script legacy trigger still owns the live season."
+    },
     "/internal/c2/poll-active-forms": {
       "method": "POST",
       "authentication": "transport_only",
@@ -58,7 +66,7 @@
     "IMPORT_VERSION_REGRESSION", "IMPORT_CONFLICT", "IMPORT_SNAPSHOT_CONFLICT",
     "SYNC_BINDING_NOT_FOUND", "SYNC_BINDING_STALE", "SYNC_BINDING_IDENTITY_CONFLICT", "SYNC_MAPPING_INVALID",
     "SOURCE_IDENTITY_INVALID", "SOURCE_IDENTITY_CONFLICT", "FORM_IMPORT_CLOSED",
-    "FORM_IMPORT_STALE", "FORM_SOURCE_REVIEW_REQUIRED", "FORM_POLL_DISABLED", "BRIDGE_CONFIGURATION_REQUIRED",
+    "FORM_IMPORT_STALE", "FORM_SOURCE_REVIEW_REQUIRED", "FORM_POLL_DISABLED", "FORM_NOTIFICATION_INVALID", "FORM_NOTIFICATION_PENDING", "BRIDGE_CONFIGURATION_REQUIRED",
     "BRIDGE_UNAVAILABLE", "BRIDGE_INVALID_RESPONSE", "INTERNAL_ERROR"
   ],
   "not_yet_in_this_slice": [
