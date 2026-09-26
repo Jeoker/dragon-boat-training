@@ -5,9 +5,10 @@
 ## 隔离连接准备（2026-09-25）
 
 - 使用项目所有者的个人 Google 账号创建了全新的 `Dragon Boat C2 Form Import Isolated Test` Apps Script 项目；与既有 C0 无 Form 探针分离。完整后端构建及仅用于此项目的幂等 fixture 辅助函数已推送。测试源码、本地 `.clasp.json` 位于仓库外 `D:\agents\dev-master\.c2-form-test`，不会随仓库提交。尚未部署 Web App。
-- 浏览器中运行 fixture 时，Google 要求首次授权并显示“Google hasn’t verified this app”。该提示留给项目所有者亲自决定；**fixture 尚未运行完成，Form／响应 Sheet 尚未确认创建**。`clasp run` 受默认 GCP 项目 Execution API 限制，报 `NOT_FOUND`，不能视为函数执行结果。
+- 项目所有者亲自完成了 Google 对未验证测试脚本的授权；2026-09-25 浏览器执行日志显示 fixture 正常完成，创建了独立私有 Form、系统 Sheet、响应 Sheet 和两条虚构姓名回答。脚本校验 Form 的响应 Sheet 目的地，日志确认回答数为 2。测试文件 ID 保存在仓库外的私有配置中，不写入文档。`clasp run` 仍受默认 GCP 项目 Execution API 限制，先前的 `NOT_FOUND` 不代表 fixture 失败。
 - 新增单独的 Cloudflare `c2test` Worker 配置与 [真实验收脚本](live-c2-form-acceptance.mjs)。它使用独立 Worker 名称、DO、团队范围，`writer_epoch=0`、无 cron；脚本硬性限定测试 Worker 主机并要求 `--write-test-data`。本地 dry-run、类型检查与回归通过；**此 Worker 尚未部署，服务端 secret 尚未配置**。现有 C1.6 staging 和生产均未改变。
-- Wrangler 原有 OAuth 凭据已过期，重新登录需项目所有者在 Cloudflare 官方页面授权。首次授权链接等待期间已超时并关闭；再次连接时重新运行 `wrangler login`，不要使用旧链接。Google 与 Cloudflare 均授权后，才配置独立服务间 secret、部署测试 Worker、建立绑定并运行脚本。
+- `wrangler whoami` 已再次确认 CLI 登录的是项目所有者的个人 Cloudflare 账号，无需再使用先前过期的授权链接。独立测试用五个随机密钥已生成于仓库外的 `D:\agents\dev-master\.c2-form-test\private-test-config.json`，尚未传到 Google 或 Cloudflare；文件不得提交或输出。
+- 独立 Apps Script 的 manifest 设置 Web App `ANYONE_ANONYMOUS`，实际部署会新增公开入口。自动审查以访问范围未获明确授权为由拦截了 `clasp deploy`；**未绕过拦截、未创建 Web App 部署**。复查仍只有原有 `@HEAD` 部署；专用 `c2test` Worker 也不存在。下一步须由项目所有者明确批准这个仅含虚构测试数据、桥接读取仍需签名的匿名测试 Web App，以及相应的独立 `workers.dev` 测试 Worker；批准后再设置 secret、部署和运行真实验收。现有 C1.6 staging 部署版本仍为原记录的 `18b0e059-2f76-4627-9528-d75bab44e465`。
 
 ## 已实现的边界
 
