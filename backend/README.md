@@ -22,7 +22,7 @@
 - `src/TimeUtils.gs`：赛季时区、日历边界及本地训练时间解析。
 - `src/Setup.gs`：一次性初始化及新增／重置个人 Coach Code。
 - `src/FormBridge.gs`：C2.2 只读 Form 回答分页桥接，仅纳入完整后端构建；不进入独立 C0 探针。
-- `src/FormNotify.gs`：C2.2 可安装的 Google Forms 提交触发器及签名 Cloudflare 通知。只在 Cloudflare 拥有写入权的赛季显式安装；现有生产赛季继续使用旧 Spreadsheet 提交触发器，不能并装或把独立 `c2test` 通知地址写入生产项目。当前代码仅推送到独立 C2 测试项目，真实触发尚待 Google 新权限授权验收。
+- `src/FormNotify.gs`：C2.2 可安装的 Google Forms 提交触发器及签名 Cloudflare 通知。只在 Cloudflare 拥有写入权的赛季显式安装；现有生产赛季继续使用旧 Spreadsheet 提交触发器，不能并装或把独立 `c2test` 通知地址写入生产项目。当前仅在独立 C2 测试项目安装一个 Form 触发器，并已通过真实 responder 页面提交验收。
 - `src/appsscript.json`：V8 运行时配置。
 - `.clasp.json.example`：测试项目配置示例；真实 Script ID 不提交仓库。
 - `build.mjs`：按固定顺序生成可直接粘贴到网页编辑器的单文件构建结果；从仓库根目录运行 `npm run build:backend`。

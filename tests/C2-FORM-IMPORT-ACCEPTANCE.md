@@ -1,6 +1,6 @@
 # C2.2 Form 稳定来源导入：本地实现与隔离连接验收
 
-日期：2026-09-25 至 26。状态：**独立 Google→Cloudflare 手动拉取验收通过；提交触发通知代码已部署到专用测试环境，但真实浏览器提交尚待 Google 新权限授权及触发器安装；十分钟调度和完整 C2.2 验收仍未完成。** 已部署的原 staging 仍为 C1.6；生产 Apps Script／Sheets、Pages API 地址与写入归属均未改变。
+日期：2026-09-25 至 26。状态：**独立 Google→Cloudflare 手动拉取与真实 Form 提交触发验收通过；十分钟调度、失败恢复和完整 C2.2 验收仍未完成。** 已部署的原 staging 仍为 C1.6；生产 Apps Script／Sheets、Pages API 地址与写入归属均未改变。
 
 ## 隔离连接与范围（2026-09-25）
 
@@ -20,12 +20,14 @@
 - Cloudflare C2 导入动作读取当前赛季绑定；严格核对桥接响应范围、顺序和游标。在一个 SQLite 事务中提交成员、稳定来源映射、来源观察／核查、游标和不可变导入回执。批次失败或绑定／游标在读取期间变化时不提交。成功但结果丢失时，同一请求编号重放不可变结果。
 - 新 Form 回答可生成本季成员，现有 Form 来源更新来源姓名而保留管理员覆盖姓名；`MEMBERS_IMPORTED` 每个变化批次只产生一个待同步事件，**不确认或消费 Google outbox**。重名旧成员、缺名、截止后回答，以及首次历史补扫中存在未关联旧成员的回答进入人工核查。Coach 显式确认时保留旧 `member_id`，不能仅凭姓名合并。
 - staging 配置包含十分钟轮询入口，但 `C2_FORM_POLL_ENABLED=false`，production 也固定关闭；每轮最多处理四个绑定赛季。启用前必须完成下述隔离验收。
-- 新增 Google Forms 可安装触发器处理函数和独立安装函数。通知含 Form 回答稳定 ID、赛季与绑定版本、时间戳和随机数，用既有 Google 桥接密钥签名；Worker 在进入 DO 前验证签名、团队、代次和时间窗，DO 再核对当前绑定并按既有事务拉取回答。production C2 路由仍返回 404，正式旧 Spreadsheet 触发器不变；测试 Form 的触发器目前尚未安装。
+- 新增 Google Forms 可安装触发器处理函数和独立安装函数。通知含 Form 回答稳定 ID、赛季与绑定版本、时间戳和随机数，用既有 Google 桥接密钥签名；Worker 在进入 DO 前验证签名、团队、代次和时间窗，DO 再核对当前绑定并按既有事务拉取回答。production C2 路由仍返回 404，正式旧 Spreadsheet 触发器不变；只在独立测试 Form 安装了一个新触发器。
 
-## 提交通知实测进度（2026-09-25 晚）
+## 真实提交通知验收（2026-09-26）
 
-- 新通知代码已推送到独立 Apps Script 项目，`c2test` Worker 已部署。未签名的远端通知返回 HTTP 403／`FORM_NOTIFICATION_INVALID`；[只读验收脚本](live-c2-form-trigger-acceptance.mjs)在真实表单 UI 提交前确认 DO 名单仍为 Alpha、Beta、Gamma 三人，十分钟补扫关闭。
-- 在 Apps Script 编辑器执行安装函数时，Google 要求新权限并显示“Google hasn’t verified this app”。该授权警告留给项目所有者自行核对和处理；**尚无触发器安装成功记录、真实浏览器表单提交或自动导入证据**。`clasp run` 仍返回 Execution API `NOT_FOUND`，不作为安装证据。
+- 新通知代码已推送到独立 Apps Script 项目，`c2test` Worker 已部署。未签名的远端通知返回 HTTP 403／`FORM_NOTIFICATION_INVALID`；[验收脚本](live-c2-form-trigger-acceptance.mjs)在真实表单 UI 提交前确认 DO 名单仍为 Alpha、Beta、Gamma 三人，十分钟补扫关闭。
+- 项目所有者自行完成 Google 新权限授权后，在编辑器运行 `installC2IsolatedFormSubmitTrigger`；执行日志显示安装成功，Triggers 页确认**只有一个** `From form - On form submit → handleCloudflareFormSubmit`。`clasp run` 的 Execution API `NOT_FOUND` 不作为安装证据。
+- 从 Form 的**正式 responder link** 而非无法提交的预览页，手动填写并提交虚构的 Delta；页面显示“您的回复已记录”，Form 回答数从三变四。Apps Script Executions 页记录 `handleCloudflareFormSubmit` 的 `Trigger` 执行 `Completed`，其 Cloud logs 明确记录 `form_notification: acknowledged`、`pages: 1`；同一时段还有 `doPost` Web App 读取完成。
+- 提交后、任何手动拉取前，受保护的 Worker 名单读取已由三人变四人，四个稳定成员 ID 不重复；由于 `c2test` 没有 cron，且该期间没有手动拉取，这一新增来自真实触发通知。之后显式执行一次 24 小时重叠补扫，`created=0`、`unchanged=4`，相同请求编号重放结果一致。第一次只读验收因脚本误按提交顺序断言姓名而报错；接口实际按姓名排序，改为集合比较后通过，未为此重新提交表单。
 
 ## 本地证据
 
@@ -34,7 +36,6 @@
 ## 仍需完成的 C2.2 验收
 
 1. 已验证独立测试 Form 的正常分页和增量读取；仍需专门核对**相同提交时间边界**、Google 请求失败或超时后的游标不推进、真实 DO 跨部署保留，以及远端旧成员歧义的管理员核查。不得指向生产文件或在文档／仓库写入私有 ID、secret 或 Code。
-2. 项目所有者完成 Google 新权限授权后，运行 `installC2IsolatedFormSubmitTrigger` 并核对安装记录；通过真实 Form 页面提交虚构 Delta，确认自动触发执行日志和无手动拉取时名单从三人变四人。模拟重复读取只能证明导入幂等，**不能**替代触发器与补扫同时到达的真实验收。失败仍需由后续补扫恢复。
-3. 在专用 `c2test` 明确启用轮询后，验证实际十分钟调度、网络失败后补扫及与提交触发器的重复到达；随后才评估原 staging。期间保持 `writer_epoch=0`、Pages 不切换、Google outbox 不消费。
+2. 在专用 `c2test` 明确启用轮询后，验证**实际十分钟调度**、通知或网络失败后补扫，以及与触发器接近同时重复到达；随后才评估原 staging。当前真实触发后手动补扫通过，不等于定时器竞态通过。期间保持 `writer_epoch=0`、Pages 不切换、Google outbox 不消费。
 
 后续 C2.3 才开始 Sheet 人工修改差异；本切片不能声称双向 Google 同步已经工作。
