@@ -58,6 +58,10 @@ export interface ImportSyncFoundationRequest {
 }
 
 export interface SyncOverviewRequest extends SessionRequest { season_id: string; }
+export interface CheckSheetDifferencesRequest extends SessionRequest {
+  season_id: string;
+  entity_type: SyncEntityType;
+}
 export interface ListFormReviewsRequest extends SessionRequest {
   season_id: string;
   limit: number;
@@ -212,6 +216,13 @@ export function parseImportSyncFoundation(value: unknown): ImportSyncFoundationR
 export function parseSyncOverview(value: unknown): SyncOverviewRequest {
   const input = object(value);
   return { ...sessionRequest(input), season_id: identifier(input, "season_id") };
+}
+
+export function parseCheckSheetDifferences(value: unknown): CheckSheetDifferencesRequest {
+  const input = object(value);
+  return { ...sessionRequest(input), season_id: identifier(input, "season_id"),
+    entity_type: enumeration(input, "entity_type", ["SEASON", "MEMBER", "SIGNUP", "PRACTICE",
+      "SEAT_PLAN_DRAFT"] as const) };
 }
 
 export function parseListFormReviews(value: unknown): ListFormReviewsRequest {

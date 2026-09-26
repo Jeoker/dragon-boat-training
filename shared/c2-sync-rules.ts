@@ -83,6 +83,7 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
     ...identity(["season_id", "week_id", "practice_id"]),
     { field: "start_at", dependency_group: "PRACTICE_SCHEDULE", kind: "INSTANT", google_policy: "REVIEW" },
     { field: "end_at", dependency_group: "PRACTICE_SCHEDULE", kind: "INSTANT", google_policy: "REVIEW" },
+    { field: "signup_cutoff_at", dependency_group: "PRACTICE_SCHEDULE", kind: "INSTANT", google_policy: "REVIEW" },
     { field: "timezone", dependency_group: "PRACTICE_SCHEDULE", kind: "TEXT", google_policy: "REVIEW" },
     { field: "location", dependency_group: "PRACTICE_SCHEDULE", kind: "TEXT", google_policy: "REVIEW" },
     { field: "address", dependency_group: "PRACTICE_SCHEDULE", kind: "TEXT", google_policy: "REVIEW" },
@@ -190,6 +191,31 @@ function normalizedGroup(record: SyncRecord, definitions: SyncFieldDefinition[])
     normalizeSyncValue(record[definition.field], definition.kind, definition.allowed_values)]));
 }
 
+export function compareSyncGroup(input: SyncComparisonInput, dependencyGroup: string): SyncGroupDecision {
+  const definitions = SYNC_FIELD_DEFINITIONS[input.entity_type]
+    .filter((definition) => definition.dependency_group === dependencyGroup);
+  if (!definitions.length) throw new Error("Unknown sync dependency group.");
+  const fields = definitions.map((definition) => definition.field);
+  const raw = (record: SyncRecord | null) => Object.fromEntries(fields.map((field) =>
+    [field, record?.[field] ?? null]));
+  if (input.baseline === null || input.cloudflare === null || input.google === null) {
+    return { dependency_group: dependencyGroup, fields, outcome: "REVIEW_REQUIRED",
+      baseline: raw(input.baseline), cloudflare: raw(input.cloudflare), google: raw(input.google),
+      reason: "A required side of this dependency group is missing." };
+  }
+  try {
+    const baseline = normalizedGroup(input.baseline, definitions);
+    const cloudflare = normalizedGroup(input.cloudflare, definitions);
+    const google = normalizedGroup(input.google, definitions);
+    return { dependency_group: dependencyGroup, fields, baseline, cloudflare, google,
+      ...groupOutcome(definitions, baseline, cloudflare, google) };
+  } catch (error) {
+    return { dependency_group: dependencyGroup, outcome: "REVIEW_REQUIRED", fields,
+      baseline: raw(input.baseline), cloudflare: raw(input.cloudflare), google: raw(input.google),
+      reason: error instanceof Error ? `A mapped value is invalid: ${error.message}` : "A mapped value is invalid." };
+  }
+}
+
 function groupOutcome(definitions: SyncFieldDefinition[], baseline: SyncRecord,
   cloudflare: SyncRecord, google: SyncRecord): Pick<SyncGroupDecision, "outcome" | "reason"> {
   const cloudChanged = !same(cloudflare, baseline);
@@ -246,20 +272,9 @@ export function compareSyncRecord(input: SyncComparisonInput): SyncComparison {
     byGroup.set(definition.dependency_group, values);
   }
   const groups: SyncGroupDecision[] = [];
-  for (const [dependencyGroup, groupDefinitions] of byGroup) {
-    const fields = groupDefinitions.map((definition) => definition.field);
-    try {
-      const baseline = normalizedGroup(input.baseline!, groupDefinitions);
-      const cloudflare = normalizedGroup(input.cloudflare!, groupDefinitions);
-      const google = normalizedGroup(input.google!, groupDefinitions);
-      const decision = groupOutcome(groupDefinitions, baseline, cloudflare, google);
-      if (decision.outcome !== "NO_CHANGE") groups.push({ dependency_group: dependencyGroup,
-        fields, baseline, cloudflare, google, ...decision });
-    } catch (error) {
-      groups.push({ dependency_group: dependencyGroup, outcome: "REVIEW_REQUIRED", fields,
-        baseline: {}, cloudflare: {}, google: {},
-        reason: error instanceof Error ? `A mapped value is invalid: ${error.message}` : "A mapped value is invalid." });
-    }
+  for (const [dependencyGroup] of byGroup) {
+    const decision = compareSyncGroup(input, dependencyGroup);
+    if (decision.outcome !== "NO_CHANGE") groups.push(decision);
   }
   const known = new Set(definitions.map((definition) => definition.field));
   const unknownFields = new Set([...Object.keys(input.baseline!), ...Object.keys(input.cloudflare!),

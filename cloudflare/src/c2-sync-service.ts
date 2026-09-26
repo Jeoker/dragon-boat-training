@@ -1,5 +1,5 @@
 import {
-  parseImportSyncFoundation, parseListFormReviews, parseSyncOverview, type ImportSyncFoundationRequest,
+  parseCheckSheetDifferences, parseImportSyncFoundation, parseListFormReviews, parseSyncOverview, type ImportSyncFoundationRequest,
   type SourceImportSnapshot, type SyncBaselineSnapshot, type SyncBindingSnapshot
 } from "../../shared/c2-sync-contract";
 import { SYNC_FIELD_DEFINITIONS, formResponseSourceId, normalizeSyncValue } from "../../shared/c2-sync-rules";
@@ -10,6 +10,9 @@ import { C1Service } from "./c1-service";
 import { firstRow, operationReceipt, parseContract, type SqlRow } from "./c1-support";
 import { APPLICATION_SCHEMA_VERSION } from "./schema";
 import { C2FormService } from "./c2-form-service";
+import { readGoogleSheet, type SheetScope } from "./c2-sheet-bridge";
+import { analyzeSheetPage, type SheetBaseline } from "./c2-sheet-diff";
+import { persistSheetFindings, prepareSheetFindings } from "./c2-sheet-findings";
 
 interface PreparedBaseline extends SyncBaselineSnapshot { baseline_digest: string; }
 
@@ -66,6 +69,7 @@ export class C2SyncService {
     if (path === "/internal/c2/import-sync-foundation") return this.importFoundation(raw);
     if (path === "/internal/c2/get-sync-overview") return this.getOverview(raw);
     if (path === "/internal/c2/list-form-reviews") return this.listFormReviews(raw);
+    if (path === "/internal/c2/check-sheet-differences") return this.checkSheetDifferences(raw);
     if (path === "/internal/c2/pull-form-responses") return new C2FormService(this.ctx, this.env).pull(raw);
     if (path === "/internal/c2/form-submit-notification") return this.formSubmitNotification(raw);
     if (path === "/internal/c2/poll-active-forms") return this.pollActiveForms(raw);
@@ -353,6 +357,10 @@ export class C2SyncService {
         row.season_id, row.binding_version, row.form_id, row.runtime_spreadsheet_id,
         row.response_sheet_id, row.response_sheet_name, canonicalJson(row.field_mapping), row.schema_fingerprint,
         row.export_paused ? 1 : 0, row.last_pull_at, row.last_push_at, row.created_at, row.updated_at).toArray();
+      for (const row of input.bindings) this.ctx.storage.sql.exec(
+        `UPDATE sync_conflicts SET status='SUPERSEDED', resolved_at=?
+         WHERE season_id=? AND binding_version<? AND status='OPEN'`,
+        at, row.season_id, row.binding_version).toArray();
       for (const row of prepared) {
         const existing = firstRow<SqlRow>(this.ctx.storage.sql,
           `SELECT baseline_digest, cloud_version, sheet_digest, updated_at FROM sync_baselines
@@ -413,7 +421,9 @@ export class C2SyncService {
         sources_needing_review: count(
           "SELECT COUNT(*) AS count FROM source_imports WHERE season_id=? AND status='REVIEW_REQUIRED'",
           input.season_id),
-        open_conflicts: count("SELECT COUNT(*) AS count FROM sync_conflicts WHERE season_id=? AND status='OPEN'", input.season_id),
+        open_conflicts: bindingCurrent ? count(
+          "SELECT COUNT(*) AS count FROM sync_conflicts WHERE season_id=? AND binding_version=? AND status='OPEN'",
+          input.season_id, Number(season.binding_version)) : 0,
         pending_batches: count(
           "SELECT COUNT(*) AS count FROM sync_batches WHERE season_id=? AND status IN ('PREPARED','SENT','PARTIAL','FAILED')",
           input.season_id),
@@ -424,6 +434,110 @@ export class C2SyncService {
       schema_version: APPLICATION_SCHEMA_VERSION,
       generated_at: new Date().toISOString()
     };
+  }
+
+  private async checkSheetDifferences(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const input = parseContract(() => parseCheckSheetDifferences(raw));
+    const coach = await this.core.authenticateSession(input.session_token);
+    const sql = this.ctx.storage.sql;
+    const season = firstRow<SqlRow>(sql, "SELECT binding_version FROM seasons WHERE season_id=?", input.season_id);
+    const binding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", input.season_id);
+    if (!season || !binding || Number(season.binding_version) !== Number(binding.binding_version)) {
+      throw new ApiError("SYNC_BINDING_NOT_FOUND", "A current Sheet binding is required.", 409);
+    }
+    const bindingVersion = Number(binding.binding_version);
+    const page = await readGoogleSheet(this.env, {
+      request_id: input.request_id,
+      operation_id: `c2_sheet_${(await sha256Base64Url(`${input.request_id}\n${input.season_id}\n${input.entity_type}`)).slice(0, 32)}`,
+      season_id: input.season_id, entity_type: input.entity_type as SheetScope,
+      binding_version: bindingVersion, runtime_spreadsheet_id: String(binding.runtime_spreadsheet_id)
+    });
+    this.core.assertSessionCurrent(coach);
+    const currentSeason = firstRow<SqlRow>(sql, "SELECT binding_version FROM seasons WHERE season_id=?", input.season_id);
+    const currentBinding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", input.season_id);
+    if (!currentSeason || !currentBinding || Number(currentSeason.binding_version) !== bindingVersion ||
+        canonicalJson(currentBinding) !== canonicalJson(binding)) {
+      throw new ApiError("SHEET_INSPECTION_STALE", "The Sheet binding changed during inspection.", 409, true);
+    }
+    const loadBaselines = (): SheetBaseline[] => sql.exec<SqlRow>(
+      `SELECT entity_id, dependency_group, baseline_json FROM sync_baselines
+       WHERE season_id=? AND binding_version=? AND entity_type=?`,
+      input.season_id, bindingVersion, input.entity_type).toArray().map((row): SheetBaseline => ({
+        entity_id: String(row.entity_id), dependency_group: String(row.dependency_group),
+        baseline: JSON.parse(String(row.baseline_json)) as Record<string, unknown>
+      })).sort((left, right) => left.entity_id.localeCompare(right.entity_id) ||
+        left.dependency_group.localeCompare(right.dependency_group));
+    const baselines = loadBaselines();
+    const queries: Record<SheetScope, string> = {
+      SEASON: "SELECT * FROM seasons WHERE season_id=?",
+      MEMBER: "SELECT * FROM members WHERE season_id=?",
+      SIGNUP: "SELECT * FROM signups WHERE season_id=?",
+      PRACTICE: `SELECT p.*, v.signup_version FROM practices p
+        JOIN practice_versions v ON v.season_id=p.season_id AND v.practice_id=p.practice_id
+        WHERE p.season_id=?`,
+      SEAT_PLAN_DRAFT: `SELECT s.*, v.seat_plan_version, v.published_revision FROM seat_plan_states s
+        JOIN practice_versions v ON v.season_id=s.season_id AND v.practice_id=s.practice_id
+        WHERE s.season_id=?`
+    };
+    const loadCloudRows = (): Array<Record<string, unknown>> => {
+      const rows: Array<Record<string, unknown>> = sql.exec<SqlRow>(
+        queries[input.entity_type as SheetScope], input.season_id).toArray()
+        .map((row): Record<string, unknown> => input.entity_type === "PRACTICE"
+          ? { ...row, cancelled: row.cancelled_at != null } : { ...row });
+      if (input.entity_type === "SEAT_PLAN_DRAFT") {
+        const seats = sql.exec<SqlRow>(
+          `SELECT practice_id, side, row_number, COALESCE(member_id, '') AS member_id
+           FROM seat_plan_draft_seats WHERE season_id=? ORDER BY practice_id, side, row_number`,
+          input.season_id).toArray();
+        for (const row of rows) row.seats = seats.filter((seat) => seat.practice_id === row.practice_id)
+          .map((seat) => ({ side: seat.side, row_number: Number(seat.row_number), member_id: seat.member_id }));
+      }
+      const key = (row: Record<string, unknown>) => input.entity_type === "MEMBER"
+        ? String(row.member_id) : input.entity_type === "SEASON" ? String(row.season_id) :
+          input.entity_type === "SIGNUP" ? `${row.practice_id}:${row.member_id}` : String(row.practice_id);
+      return rows.sort((left, right) => key(left).localeCompare(key(right)));
+    };
+    const cloudRows = loadCloudRows();
+    const comparison = analyzeSheetPage({ season_id: input.season_id, page, baselines,
+      cloud_rows: cloudRows, expected_binding: {
+        form_id: String(binding.form_id), runtime_spreadsheet_id: String(binding.runtime_spreadsheet_id),
+        response_sheet_id: String(binding.response_sheet_id), binding_version: bindingVersion
+      } });
+    const loadSignupVersions = (): Map<string, number> => new Map(input.entity_type === "SIGNUP"
+      ? sql.exec<{ practice_id: string; signup_version: number }>(
+        "SELECT practice_id, signup_version FROM practice_versions WHERE season_id=? ORDER BY practice_id",
+        input.season_id).toArray().map((row) => [row.practice_id, Number(row.signup_version)]) : []);
+    const signupVersions = loadSignupVersions();
+    const prepared = await prepareSheetFindings({ season_id: input.season_id,
+      binding_version: bindingVersion, entity_type: input.entity_type as SheetScope,
+      findings: comparison.findings, cloud_rows: cloudRows, signup_versions: signupVersions });
+    this.core.assertSessionCurrent(coach);
+    const persistence = this.ctx.storage.transactionSync(() => {
+      const latestSeason = firstRow<SqlRow>(sql,
+        "SELECT binding_version FROM seasons WHERE season_id=?", input.season_id);
+      const latestBinding = firstRow<SqlRow>(sql,
+        "SELECT * FROM sync_bindings WHERE season_id=?", input.season_id);
+      if (!latestSeason || !latestBinding || Number(latestSeason.binding_version) !== bindingVersion ||
+          canonicalJson(latestBinding) !== canonicalJson(binding)) {
+        throw new ApiError("SHEET_INSPECTION_STALE", "The Sheet binding changed during inspection.", 409, true);
+      }
+      if (canonicalJson(loadBaselines()) !== canonicalJson(baselines) ||
+          canonicalJson(loadCloudRows()) !== canonicalJson(cloudRows) ||
+          canonicalJson([...loadSignupVersions()]) !== canonicalJson([...signupVersions])) {
+        throw new ApiError("SHEET_INSPECTION_STALE", "The Cloudflare data changed during inspection.", 409, true);
+      }
+      return persistSheetFindings(sql, { season_id: input.season_id, binding_version: bindingVersion,
+        entity_type: input.entity_type as SheetScope, status: comparison.status,
+        truncated: comparison.truncated, findings: prepared });
+    });
+    return { season_id: input.season_id, binding_version: bindingVersion,
+      entity_type: input.entity_type, tab_name: page.tab_name, tab_id: page.tab_id,
+      secondary_tab: page.secondary ? { tab_name: page.secondary.tab_name, tab_id: page.secondary.tab_id } : null,
+      read_at: new Date(page.read_at_ms).toISOString(),
+      sheet_digest: `sha256_v1:${await sha256Base64Url(canonicalJson({ headers: page.headers,
+        rows: page.rows, secondary: page.secondary ?? null }))}`,
+      rows_read: page.rows.length + (page.secondary?.rows.length ?? 0),
+      conflict_records: persistence, ...comparison };
   }
 
   private async listFormReviews(raw: Record<string, unknown>): Promise<Record<string, unknown>> {

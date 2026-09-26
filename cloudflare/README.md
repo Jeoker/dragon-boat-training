@@ -100,4 +100,10 @@ schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、�
 
 原 staging 十分钟定时器保留配置，但 `C2_FORM_POLL_ENABLED=false`、无 Google Form 绑定和 C2 测试 Key；production 无该定时器和 C2 路由。独立 `c2test` 已验证真实 Form 提交触发、实际十分钟补扫、桥接故障恢复、人工核查及跨部署持久化。轮询只读取当前绑定的开放／已完成赛季，截止后还须成功完成最后一轮所有分页才停止，避免漏掉截止前失败的通知；该边界目前由本地测试覆盖。严格同时竞态由本地 Workers／DO 测试覆盖；远端接近同时到达不作为毫秒级竞态证明。详见 [C2.2 验收记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 
-`wrangler --env c2test` 指向 C2.2 专用的**另一条** Worker／DO 命名空间，不是原 staging 或 production；验收后无 cron、`writer_epoch=0`，使用独立服务端 secret。`tests/live-c2-form-acceptance.mjs` 等远端脚本硬性限制测试 Worker 主机；写入阶段必须显式传 `--write-test-data`。敏感绑定通过仓库外本地环境提供，不要将 `.dev.vars` 的旧 staging secret 上传给新环境。C2.2 门槛已完成，下一阶段为 C2.3 的 Sheet 读取与差异；仍不得把隔离连接当成生产同步。
+`wrangler --env c2test` 指向专用的**另一条** Worker／DO 命名空间，不是原 staging 或 production；无 cron、`writer_epoch=0`，使用独立服务端 secret。`tests/live-c2-form-acceptance.mjs` 等远端脚本硬性限制测试 Worker 主机；写入阶段必须显式传 `--write-test-data`。敏感绑定通过仓库外本地环境提供，不要将 `.dev.vars` 的旧 staging secret 上传给新环境。原 staging 仍部署 C2.2／schema v8，不要把 `wrangler.jsonc` 中较新的源码版本误当成它的远端状态。
+
+## C2.3 Sheet 读取与持久差异
+
+专用 `c2test` 已部署 `0.10.0-c2-sheet-inspection`／schema v9。受 C2 测试传输门及 Coach session 双重保护的 `check-sheet-differences` 经签名 Apps Script 桥接读取登记的 `Seasons`、`Members`、`SignupsCurrent`、`Practices`、`SeatPlanState`／`SeatPlanCurrent`，再按稳定 ID 和已确认基线逐依赖组比较。排序不改变业务判断；未知列、缺行、重复／改 ID、跨季行和坏座位结构会停止不安全的比较。Sheet 的角色和座位属于同一依赖组。桥接只读，不自动补建缺少的 Tab。
+
+`CONFLICT`、`REVIEW_REQUIRED`、`REJECTED` 被保存到 `sync_conflicts`，相同现场重读不重复建，完整复查后消失的记录标记 `SUPERSEDED`；截断或结构损坏的扫描不清除无关旧记录。响应最多列出 100 条诊断并报告总数，`conflict_records` 给出本次创建、过时和当前开放数量。该入口虽然不改业务数据，仍会写诊断元数据，因此动作清单标为 `writes=true`，但不会触发其他业务维护任务。自动导入、冲突人工处理和 Google 写回未实现；下一步 C2.4 才能处理有界补丁与确认回执。真实隔离证据见 [C2.3 验收](../tests/C2-SHEET-DIFF-ACCEPTANCE.md)。

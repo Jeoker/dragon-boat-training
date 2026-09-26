@@ -158,7 +158,10 @@ export class TeamState extends DurableObject<Env> {
         const input = await readJsonObject(request);
         requestId = requireRequestId(input);
         const data = await new C2SyncService(this.ctx, this.env).handle(url.pathname, input);
-        if (c2Action?.writes) await this.repairScheduledWork();
+        // Sheet inspection persists diagnostics only; it must not drive unrelated business jobs.
+        if (c2Action?.writes && url.pathname !== "/internal/c2/check-sheet-differences") {
+          await this.repairScheduledWork();
+        }
         else await this.ensureNextAlarm();
         return apiSuccess(data, this.env, requestId, C2_CONTRACT_VERSION);
       }

@@ -21,6 +21,10 @@ class FakeRange {
     );
   }
 
+  getDisplayValues() {
+    return this.getValues().map((row) => row.map((value) => String(value ?? "")));
+  }
+
   setValues(values) {
     for (let rowOffset = 0; rowOffset < this.rowCount; rowOffset += 1) {
       const rowIndex = this.row - 1 + rowOffset;

@@ -8,6 +8,7 @@ const sourceOrder = [
   "Security.gs",
   "BridgeSecurity.gs",
   "FormBridge.gs",
+  "SheetBridge.gs",
   "FormNotify.gs",
   "SystemStore.gs",
   "TimeUtils.gs",

@@ -1,9 +1,9 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C2.2 Form source import and signed submit notification verified on dedicated c2test; original staging upgraded to schema v8 with C2 gate and polling disabled; production unchanged",
-  "contract_version": "2026-09-25.c2.2",
-  "service_version": "0.9.0-c2-form-import",
+  "status": "C2.3 Sheet inspection and durable conflict observations verified on dedicated c2test; no Google writeback or production cutover",
+  "contract_version": "2026-09-26.c2.3",
+  "service_version": "0.10.0-c2-sheet-inspection",
   "transport_gate": "C2 routes are absent in production. Local or staging diagnostic routes require C2_TEST_KEY; the Form notification instead verifies a fresh Google bridge HMAC, team and writer epoch before reaching the DO. This gate is independent from the Coach session required by management reads.",
   "response": {
     "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
@@ -33,6 +33,14 @@
       "request": ["request_id", "session_token", "season_id", "optional limit", "optional cursor"],
       "response": ["season_id", "items", "next_cursor"],
       "notes": "Coach-only, read-only page of unresolved Form answers. Each item exposes response_id, source_version, display_name, submitted_at and review_reason; cursor is the last response_id and limit is at most 100. It does not choose a member or merge by name. Resolve with the separate version-checked action after examining the season roster."
+    },
+    "/internal/c2/check-sheet-differences": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "entity_type"],
+      "response": ["season_id", "binding_version", "entity_type", "tab_name", "tab_id", "secondary_tab", "read_at", "sheet_digest", "rows_read", "status", "compared", "findings_count", "findings", "truncated", "conflict_records"],
+      "notes": "C2.3 signed, read-only Google inspection for registered Seasons, Members, SignupsCurrent, Practices, and SeatPlanState plus SeatPlanCurrent tabs. Requires current binding and Coach session. The Worker validates ownership and exact layout, indexes stable IDs, then compares confirmed B groups with current C and G. Sorting is immaterial; missing, duplicate or altered IDs and unknown columns are surfaced without importing. Seat roles and occupied cells share one dependency group. CONFLICT, REVIEW_REQUIRED and REJECTED findings become versioned sync_conflicts rows; unchanged findings cause no metadata write, repeated findings are idempotent, and cleared findings are superseded after a complete scan. Findings are capped at 100 in the response; truncated or structurally invalid scans do not supersede unrelated open records. conflict_records reports created, superseded and open counts. No business row, Google cell, baseline or outbox is changed."
     },
     "/internal/c2/pull-form-responses": {
       "method": "POST",
@@ -74,12 +82,12 @@
     "IMPORT_VERSION_REGRESSION", "IMPORT_CONFLICT", "IMPORT_SNAPSHOT_CONFLICT",
     "SYNC_BINDING_NOT_FOUND", "SYNC_BINDING_STALE", "SYNC_BINDING_IDENTITY_CONFLICT", "SYNC_MAPPING_INVALID",
     "SOURCE_IDENTITY_INVALID", "SOURCE_IDENTITY_CONFLICT", "FORM_IMPORT_CLOSED",
-    "FORM_IMPORT_STALE", "FORM_SOURCE_REVIEW_REQUIRED", "FORM_POLL_DISABLED", "FORM_NOTIFICATION_INVALID", "FORM_NOTIFICATION_PENDING", "BRIDGE_CONFIGURATION_REQUIRED",
+    "FORM_IMPORT_STALE", "FORM_SOURCE_REVIEW_REQUIRED", "FORM_POLL_DISABLED", "FORM_NOTIFICATION_INVALID", "FORM_NOTIFICATION_PENDING", "SHEET_INSPECTION_STALE", "BINDING_SHEET_MISSING", "SHEET_SCAN_LIMIT", "BRIDGE_CONFIGURATION_REQUIRED",
     "BRIDGE_UNAVAILABLE", "BRIDGE_INVALID_RESPONSE", "INTERNAL_ERROR"
   ],
   "not_yet_in_this_slice": [
-    "Google Sheet comparison or writes", "outbox batching or confirmation",
-    "conflict creation or resolution", "pause or resume actions", "annual Google export",
+    "Frozen-history Sheet inspection", "Google Sheet writes", "outbox batching or confirmation",
+    "conflict resolution or pagination", "pause or resume actions", "annual Google export",
     "production or Pages routing", "browser CORS"
   ]
 }

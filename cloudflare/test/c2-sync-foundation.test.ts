@@ -7,6 +7,7 @@ import { legacyCredentialDigest } from "../src/crypto";
 import { applySchema, APPLICATION_SCHEMA_VERSION } from "../src/schema";
 import { TeamState } from "../src/team-state";
 import { C2SyncService } from "../src/c2-sync-service";
+import { SHEET_SCOPES } from "../src/c2-sheet-bridge";
 import worker from "../src/index";
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
@@ -398,6 +399,91 @@ describe("C2.1 sync foundation", () => {
   });
 });
 
+describe("C2.3 protected Sheet difference inspection", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("reads a scoped tab and classifies without mutating the roster or outbox", async () => {
+    const testEnv = teamEnv("sheet-read-only");
+    await seed(testEnv, "sheet_read_only_001");
+    expect((await call("/internal/c2/import-sync-foundation", foundation(
+      "c2_sheet_foundation_001", "c2_sheet_snapshot_001"), testEnv)).status).toBe(200);
+    const login = await call("/internal/c1/coach-login", {
+      request_id: "c2_sheet_login_001", coach_code: "local-test-coach-code"
+    }, testEnv, "C1");
+    const token = (await json(login)).data.result.session_token;
+    const headers = [...SHEET_SCOPES.MEMBER.headers];
+    const alice = { season_id: "season_c2_open_2026", member_id: "member_c2_alice_01",
+      source_key: "legacy-tab:2", source_display_name: "Alice", display_name_override: "A. Smith",
+      status: "ACTIVE", default_preference: "LEFT", member_version: "1" };
+    const bob = { ...alice, member_id: "member_c2_bob_002", source_key: "legacy-tab:3",
+      source_display_name: "Bob", display_name_override: "" };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const envelope = JSON.parse(String(init?.body));
+      const request = JSON.parse(envelope.payload_json);
+      return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+        protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+        season_id: request.season_id, entity_type: request.entity_type,
+        binding_version: 1, writer_epoch: envelope.writer_epoch,
+        operation_id: envelope.operation_id, payload_digest: envelope.payload_digest,
+        spreadsheet_id: "spreadsheet_c2_fixture_001", tab_name: "Members", tab_id: "101",
+        read_at_ms: Date.now(), headers,
+        rows: [alice, bob].map((row, index) => ({ row_number: index + 2,
+          cells: headers.map((header) => String(row[header as keyof typeof row] ?? "")) })),
+        secondary: null
+      } });
+    });
+    expect((await call("/internal/c2/check-sheet-differences", {
+      request_id: "c2_sheet_denied_001", session_token: "x".repeat(40),
+      season_id: "season_c2_open_2026", entity_type: "MEMBER"
+    }, testEnv)).status).toBe(401);
+    const response = await call("/internal/c2/check-sheet-differences", {
+      request_id: "c2_sheet_check_001", session_token: token,
+      season_id: "season_c2_open_2026", entity_type: "MEMBER"
+    }, testEnv);
+    expect(response.status).toBe(200);
+    expect(await json(response)).toMatchObject({ data: { status: "OK", rows_read: 2,
+      findings: expect.arrayContaining([expect.objectContaining({ entity_id: "member_c2_alice_01",
+        dependency_group: "MEMBER_NAME", outcome: "IMPORT" })]) } });
+    const stub = testEnv.TEAM_STATE.getByName(testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      expect(context.storage.sql.exec<{ display_name_override: string }>(
+        "SELECT display_name_override FROM members WHERE member_id='member_c2_alice_01'").one()
+        .display_name_override).toBe("");
+      expect(context.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM sync_batches").one().count).toBe(0);
+      expect(context.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM sync_conflicts WHERE status='OPEN'").one().count).toBe(2);
+      context.storage.sql.exec(
+        "UPDATE members SET display_name_override='C. Smith' WHERE member_id='member_c2_alice_01'").toArray();
+    });
+    const check = async (requestId: string) => json(await call("/internal/c2/check-sheet-differences", {
+      request_id: requestId, session_token: token,
+      season_id: "season_c2_open_2026", entity_type: "MEMBER"
+    }, testEnv));
+    expect(await check("c2_sheet_conflict_001")).toMatchObject({ data: {
+      conflict_records: { created: 1, open: 3 },
+      findings: expect.arrayContaining([expect.objectContaining({
+        dependency_group: "MEMBER_NAME", outcome: "CONFLICT" })])
+    } });
+    expect(await check("c2_sheet_conflict_repeat_001")).toMatchObject({ data: {
+      conflict_records: { created: 0, superseded: 0, open: 3 }
+    } });
+    alice.display_name_override = "";
+    expect(await check("c2_sheet_conflict_cleared_001")).toMatchObject({ data: {
+      conflict_records: { created: 0, superseded: 1, open: 2 }
+    } });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const nameConflict = context.storage.sql.exec<{ status: string; finding_outcome: string;
+        cloud_version: number }>(
+        "SELECT status, finding_outcome, cloud_version FROM sync_conflicts WHERE dependency_group='MEMBER_NAME'").one();
+      expect(nameConflict).toMatchObject({ status: "SUPERSEDED", finding_outcome: "CONFLICT",
+        cloud_version: 1 });
+      expect(context.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM sync_outbox").one().count).toBe(0);
+    });
+  });
+});
+
 describe("C2.2 Form source import", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -472,16 +558,46 @@ describe("C2.2 Form source import", () => {
       for (const table of ["form_source_observations", "form_import_receipts", "form_import_cursors"]) {
         context.storage.sql.exec(`DROP TABLE ${table}`).toArray();
       }
+      for (const column of ["fingerprint", "row_number", "reason", "finding_outcome"]) {
+        context.storage.sql.exec(`ALTER TABLE sync_conflicts DROP COLUMN ${column}`).toArray();
+      }
       context.storage.sql.exec("UPDATE app_meta SET value='7' WHERE key='schema_version'").toArray();
       applySchema(context.storage);
       expect(context.storage.sql.exec<{ value: string }>(
-        "SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe("8");
+        "SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe("9");
       expect(context.storage.sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM sync_bindings").one().count).toBe(1);
       expect(context.storage.sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM source_imports").one().count).toBe(2);
       expect(context.storage.sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM form_import_cursors").one().count).toBe(0);
+    });
+  });
+
+  it("upgrades a populated v8 conflict to v9 without losing its evidence", async () => {
+    const testEnv = teamEnv("sheet-schema-upgrade");
+    await seed(testEnv, "sheet_schema_001");
+    expect((await call("/internal/c2/import-sync-foundation", foundation(
+      "c2_sheet_schema_001", "c2_sheet_schema_snapshot_001"), testEnv)).status).toBe(200);
+    const stub = testEnv.TEAM_STATE.getByName(testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      for (const column of ["fingerprint", "row_number", "reason", "finding_outcome"]) {
+        context.storage.sql.exec(`ALTER TABLE sync_conflicts DROP COLUMN ${column}`).toArray();
+      }
+      context.storage.sql.exec(`INSERT INTO sync_conflicts VALUES (
+        'conflict_c2_old_001', 'season_c2_open_2026', 1, 'MEMBER', 'member_c2_alice_01',
+        'MEMBER_NAME', '{}', '{}', '{"display_name_override":"old"}', 1,
+        'sha256_v1:old', 'OPEN', '2026-09-21T13:00:00.000Z', NULL, NULL
+      )`).toArray();
+      context.storage.sql.exec("UPDATE app_meta SET value='8' WHERE key='schema_version'").toArray();
+      applySchema(context.storage);
+      const row = context.storage.sql.exec<{ status: string; google_json: string;
+        finding_outcome: string; fingerprint: string }>(
+        "SELECT status, google_json, finding_outcome, fingerprint FROM sync_conflicts WHERE conflict_id='conflict_c2_old_001'").one();
+      expect(row).toMatchObject({ status: "OPEN", google_json: '{"display_name_override":"old"}',
+        finding_outcome: "CONFLICT", fingerprint: "" });
+      expect(context.storage.sql.exec<{ value: string }>(
+        "SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe("9");
     });
   });
 

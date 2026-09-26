@@ -22,6 +22,7 @@
 - `src/TimeUtils.gs`：赛季时区、日历边界及本地训练时间解析。
 - `src/Setup.gs`：一次性初始化及新增／重置个人 Coach Code。
 - `src/FormBridge.gs`：C2.2 只读 Form 回答分页桥接，仅纳入完整后端构建；不进入独立 C0 探针。
+- `src/SheetBridge.gs`：C2.3 签名只读 Sheet 桥接，按当前赛季绑定读取登记 Tab 的显示值、稳定行号和数字 Tab ID；缺少或超出界限的 Tab 返回错误，不修复、不写入。只纳入完整后端构建，不进入独立 C0 探针。
 - `src/FormNotify.gs`：C2.2 可安装的 Google Forms 提交触发器及签名 Cloudflare 通知。只在 Cloudflare 拥有写入权的赛季显式安装；现有生产赛季继续使用旧 Spreadsheet 提交触发器，不能并装或把独立 `c2test` 通知地址写入生产项目。当前仅在独立 C2 测试项目安装一个 Form 触发器，并已通过真实 responder 页面提交验收。
 - `src/appsscript.json`：V8 运行时配置。
 - `.clasp.json.example`：测试项目配置示例；真实 Script ID 不提交仓库。
@@ -64,7 +65,7 @@
 
 共享 secret 不出现在请求正文、源码、`wrangler.jsonc`、日志或验收报告中。C0 只验证签名、时间窗、nonce、操作幂等、归属和 Content Service 重定向；Form／Sheet 分段读写、正式回执表及同步恢复属于 C2。生产 Apps Script 在 C4 写入交接前仍是唯一业务后端，不能因为桥接探针存在就关闭旧逻辑。
 
-C2.2 的完整后端源码另外注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。该路由已在**独立 C2 测试 Apps Script 项目**的 Web App 版本 1 中连接隔离 Form，并通过真实读取、通知及失败恢复验收；原 C0 桥接探针 deployment 仍只验证 C0，不具备此路由。正式生产 Apps Script 和 Google 文件未连接新后端。证据见 [C2.2 验收记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+C2.2 的完整后端源码注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。C2.3 另注册 `cloudflareReadSheetRecords`，只接受五种固定范围；使用当前绑定的系统或赛季 Spreadsheet，返回原始显示单元格供 Worker 检验表结构与 B/C/G。独立 C2 测试 Apps Script Web App v6 已连接隔离文件，并完成真实读取和一次受控人工改名／恢复；用于改名的临时签名测试路由已从最终部署删除。原 C0 桥接探针仍只验证 C0，正式生产 Apps Script 和 Google 文件未连接新后端。证据见 [C2.2](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)及 [C2.3 验收](../tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
 
 本地使用 clasp 时，把 `.clasp.json.example` 复制为 `.clasp.json` 并替换测试 Script ID；`rootDir` 已指向 `src`。真实 `.clasp.json`、Code、会话令牌和 Spreadsheet ID 不提交仓库。
 

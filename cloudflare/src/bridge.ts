@@ -5,7 +5,7 @@ export const BRIDGE_PROTOCOL = "2026-09-19.bridge.v1";
 export const BRIDGE_DIRECTION = "CLOUDFLARE_TO_GOOGLE";
 
 interface BridgeEnvelope {
-  action: "cloudflareBridgeProbe" | "cloudflareReadFormResponses";
+  action: "cloudflareBridgeProbe" | "cloudflareReadFormResponses" | "cloudflareReadSheetRecords";
   request_id: string;
   protocol_version: string;
   direction: string;
@@ -73,6 +73,52 @@ export async function createBridgeEnvelope(input: {
     ...unsigned,
     signature: await hmacSha256Base64Url(bridgeSignatureInput(unsigned), input.secret)
   };
+}
+
+export async function callGoogleBridge(env: Env, input: {
+  action: "cloudflareReadFormResponses" | "cloudflareReadSheetRecords";
+  request_id: string;
+  operation_id: string;
+  season_id: string;
+  binding_version: number;
+  payload: Record<string, unknown>;
+}): Promise<{ data: Record<string, unknown>; payload_digest: string }> {
+  if (!env.GOOGLE_BRIDGE_URL || !env.GOOGLE_BRIDGE_SECRET) {
+    throw new ApiError("BRIDGE_CONFIGURATION_REQUIRED", "The Google bridge is not configured.", 503, true);
+  }
+  let url: URL;
+  try { url = new URL(env.GOOGLE_BRIDGE_URL); }
+  catch { throw new ApiError("BRIDGE_CONFIGURATION_REQUIRED", "The Google bridge URL is invalid.", 503, true); }
+  if (url.protocol !== "https:" || url.hostname !== "script.google.com") {
+    throw new ApiError("BRIDGE_CONFIGURATION_REQUIRED", "The Google bridge URL is not allowed.", 503, true);
+  }
+  const envelope = await createBridgeEnvelope({
+    action: input.action, requestId: input.request_id, teamId: env.TEAM_ID,
+    writerEpoch: Number(env.WRITER_EPOCH), bindingVersion: `${input.season_id}:${input.binding_version}`,
+    operationId: input.operation_id, payload: input.payload, secret: env.GOOGLE_BRIDGE_SECRET
+  });
+  let response: Response;
+  let body: unknown;
+  try {
+    response = await fetch(url, {
+      method: "POST", headers: { "content-type": "text/plain;charset=UTF-8" },
+      body: JSON.stringify(envelope), redirect: "follow", signal: AbortSignal.timeout(20_000)
+    });
+    body = await response.json();
+  } catch {
+    throw new ApiError("BRIDGE_UNAVAILABLE", "The Google bridge could not be reached.", 503, true);
+  }
+  if (isRecord(body) && body.ok === false && isRecord(body.meta) &&
+      body.meta.request_id === input.request_id && isRecord(body.error) &&
+      typeof body.error.code === "string" && typeof body.error.message === "string" &&
+      typeof body.error.retryable === "boolean") {
+    throw new ApiError(body.error.code, body.error.message, 502, body.error.retryable);
+  }
+  if (!response.ok || !isRecord(body) || body.ok !== true || !isRecord(body.meta) ||
+      body.meta.request_id !== input.request_id || !isRecord(body.data)) {
+    throw new ApiError("BRIDGE_INVALID_RESPONSE", "The Google bridge returned an invalid response.", 502, true);
+  }
+  return { data: body.data, payload_digest: envelope.payload_digest };
 }
 
 export async function callGoogleBridgeProbe(

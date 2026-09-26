@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 8;
+export const APPLICATION_SCHEMA_VERSION = 9;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -435,6 +435,20 @@ function applyC2FormImportSchema(sql: SqlStorage): void {
   `).toArray();
 }
 
+function applyC2SheetInspectionSchema(sql: SqlStorage): void {
+  const existing = new Set(sql.exec<{ name: string }>("PRAGMA table_info(sync_conflicts)")
+    .toArray().map((column) => column.name));
+  if (!existing.has("finding_outcome")) sql.exec(`ALTER TABLE sync_conflicts
+    ADD COLUMN finding_outcome TEXT NOT NULL DEFAULT 'CONFLICT'
+    CHECK (finding_outcome IN ('CONFLICT', 'REVIEW_REQUIRED', 'REJECTED'))`).toArray();
+  if (!existing.has("reason")) sql.exec(
+    "ALTER TABLE sync_conflicts ADD COLUMN reason TEXT NOT NULL DEFAULT ''").toArray();
+  if (!existing.has("row_number")) sql.exec(
+    "ALTER TABLE sync_conflicts ADD COLUMN row_number INTEGER").toArray();
+  if (!existing.has("fingerprint")) sql.exec(
+    "ALTER TABLE sync_conflicts ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''").toArray();
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -453,6 +467,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 6) applyC1HistorySchema(sql);
     if (currentVersion < 7) applyC2SyncFoundationSchema(sql);
     if (currentVersion < 8) applyC2FormImportSchema(sql);
+    if (currentVersion < 9) applyC2SheetInspectionSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
