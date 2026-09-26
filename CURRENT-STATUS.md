@@ -32,6 +32,7 @@
 - C2.1 本地实现与审查通过：schema v7 增加绑定、依赖组基线、稳定来源、冲突和批次模型；三方比较区分自动导入、业务校验、管理员确认、拒绝和冲突。元数据影子导入使用独立 `C2_TEST_KEY`，拒绝绑定复用、非法真实 Google 标识、版本漂移、错误实体身份和来源换人；受保护概览复用 Coach session。该切片不调用 Google、不创建或确认 outbox，也未部署 staging。详见 [C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)。
 - C2.1 后代码审查补齐了跨绑定版本的稳定来源延续、同版运行元数据更新、整季来源概览、同步值校验和跨赛季 Form 唯一性；三个页面的路径及 API 回退地址已集中定义，Cloudflare TypeScript 已开启未使用符号检查。这些修改仅在本地，未改变正式 API 地址或已部署版本。详见[本轮代码审查](tests/POST-C2.1-CODE-REVIEW.md)。
 - C2.2 本地实现：签名 Apps Script 只读桥接按回答稳定 ID、提交时间及字段映射返回有界页；DO 在一个事务内写成员、来源观察、人工核查、游标和不可变回执。同时间回答、24 小时重叠补扫、失败不推进游标、重复请求和旧行歧义由模拟桥接测试覆盖。新增十分钟 staging 轮询入口，但开关默认关闭；无真实 Form／触发器验收，不把当前代码视为已经上线的同步。详见[C2.2 本地记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+- C2.2 隔离连接准备：已在项目所有者 Google 账号新建独立测试 Apps Script 并推送源码；Google 首次运行停在“应用未经验证”的所有者授权页，测试 Form／Sheet 尚未确认创建。另备好独立 `c2test` Worker 配置与真实验收脚本，但未部署；Wrangler OAuth 过期，旧授权链接已超时。现有 C1.6 staging 与生产均未改动。接续步骤和权限边界见[C2.2 本地记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 - 当前跟踪文件不包含 Script ID、私有 Spreadsheet ID、Coach Code、会话令牌或服务端 secret。早期测试夹具曾复用实际 Coach Code，普通提交不会清除 Git 历史，因此下一次管理后端部署前必须轮换该 Code。
 
 ## 运行中 Apps Script 的写入与恢复约束
@@ -88,7 +89,7 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 
 ## 未完成范围与下一步
 
-1. **完成 C2.2 隔离验收**：先核对独立测试 Form／响应 Sheet 的绑定与私有配置，再测试真实 Form 回答分页、同一提交时间、重试、人工修正和触发器与周期补扫重复；之后才启用隔离 staging 轮询。不得连接生产 Pages／Google 文件或改变 Apps Script 写入归属。具体未完成门槛见[C2.2 本地记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+1. **完成 C2.2 隔离验收**：先由项目所有者处理测试脚本的 Google 安全授权，并重新发起 Cloudflare Wrangler 登录；然后核对独立测试 Form／响应 Sheet、设置私有服务间 secret、部署 `c2test`、验证真实回答分页、重试、人工修正和触发器与补扫重复。不得连接生产 Pages／Google 文件或改变 Apps Script 写入归属。具体门槛见[C2.2 本地记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 2. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
 3. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
 4. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。

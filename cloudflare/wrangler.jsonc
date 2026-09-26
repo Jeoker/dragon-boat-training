@@ -33,6 +33,25 @@
     }
   },
   "env": {
+    "c2test": {
+      "name": "dragon-boat-training-api-c2-test",
+      "triggers": { "crons": [] },
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "SERVICE_VERSION": "0.9.0-c2-form-import",
+        "CONTRACT_VERSION": "2026-09-19.c0",
+        "BACKEND_INSTANCE": "dragon-boat-training-c2-test",
+        "BACKEND_GENERATION": "cf-c2-isolated-1",
+        "WRITER_EPOCH": "0",
+        "TEAM_ID": "pentasus-c2-test",
+        "C2_FORM_POLL_ENABLED": "false"
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "TEAM_STATE", "class_name": "TeamState" }
+        ]
+      }
+    },
     "production": {
       "name": "dragon-boat-training-api",
       "triggers": { "crons": [] },
