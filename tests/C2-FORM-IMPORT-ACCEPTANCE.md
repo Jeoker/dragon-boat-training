@@ -1,14 +1,18 @@
-# C2.2 Form 稳定来源导入：本地实现记录
+# C2.2 Form 稳定来源导入：本地实现与隔离连接验收
 
-日期：2026-09-25。状态：**本地实现与模拟桥接回归通过；C2.2 隔离 Google／远端验收未完成。** 已部署 staging 仍为 C1.6；生产 Apps Script／Sheets、Pages API 地址与写入归属均未改变。
+日期：2026-09-25。状态：**本地实现及独立 Google→Cloudflare 手动拉取验收通过；真实提交触发器、十分钟调度和完整 C2.2 验收仍未完成。** 已部署的原 staging 仍为 C1.6；生产 Apps Script／Sheets、Pages API 地址与写入归属均未改变。
 
-## 隔离连接准备（2026-09-25）
+## 隔离连接与范围（2026-09-25）
 
-- 使用项目所有者的个人 Google 账号创建了全新的 `Dragon Boat C2 Form Import Isolated Test` Apps Script 项目；与既有 C0 无 Form 探针分离。完整后端构建及仅用于此项目的幂等 fixture 辅助函数已推送。测试源码、本地 `.clasp.json` 位于仓库外 `D:\agents\dev-master\.c2-form-test`，不会随仓库提交。尚未部署 Web App。
-- 项目所有者亲自完成了 Google 对未验证测试脚本的授权；2026-09-25 浏览器执行日志显示 fixture 正常完成，创建了独立私有 Form、系统 Sheet、响应 Sheet 和两条虚构姓名回答。脚本校验 Form 的响应 Sheet 目的地，日志确认回答数为 2。测试文件 ID 保存在仓库外的私有配置中，不写入文档。`clasp run` 仍受默认 GCP 项目 Execution API 限制，先前的 `NOT_FOUND` 不代表 fixture 失败。
-- 新增单独的 Cloudflare `c2test` Worker 配置与 [真实验收脚本](live-c2-form-acceptance.mjs)。它使用独立 Worker 名称、DO、团队范围，`writer_epoch=0`、无 cron；脚本硬性限定测试 Worker 主机并要求 `--write-test-data`。本地 dry-run、类型检查与回归通过；**此 Worker 尚未部署，服务端 secret 尚未配置**。现有 C1.6 staging 和生产均未改变。
-- `wrangler whoami` 已再次确认 CLI 登录的是项目所有者的个人 Cloudflare 账号，无需再使用先前过期的授权链接。独立测试用五个随机密钥已生成于仓库外的 `D:\agents\dev-master\.c2-form-test\private-test-config.json`，尚未传到 Google 或 Cloudflare；文件不得提交或输出。
-- 独立 Apps Script 的 manifest 设置 Web App `ANYONE_ANONYMOUS`，实际部署会新增公开入口。自动审查以访问范围未获明确授权为由拦截了 `clasp deploy`；**未绕过拦截、未创建 Web App 部署**。复查仍只有原有 `@HEAD` 部署；专用 `c2test` Worker 也不存在。下一步须由项目所有者明确批准这个仅含虚构测试数据、桥接读取仍需签名的匿名测试 Web App，以及相应的独立 `workers.dev` 测试 Worker；批准后再设置 secret、部署和运行真实验收。现有 C1.6 staging 部署版本仍为原记录的 `18b0e059-2f76-4627-9528-d75bab44e465`。
+- 使用项目所有者的个人 Google 账号创建了全新的 `Dragon Boat C2 Form Import Isolated Test` Apps Script 项目；与既有 C0 无 Form 探针分离。完整后端构建及仅用于此项目的幂等 fixture 辅助函数已推送。测试源码、本地 `.clasp.json` 和全部私有配置位于仓库外 `D:\agents\dev-master\.c2-form-test`；`rootDir=source` 已核对只推送三个源码文件，不上传私有配置。
+- 项目所有者亲自完成 Google 首次授权，并明确批准匿名测试 Web App 和独立 `workers.dev` 测试 Worker 的部署。测试脚本创建私有 Form、系统 Sheet 和响应 Sheet；先提交两条虚构姓名回答，桥接连通后再提交第三条。浏览器执行日志分别确认回答数 2 和 3。`clasp run` 的默认 GCP Execution API `NOT_FOUND` 仍不可作为函数执行证据。
+- 独立 Apps Script Web App 已部署为版本 1，匿名健康 GET 返回 JSON 200。`cloudflareReadFormResponses` 必须通过项目所有者亲自配置的签名密钥验证；其他公开路由也只能接触此项目的测试文件。私有文件 ID、密钥和 Code 不写入仓库。Web App 仍是可匿名调用的测试入口，阶段结束时应决定保留或撤下。
+- Cloudflare `c2test` Worker／SQLite DO 已单独部署，Worker 版本 `78425fdb-0883-4292-93af-03373e40e567`，`writer_epoch=0`、无 cron、`C2_FORM_POLL_ENABLED=false`。六项私有 Worker 配置（含桥接 URL 与随机密钥）在首次部署时通过仓库外文件上传；健康接口返回 200，缺少 C2 Key 的内部请求返回 403。既有 C1.6 staging 部署版本仍为 `18b0e059-2f76-4627-9528-d75bab44e465`；生产和 Pages 均未切换。
+
+## 真实 Google→Cloudflare 验收
+
+- [验收脚本](live-c2-form-acceptance.mjs)硬性限制测试 Worker 主机并要求 `--write-test-data`；绑定信息和密钥由仓库外 `acceptance.env` 提供。初始两条真实 Form 回答按 `limit=1` 分两页导入，各创建一名成员；同一请求编号重放结果不变，24 小时重叠补扫返回两条未变来源。受保护的公开名单读取恰好是 Alpha、Beta 两名虚构成员，稳定成员 ID 不重复。
+- 在已经完成首次扫描后，测试脚本从 Form 再提交 Gamma；以 `--verify-incremental` 运行新增请求，仅创建一名成员，后续重叠补扫把三条均识别为未变。原请求与新增请求再次重放，名单仍恰好三人。这个真实链路同时验证了 Web App 权限、Form 目的地、姓名题目映射和回答稳定 ID；**没有**验证相同毫秒提交时间、网络中断、真实触发器或定时器。
 
 ## 已实现的边界
 
@@ -23,8 +27,8 @@
 
 ## 仍需完成的 C2.2 验收
 
-1. 用**独立测试** Apps Script／Google Form／响应 Sheet 核对真实 `FormApp.getResponses(Date)` 边界、`FormResponse.getId()`、题目映射、Form 目的地及 Web App 权限；不得指向生产文件。配置、测试数据、预期结果和清理归属先核对，不在文档或仓库写入私有 ID、secret 或 Code。
+1. 已验证独立测试 Form 的正常分页和增量读取；仍需专门核对**相同提交时间边界**、Google 请求失败或超时后的游标不推进、真实 DO 跨部署保留，以及远端旧成员歧义的管理员核查。不得指向生产文件或在文档／仓库写入私有 ID、secret 或 Code。
 2. 建立并验证真实 `onFormSubmit` 通知路径。当前本地实现只有有界周期补扫，没有事件触发通知；模拟重复读取只能证明导入幂等，**不能**替代触发器与补扫同时到达的真实验收。触发器需按赛季绑定路由，失败由补扫恢复。
-3. 在隔离 staging 明确启用轮询后，验证实际十分钟调度、远端 DO 持久化、网络失败后补扫、重复回答、同时间分页及管理员核查。期间保持 `writer_epoch=0`、Pages 不切换、Google outbox 不消费；通过后才更新本报告与当前进度。
+3. 在专用 `c2test` 明确启用轮询后，验证实际十分钟调度、网络失败后补扫及与提交触发器的重复到达；随后才评估原 staging。期间保持 `writer_epoch=0`、Pages 不切换、Google outbox 不消费。
 
 后续 C2.3 才开始 Sheet 人工修改差异；本切片不能声称双向 Google 同步已经工作。

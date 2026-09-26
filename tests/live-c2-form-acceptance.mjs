@@ -97,6 +97,34 @@ const overlap = await api("/internal/c2/pull-form-responses", "C2", {
 });
 assert.equal(overlap.result.created, 0);
 assert.equal(overlap.result.unchanged, 2);
+const incremental = process.argv.includes("--verify-incremental");
+let incrementalCreated = null;
+if (incremental) {
+  const third = await api("/internal/c2/pull-form-responses", "C2", {
+    request_id: "c2_live_pull_004", season_id: seasonId, limit: 100
+  });
+  assert.equal(third.result.created, 1);
+  assert.equal(third.result.has_more, false);
+  const threeAnswerOverlap = await api("/internal/c2/pull-form-responses", "C2", {
+    request_id: "c2_live_pull_005", season_id: seasonId, limit: 100
+  });
+  assert.equal(threeAnswerOverlap.result.created, 0);
+  assert.equal(threeAnswerOverlap.result.unchanged, 3);
+  incrementalCreated = third.result.created;
+}
+const rosterResponse = await fetch(`${parsedUrl.origin}/internal/c1/public-roster` +
+  `?request_id=c2_live_roster_001&season_id=${seasonId}`, {
+  headers: { authorization: `Bearer ${c1Key}` }
+});
+const roster = await rosterResponse.json();
+assert.equal(rosterResponse.status, 200);
+assert.equal(roster.ok, true);
+assert.deepEqual(roster.data.members.map((member) => member.display_name),
+  ["C2 Test Member Alpha", "C2 Test Member Beta",
+    ...(incremental ? ["C2 Test Member Gamma"] : [])]);
+assert.equal(new Set(roster.data.members.map((member) => member.member_id)).size,
+  incremental ? 3 : 2);
 console.log(JSON.stringify({ status: "passed", first_created: first.result.created,
   second_created: second.result.created, overlap_unchanged: overlap.result.unchanged,
+  incremental_created: incrementalCreated, roster_members: roster.data.members.length,
   season_id: seasonId, worker: allowedHost }));

@@ -98,6 +98,6 @@ schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、�
 
 当前本地源码服务版本 `0.9.0-c2-form-import`、schema v8、隔离代次 `cf-c2-staging-4`；已部署 staging 仍为 C1.6。`pull-form-responses` 经签名 Apps Script 桥接读取当前绑定 Form；Cloudflare 校验页范围并在同一事务里提交成员、来源、核查、游标和回执。按回答 ID 保持稳定身份，以时间加回答 ID 排序，24 小时重叠补扫；同一请求 ID 重放结果。旧行不能用姓名推断关联，需 Coach 在 `resolve-form-source` 显式确认。业务 outbox 仍只是待同步，未写 Google。
 
-十分钟 staging 定时器已写入配置，但 `C2_FORM_POLL_ENABLED=false`；production 无该定时器和 C2 路由。启用前须完成独立 Google 文件、真实 Web App 和触发器测试；当前没有 `onFormSubmit` 通知路径。具体证据与待验收项见 [C2.2 本地记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+十分钟 staging 定时器已写入配置，但 `C2_FORM_POLL_ENABLED=false`；production 无该定时器和 C2 路由。独立 Google 文件与真实 Web App 的手动拉取已验证，启用轮询前仍须完成触发器和失败恢复测试；当前没有 `onFormSubmit` 通知路径。具体证据与待验收项见 [C2.2 验收记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 
-`wrangler --env c2test` 是 C2.2 真实验收专用的**另一条** Worker／DO 命名空间，不是现有 C1.6 staging 或 production；无 cron，`writer_epoch=0`，独立服务端 secret。`tests/live-c2-form-acceptance.mjs` 只接受该专用 Worker 地址和显式 `--write-test-data`，敏感绑定通过被忽略的本地环境提供。该环境目前只有配置与 dry-run，未部署。不要将本地 `.dev.vars` 的旧 staging secret 直接上传给新环境。
+`wrangler --env c2test` 是 C2.2 真实验收专用的**另一条** Worker／DO 命名空间，不是现有 C1.6 staging 或 production；无 cron，`writer_epoch=0`，独立服务端 secret。该环境已部署，并与独立 Google 测试 Web App 完成三条虚构 Form 回答的手动拉取验收；原 staging 仍是 C1.6。`tests/live-c2-form-acceptance.mjs` 只接受该专用 Worker 地址和显式 `--write-test-data`，在第三条测试回答已提交的环境下另传 `--verify-incremental`；敏感绑定通过仓库外本地环境提供。不要将 `.dev.vars` 的旧 staging secret 上传给新环境。真实提交触发器、十分钟调度及完整 C2.2 验收仍待完成。
