@@ -96,6 +96,24 @@ describe("C2.3 Sheet inspection", () => {
     expect(unknownColumn.findings[0].google.headers).toContain("unregistered_note");
   });
 
+  it("rejects invalid ID components before aligning Google rows to baselines", () => {
+    const signup = { season_id: seasonId, practice_id: "practice_sheet_test_01",
+      member_id: memberId, preference: "LEFT", status: "CONFIRMED",
+      queue_at: "2026-07-01T12:00:00.000Z", queue_sequence: 1, signup_version: 1 };
+    for (const edited of [
+      { ...signup, practice_id: "practice.sheet.test.01" },
+      { ...signup, member_id: "member:sheet:alice:01" },
+      { ...signup, member_id: "short" }
+    ]) {
+      const result = analyzeSheetPage({ season_id: seasonId, page: page("SIGNUP", [edited]),
+        baselines: baselines("SIGNUP", `${signup.practice_id}:${memberId}`, signup),
+        cloud_rows: [signup] });
+      expect(result).toMatchObject({ status: "STRUCTURE_INVALID", compared: 0 });
+      expect(result.findings).toContainEqual(expect.objectContaining({
+        dependency_group: "ROW_IDENTITY", outcome: "REVIEW_REQUIRED" }));
+    }
+  });
+
   it("keeps repeated identical corrupt rows visible but records one diagnostic fingerprint", async () => {
     const result = analyzeSheetPage({ season_id: seasonId,
       page: page("MEMBER", [member, member, member]),
@@ -138,5 +156,11 @@ describe("C2.3 Sheet inspection", () => {
     const duplicate = analyzeSheetPage({ season_id: seasonId, page: statePage,
       baselines: baselines("SEAT_PLAN_DRAFT", practiceId, draft), cloud_rows: [draft] });
     expect(duplicate.status).toBe("STRUCTURE_INVALID");
+    statePage.secondary.rows = [{ row_number: 2,
+      cells: [seasonId, practiceId, "1", "LEFT", "invalid.member.id",
+        "1", "coach_sheet_test_01", "2026-09-01T12:00:00.000Z"] }];
+    const invalidSeatMember = analyzeSheetPage({ season_id: seasonId, page: statePage,
+      baselines: baselines("SEAT_PLAN_DRAFT", practiceId, draft), cloud_rows: [draft] });
+    expect(invalidSeatMember.status).toBe("STRUCTURE_INVALID");
   });
 });

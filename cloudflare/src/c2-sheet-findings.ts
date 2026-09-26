@@ -74,26 +74,23 @@ export function persistSheetFindings(sql: SqlStorage, input: {
   status: "OK" | "STRUCTURE_INVALID"; truncated: boolean;
   findings: PersistedFinding[];
 }): { created: number; superseded: number; open: number } {
-  const open = sql.exec<{ conflict_id: string; entity_id: string; dependency_group: string }>(
-    `SELECT conflict_id, entity_id, dependency_group FROM sync_conflicts
+  const open = sql.exec<{ conflict_id: string }>(
+    `SELECT conflict_id FROM sync_conflicts
      WHERE season_id=? AND binding_version=? AND entity_type=? AND status='OPEN'`,
     input.season_id, input.binding_version, input.entity_type).toArray();
+  const openIds = new Set(open.map((row) => row.conflict_id));
   const activeIds = new Set(input.findings.map((finding) => finding.conflict_id));
-  const activeGroups = new Set(input.findings.map((finding) =>
-    `${finding.entity_id}\n${finding.dependency_group}`));
   let superseded = 0;
   let created = 0;
   const at = new Date().toISOString();
   for (const previous of open) {
-    if (activeIds.has(previous.conflict_id) || input.truncated ||
-        input.status === "STRUCTURE_INVALID" &&
-          !activeGroups.has(`${previous.entity_id}\n${previous.dependency_group}`)) continue;
+    if (activeIds.has(previous.conflict_id) || input.truncated || input.status !== "OK") continue;
     sql.exec(`UPDATE sync_conflicts SET status='SUPERSEDED', resolved_at=?
       WHERE conflict_id=? AND status='OPEN'`, at, previous.conflict_id).toArray();
     superseded += 1;
   }
   for (const finding of input.findings) {
-    if (open.some((previous) => previous.conflict_id === finding.conflict_id)) continue;
+    if (openIds.has(finding.conflict_id)) continue;
     const existing = sql.exec<{ status: string }>(
       "SELECT status FROM sync_conflicts WHERE conflict_id=?", finding.conflict_id).toArray()[0];
     if (existing?.status === "RESOLVED") continue;

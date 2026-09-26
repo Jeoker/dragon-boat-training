@@ -82,4 +82,15 @@ test("signed Sheet inspection reads only registered bound tabs without repairing
   members.rows[5001] = [season.season_id, "member_sheet_over_limit"];
   assert.equal(post(backend.context, signedSheetRead(season.season_id, 1, "MEMBER", "limit_006"))
     .error.code, "SHEET_SCAN_LIMIT");
+  members.rows.length = 2;
+  members.rows[1][4] = "x".repeat(10001);
+  assert.equal(post(backend.context, signedSheetRead(season.season_id, 1, "MEMBER", "cell_limit_007"))
+    .error.code, "SHEET_SCAN_LIMIT");
+  members.rows[1][4] = "Alice";
+  for (let index = 2; index < 230; index += 1) {
+    members.rows.push([season.season_id, `member_sheet_bulk_${index}`, "source_test", "2",
+      "x".repeat(9000)]);
+  }
+  assert.equal(post(backend.context, signedSheetRead(season.season_id, 1, "MEMBER", "payload_limit_008"))
+    .error.code, "SHEET_SCAN_LIMIT");
 });

@@ -4,7 +4,7 @@
 
 > 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。仓库拆分本身不等同于 Cloudflare 迁移或新的生产功能验收；后续状态按下方各日期记录及“当前基线”判断。
 
-> Cloudflare 迁移现状：2026-09-26。C0、C1、C2.2 和 C2.3 阶段门槛已通过。C2.3 在独立 `c2test` 上完成五类真实 Sheet 读取、一次人工数据更改的三方比较及恢复，并把需处理的差异保存为可追踪诊断记录；schema v9。原 staging 仍是 C2.2 的 schema v8、服务 `0.9.0-c2-form-import`，轮询关闭，业务数据和待同步 outbox 保留。**生产仍由 Apps Script／Sheets 写入，Pages 未切换；Google 写回和自动导入都未启用。** 本轮 Node 回归 **190／190**、Cloudflare 回归 **90／90**。证据见 [C2.3](tests/C2-SHEET-DIFF-ACCEPTANCE.md)和 [C2.2](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+> Cloudflare 迁移现状：2026-09-26。C0、C1、C2.2 和 C2.3 阶段门槛已通过。C2.3 在独立 `c2test` 上完成五类真实 Sheet 读取、一次人工数据更改的三方比较及恢复，并把需处理的差异保存为可追踪诊断记录；schema v9。后续代码审查收紧 ID 对齐、诊断清理和读取总量，回归为 Node **190／190**、Cloudflare **91／91**；修正已更新独立测试 Apps Script v7 和 `c2test` Worker，并再次通过五类真实只读检查、重复检查、名单不变及退出。原 staging 仍是 C2.2 的 schema v8、服务 `0.9.0-c2-form-import`，轮询关闭，业务数据和待同步 outbox 保留。**生产仍由 Apps Script／Sheets 写入，Pages 未切换；Google 写回和自动导入都未启用。** 证据见 [C2.3](tests/C2-SHEET-DIFF-ACCEPTANCE.md)和 [C2.2](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 
 本文件记录当前交付状态、验证边界和下一步。第一次接手项目先读[项目总览](PROJECT-OVERVIEW.md)；产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
 
@@ -31,7 +31,7 @@
 - C1.6 隔离 staging 验收通过：服务 `0.7.0-c1-acceptance`、schema v6、`writer_epoch=0`。125 名虚构成员和两个赛季完成全域迁移；最后名额并发、私有排座／公开 revision、历史与审计分页、191 条记录／29 分块备份、本地摘要复算及连续七次失败后的第八次任务恢复均通过。再次部署为 Worker version `18b0e059-2f76-4627-9528-d75bab44e465` 后，同一业务数据及备份仍可读取。C1 outbox 保持待同步、自动历史任务保持关闭；未连接 Pages 或 Google。详见 [C1.6 验收](tests/C1-STAGING-ACCEPTANCE.md)。
 - C2.1 同步基础：schema v7 的绑定、基线、稳定来源、冲突和批次模型及三方比较已通过本地测试；后续审查补齐跨绑定版本身份延续和元数据边界。该切片本身不调用 Google；代码现已随 C2.2 部署到隔离 staging，仍未确认任何 outbox。详见 [C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)和[后续审查](tests/POST-C2.1-CODE-REVIEW.md)。
 - C2.2 Form 来源导入：签名只读桥接、稳定回答 ID、事务游标／回执、触发通知和十分钟补扫在独立 Form／Worker 上通过；故障后同一请求可恢复，旧成员同名必须经 Coach 查看核查清单并显式关联。审查后轮询在赛季截止后完成一次成功的收尾分页才停止，不会永久读取旧赛季；此边界由本地测试覆盖。原 staging 升级到 schema v8 后 123 名公开成员及待同步 outbox 保留，C2 入口仍缺测试 Key 且被拒绝。正式生产不变。详见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
-- C2.3 Sheet 差异：独立测试 Apps Script Web App v6 只保留正式签名只读入口；`c2test` Worker `0.10.0-c2-sheet-inspection`／schema v9。Coach 会话下检查赛季、成员、报名、训练和草稿座位表，按登记 Tab、稳定 ID 与依赖组比较 B/C/G；结构异常及业务冲突写入 `sync_conflicts`，重复检查不重复建，完整检查后已消失的诊断转为 `SUPERSEDED`。真实隔离 Sheet 的改名／恢复通过，临时写入夹具入口已删除；名单与 outbox 未改变。无 Google 写回、无自动业务导入、无 Coach 冲突处理页面。原 staging 与生产未部署本切片。详见[C2.3 验收](tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
+- C2.3 Sheet 差异：独立测试 Apps Script Web App 已从 v6 更新到 v7，只保留正式签名只读入口；`c2test` Worker `0.10.0-c2-sheet-inspection`／schema v9。Coach 会话下检查赛季、成员、报名、训练和草稿座位表，按登记 Tab、稳定 ID 与依赖组比较 B/C/G；结构异常及业务冲突写入 `sync_conflicts`，重复检查不重复建，完整检查后已消失的诊断转为 `SUPERSEDED`。真实隔离 Sheet 的改名／恢复通过，临时写入夹具入口已删除；名单与 outbox 未改变。后续审查修正了非法 ID、坏结构下的旧诊断保留和读量上限，并在独立测试环境复验五类只读检查。无 Google 写回、无自动业务导入、无 Coach 冲突处理页面。原 staging 与生产未部署本切片。详见[C2.3 验收及审查](tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
 - 当前跟踪文件不包含 Script ID、私有 Spreadsheet ID、Coach Code、会话令牌或服务端 secret。早期测试夹具曾复用实际 Coach Code，普通提交不会清除 Git 历史，因此下一次管理后端部署前必须轮换该 Code。
 
 ## 运行中 Apps Script 的写入与恢复约束

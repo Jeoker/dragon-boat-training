@@ -19,6 +19,15 @@ function identity(scope: SheetScope, row: Record<string, string>): string {
   return row.practice_id || "";
 }
 
+function stableId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{8,128}$/u.test(value);
+}
+
+function validIdentity(scope: SheetScope, row: Record<string, string>): boolean {
+  if (scope === "SIGNUP") return stableId(row.practice_id) && stableId(row.member_id);
+  return stableId(identity(scope, row));
+}
+
 function googleRecord(scope: SheetScope, row: Record<string, string>,
   seats: Array<{ side: string; row_number: number; member_id: string }> = []): Record<string, unknown> {
   if (scope === "PRACTICE") return { ...row, cancelled: !!row.cancelled_at };
@@ -76,9 +85,9 @@ export function analyzeSheetPage(input: {
       const row = Object.fromEntries(secondary.headers.map((header, index) => [header, source.cells[index]]));
       const rowNumber = Number(row.row_number);
       const key = `${row.practice_id}:${row.side}:${row.row_number}`;
-      if (row.season_id !== seasonId || !/^[A-Za-z0-9_.:-]{8,512}$/u.test(row.practice_id) ||
+      if (row.season_id !== seasonId || !stableId(row.practice_id) ||
           !["LEFT", "RIGHT"].includes(row.side) || !Number.isSafeInteger(rowNumber) || rowNumber < 1 ||
-          seenSeats.has(key)) {
+          (row.member_id && !stableId(row.member_id)) || seenSeats.has(key)) {
         seatStructureInvalid = true;
         push(finding(row.practice_id || seasonId, source.row_number, "SHEET_STRUCTURE", "REVIEW_REQUIRED",
           "A seat row has an invalid or duplicate stable seat identity.", { google: row }));
@@ -116,7 +125,7 @@ export function analyzeSheetPage(input: {
           response_sheet_id: row.response_sheet_id, binding_version: row.binding_version } }));
     }
     const id = identity(scope, row);
-    if (!id || !/^[A-Za-z0-9_.:-]{8,512}$/u.test(id)) {
+    if (!validIdentity(scope, row)) {
       invalidStructure = true;
       push(finding(id || seasonId, source.row_number, "ROW_IDENTITY", "REVIEW_REQUIRED",
         "A Sheet row has a missing or invalid stable ID.", { google: row }));

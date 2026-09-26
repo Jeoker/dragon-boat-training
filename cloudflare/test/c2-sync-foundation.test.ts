@@ -411,7 +411,7 @@ describe("C2.3 protected Sheet difference inspection", () => {
       request_id: "c2_sheet_login_001", coach_code: "local-test-coach-code"
     }, testEnv, "C1");
     const token = (await json(login)).data.result.session_token;
-    const headers = [...SHEET_SCOPES.MEMBER.headers];
+    let headers: string[] = [...SHEET_SCOPES.MEMBER.headers];
     const alice = { season_id: "season_c2_open_2026", member_id: "member_c2_alice_01",
       source_key: "legacy-tab:2", source_display_name: "Alice", display_name_override: "A. Smith",
       status: "ACTIVE", default_preference: "LEFT", member_version: "1" };
@@ -468,9 +468,18 @@ describe("C2.3 protected Sheet difference inspection", () => {
     expect(await check("c2_sheet_conflict_repeat_001")).toMatchObject({ data: {
       conflict_records: { created: 0, superseded: 0, open: 3 }
     } });
+    headers = [...SHEET_SCOPES.MEMBER.headers, "unregistered_note"];
+    expect(await check("c2_sheet_structure_invalid_001")).toMatchObject({ data: {
+      status: "STRUCTURE_INVALID", conflict_records: { superseded: 0 }
+    } });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      expect(context.storage.sql.exec<{ status: string }>(
+        "SELECT status FROM sync_conflicts WHERE dependency_group='MEMBER_NAME'").one().status).toBe("OPEN");
+    });
+    headers = [...SHEET_SCOPES.MEMBER.headers];
     alice.display_name_override = "";
     expect(await check("c2_sheet_conflict_cleared_001")).toMatchObject({ data: {
-      conflict_records: { created: 0, superseded: 1, open: 2 }
+      conflict_records: { created: 0, superseded: 2, open: 2 }
     } });
     await runInDurableObject(stub, async (_instance: TeamState, context) => {
       const nameConflict = context.storage.sql.exec<{ status: string; finding_outcome: string;

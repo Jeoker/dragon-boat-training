@@ -18,15 +18,26 @@ function cloudflareReadSheetRecords_(request) {
     throw dragonBoatRequestError_("BRIDGE_OWNERSHIP_INVALID", "The Sheet read has the wrong season binding.");
   }
   var spreadsheet = entityType === "SEASON" ? getSystemSpreadsheet_() : getSeasonSpreadsheet_(season);
+  var inspectedCells = 0;
+  var inspectedCharacters = 0;
   function readTab(name) {
     var tab = spreadsheet.getSheetByName(name);
     if (!tab) throw dragonBoatRequestError_("BINDING_SHEET_MISSING", "A registered Sheet tab is missing.");
     var rowCount = tab.getLastRow();
     var columnCount = tab.getLastColumn();
-    if (rowCount > 5001 || columnCount > 50) {
+    if (rowCount > 5001 || columnCount > 50 || inspectedCells + rowCount * columnCount > 100000) {
       throw dragonBoatRequestError_("SHEET_SCAN_LIMIT", "The Sheet tab exceeds the bounded inspection size.");
     }
+    inspectedCells += rowCount * columnCount;
     var values = rowCount && columnCount ? tab.getRange(1, 1, rowCount, columnCount).getDisplayValues() : [];
+    values.forEach(function (cells) {
+      cells.forEach(function (cell) {
+        inspectedCharacters += cell.length;
+        if (cell.length > 10000 || inspectedCharacters > 2000000) {
+          throw dragonBoatRequestError_("SHEET_SCAN_LIMIT", "The Sheet inspection payload is too large.");
+        }
+      });
+    });
     return { tab_name: name, tab_id: String(tab.getSheetId()), headers: values.length ? values[0] : [],
       rows: values.slice(1).map(function (cells, index) { return { row_number: index + 2, cells: cells }; }) };
   }

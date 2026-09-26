@@ -65,7 +65,7 @@
 
 共享 secret 不出现在请求正文、源码、`wrangler.jsonc`、日志或验收报告中。C0 只验证签名、时间窗、nonce、操作幂等、归属和 Content Service 重定向；Form／Sheet 分段读写、正式回执表及同步恢复属于 C2。生产 Apps Script 在 C4 写入交接前仍是唯一业务后端，不能因为桥接探针存在就关闭旧逻辑。
 
-C2.2 的完整后端源码注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。C2.3 另注册 `cloudflareReadSheetRecords`，只接受五种固定范围；使用当前绑定的系统或赛季 Spreadsheet，返回原始显示单元格供 Worker 检验表结构与 B/C/G。独立 C2 测试 Apps Script Web App v6 已连接隔离文件，并完成真实读取和一次受控人工改名／恢复；用于改名的临时签名测试路由已从最终部署删除。原 C0 桥接探针仍只验证 C0，正式生产 Apps Script 和 Google 文件未连接新后端。证据见 [C2.2](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)及 [C2.3 验收](../tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
+C2.2 的完整后端源码注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。C2.3 另注册 `cloudflareReadSheetRecords`，只接受五种固定范围；使用当前绑定的系统或赛季 Spreadsheet，返回原始显示单元格供 Worker 检验表结构与 B/C/G。后续审查增加主附表合计 100,000 个单元格、2,000,000 个字符及单格 10,000 字符的上限，超限拒绝整次检查。独立 C2 测试 Apps Script Web App 当前为 v7，已连接隔离文件并完成五类真实只读检查；此前 v6 还完成一次受控人工改名／恢复。用于改名的临时签名测试路由已从最终部署删除。原 C0 桥接探针仍只验证 C0，正式生产 Apps Script 和 Google 文件未连接新后端。证据见 [C2.2](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)及 [C2.3 验收](../tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
 
 本地使用 clasp 时，把 `.clasp.json.example` 复制为 `.clasp.json` 并替换测试 Script ID；`rootDir` 已指向 `src`。真实 `.clasp.json`、Code、会话令牌和 Spreadsheet ID 不提交仓库。
 

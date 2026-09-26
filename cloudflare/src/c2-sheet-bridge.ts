@@ -42,13 +42,24 @@ function invalid(): never {
   throw new ApiError("BRIDGE_INVALID_RESPONSE", "The Sheet bridge returned an invalid inspection.", 502, true);
 }
 
-function parseRows(headers: string[], raw: unknown, maximum: number): SheetRow[] {
+function consumeCells(cells: string[], budget: { cells: number; characters: number }): void {
+  budget.cells += cells.length;
+  if (budget.cells > 100_000) invalid();
+  for (const cell of cells) {
+    budget.characters += cell.length;
+    if (budget.characters > 2_000_000) invalid();
+  }
+}
+
+function parseRows(headers: string[], raw: unknown, maximum: number,
+  budget: { cells: number; characters: number }): SheetRow[] {
   if (!Array.isArray(raw) || raw.length > maximum) invalid();
   const rows: SheetRow[] = [];
   for (const [index, row] of raw.entries()) {
     if (!isRecord(row) || row.row_number !== index + 2 || !Array.isArray(row.cells) ||
         row.cells.length !== headers.length ||
         !row.cells.every((cell: unknown) => typeof cell === "string" && cell.length <= 10_000)) invalid();
+    consumeCells(row.cells as string[], budget);
     rows.push({ row_number: row.row_number as number, cells: row.cells as string[] });
   }
   return rows;
@@ -78,7 +89,9 @@ export async function readGoogleSheet(env: Env, input: {
       !page.headers.every((cell: unknown) => typeof cell === "string" && cell.length <= 200) ||
       !Array.isArray(page.rows) || page.rows.length > 5000) invalid();
   const headers = page.headers as string[];
-  const rows = parseRows(headers, page.rows, 5000);
+  const budget = { cells: 0, characters: 0 };
+  consumeCells(headers, budget);
+  const rows = parseRows(headers, page.rows, 5000, budget);
   let secondary: SheetPage["secondary"];
   if (input.entity_type === "SEAT_PLAN_DRAFT") {
     const extra = page.secondary;
@@ -86,8 +99,9 @@ export async function readGoogleSheet(env: Env, input: {
         typeof extra.tab_id !== "string" || !/^(?:0|[1-9]\d{0,15})$/u.test(extra.tab_id) ||
         !Array.isArray(extra.headers) || extra.headers.length > 50 ||
         !extra.headers.every((cell: unknown) => typeof cell === "string" && cell.length <= 200)) invalid();
+    consumeCells(extra.headers as string[], budget);
     secondary = { tab_name: extra.tab_name as string, tab_id: extra.tab_id as string,
-      headers: extra.headers as string[], rows: parseRows(extra.headers as string[], extra.rows, 5000) };
+      headers: extra.headers as string[], rows: parseRows(extra.headers as string[], extra.rows, 5000, budget) };
   } else if (page.secondary != null) invalid();
   return { entity_type: input.entity_type, spreadsheet_id: page.spreadsheet_id as string,
     tab_name: page.tab_name as string, tab_id: page.tab_id as string,
