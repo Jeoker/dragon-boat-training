@@ -1,16 +1,15 @@
 import {
-  parseImportSyncFoundation, parseSyncOverview, type ImportSyncFoundationRequest,
+  parseImportSyncFoundation, parseListFormReviews, parseSyncOverview, type ImportSyncFoundationRequest,
   type SourceImportSnapshot, type SyncBaselineSnapshot, type SyncBindingSnapshot
 } from "../../shared/c2-sync-contract";
 import { SYNC_FIELD_DEFINITIONS, formResponseSourceId, normalizeSyncValue } from "../../shared/c2-sync-rules";
 import { canonicalJson } from "../../shared/c1-rules";
 import { sha256Base64Url } from "./crypto";
-import { ApiError } from "./http";
+import { ApiError, requireRequestId } from "./http";
 import { C1Service } from "./c1-service";
 import { firstRow, operationReceipt, parseContract, type SqlRow } from "./c1-support";
 import { APPLICATION_SCHEMA_VERSION } from "./schema";
 import { C2FormService } from "./c2-form-service";
-import { requireRequestId } from "./http";
 
 interface PreparedBaseline extends SyncBaselineSnapshot { baseline_digest: string; }
 
@@ -66,6 +65,7 @@ export class C2SyncService {
   async handle(path: string, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (path === "/internal/c2/import-sync-foundation") return this.importFoundation(raw);
     if (path === "/internal/c2/get-sync-overview") return this.getOverview(raw);
+    if (path === "/internal/c2/list-form-reviews") return this.listFormReviews(raw);
     if (path === "/internal/c2/pull-form-responses") return new C2FormService(this.ctx, this.env).pull(raw);
     if (path === "/internal/c2/form-submit-notification") return this.formSubmitNotification(raw);
     if (path === "/internal/c2/poll-active-forms") return this.pollActiveForms(raw);
@@ -110,7 +110,10 @@ export class C2SyncService {
       `SELECT b.season_id FROM sync_bindings b JOIN seasons s ON s.season_id=b.season_id
        LEFT JOIN form_import_cursors c ON c.season_id=b.season_id
        WHERE s.status IN ('OPEN','COMPLETED') AND s.binding_version=b.binding_version
-       ORDER BY COALESCE(c.last_read_at_ms, 0), b.season_id LIMIT 4`).toArray();
+         AND (s.season_ends_at>? OR c.season_id IS NULL
+           OR c.last_read_at_ms < CAST(strftime('%s', s.season_ends_at) AS INTEGER)*1000
+           OR c.window_start_ms IS NOT NULL)
+       ORDER BY COALESCE(c.last_read_at_ms, 0), b.season_id LIMIT 4`, new Date().toISOString()).toArray();
     const results: Array<{ season_id: string; status: string; has_more?: boolean }> = [];
     for (const season of seasons) {
       try {
@@ -421,5 +424,30 @@ export class C2SyncService {
       schema_version: APPLICATION_SCHEMA_VERSION,
       generated_at: new Date().toISOString()
     };
+  }
+
+  private async listFormReviews(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const input = parseContract(() => parseListFormReviews(raw));
+    await this.core.authenticateSession(input.session_token);
+    const binding = firstRow<SqlRow>(this.ctx.storage.sql,
+      `SELECT b.binding_version FROM sync_bindings b
+       JOIN seasons s ON s.season_id=b.season_id AND s.binding_version=b.binding_version
+       WHERE b.season_id=?`, input.season_id);
+    if (!binding) throw new ApiError("SYNC_BINDING_NOT_FOUND", "A current Form binding is required.", 409);
+    const rows = this.ctx.storage.sql.exec<{
+      response_id: string; source_version: number; display_name: string;
+      submitted_at: string; review_reason: string;
+    }>(
+      `SELECT f.source_external_id AS response_id, f.source_version, o.display_name,
+         o.submitted_at, o.review_reason
+       FROM source_imports f JOIN form_source_observations o
+         ON o.stable_source_id=f.stable_source_id
+       WHERE f.season_id=? AND f.source_type='FORM_RESPONSE' AND f.status='REVIEW_REQUIRED'
+         AND f.source_external_id>?
+       ORDER BY f.source_external_id LIMIT ?`,
+      input.season_id, input.cursor ?? "", input.limit + 1).toArray();
+    const items = rows.slice(0, input.limit);
+    return { season_id: input.season_id, items,
+      next_cursor: rows.length > input.limit ? items.at(-1)?.response_id ?? null : null };
   }
 }

@@ -187,7 +187,7 @@ C0 的占位写入只验证持久化机制，不是训练报名 API，不向生�
 
 C2 的每个切片先通过本地规则与 Workers／DO 测试，再连接独立 Google 测试文件。C2.1 的元数据接口使用独立测试传输 key，production 固定隐藏；Coach 会话只用于受保护读取。C2.4 前不得把现有 `PENDING` outbox 标记成 Google 已确认，C2.6 前不得把局部桥接成功描述为 C2 完成。
 
-截至 2026-09-25 至 26，C2.2 的本地分页桥接、稳定来源导入、事务游标和回执、旧行核查及关闭中的十分钟补扫已实现并通过模拟测试；专用 `c2test` Worker 与独立 Google Form 的三条虚构回答完成手动分页和增量导入，第四条经真实 responder 页面提交、`onFormSubmit` 通知自动导入。随后手动重叠补扫未重复建人。实际十分钟调度、通知失败恢复及原 staging 验收尚未完成。具体证据和下一步门槛见 [C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。触发器与定时器接近同时到达仍需单独实测。
+截至 2026-09-26，C2.2 阶段门槛已通过：独立 Form／`c2test` 完成真实通知、十分钟补扫、桥接故障恢复、旧成员核查及跨部署保持；本地强制并发测试验证两个读取竞态只提交一次。原 staging 已原地升级到 schema v8，既有 C1 数据和待同步 outbox 保留，但轮询关闭、未绑定测试 Form。严格同时到达的远端竞态和 Google 配额耗尽未实证；生产 Apps Script、Pages 与写入归属均未改变。证据边界见 [C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。下一步执行 C2.3 Sheet 读取与差异分类，仍不可消费 outbox。
 
 ## C4 写入交接与回退
 

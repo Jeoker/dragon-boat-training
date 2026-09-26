@@ -6,6 +6,7 @@ import { compareSyncRecord, formResponseSourceId, normalizeSyncValue } from "../
 import { legacyCredentialDigest } from "../src/crypto";
 import { applySchema, APPLICATION_SCHEMA_VERSION } from "../src/schema";
 import { TeamState } from "../src/team-state";
+import { C2SyncService } from "../src/c2-sync-service";
 import worker from "../src/index";
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
@@ -412,6 +413,55 @@ describe("C2.2 Form source import", () => {
     }, production)).status).toBe(404);
   });
 
+  it("finishes an expired season scan and then stops scheduled Google reads", async () => {
+    const testEnv = teamEnv("form-poll-active-only");
+    await seed(testEnv, "form_poll_active_only_001");
+    expect((await call("/internal/c2/import-sync-foundation", foundation(
+      "c2_poll_active_only_001", "c2_poll_active_snapshot_001"), testEnv)).status).toBe(200);
+    const stub = testEnv.TEAM_STATE.getByName(testEnv.TEAM_ID);
+    const poll = (requestId: string) => runInDurableObject(stub, async (_instance: TeamState, context) =>
+      new C2SyncService(context, { ...testEnv, C2_FORM_POLL_ENABLED: "true" } as unknown as Env)
+        .handle("/internal/c2/poll-active-forms", { request_id: requestId }));
+    expect(await poll("c2_poll_expired_001")).toMatchObject({ polled: 1,
+      results: [{ season_id: "season_c2_open_2026", status: "RETRY_REQUIRED" }] });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const now = Date.now();
+      context.storage.sql.exec(
+        "INSERT INTO form_import_cursors VALUES (?, 1, ?, NULL, NULL, 0, '', ?, ?)",
+        "season_c2_open_2026", now, now, new Date(now).toISOString()).toArray();
+    });
+    expect(await poll("c2_poll_finalized_001")).toMatchObject({ polled: 0, results: [] });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(
+        "UPDATE form_import_cursors SET last_read_at_ms=0 WHERE season_id='season_c2_open_2026'").toArray();
+    });
+    expect(await poll("c2_poll_final_scan_needed_001")).toMatchObject({ polled: 1 });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(
+        "UPDATE seasons SET season_ends_at='2099-01-01T05:00:00.000Z' WHERE season_id='season_c2_open_2026'").toArray();
+    });
+    expect(await poll("c2_poll_open_001")).toMatchObject({ polled: 1,
+      results: [{ season_id: "season_c2_open_2026", status: "RETRY_REQUIRED" }] });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(
+        "UPDATE seasons SET status='COMPLETED' WHERE season_id='season_c2_open_2026'").toArray();
+    });
+    expect(await poll("c2_poll_completed_before_end_001")).toMatchObject({ polled: 1 });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(
+        "UPDATE seasons SET season_ends_at='2026-09-01T04:00:00.000Z' WHERE season_id='season_c2_open_2026'").toArray();
+      context.storage.sql.exec(
+        "UPDATE form_import_cursors SET window_start_ms=1 WHERE season_id='season_c2_open_2026'").toArray();
+    });
+    expect(await poll("c2_poll_unfinished_page_001")).toMatchObject({ polled: 1 });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(
+        "UPDATE form_import_cursors SET window_start_ms=NULL, last_read_at_ms=? WHERE season_id='season_c2_open_2026'",
+        Date.now()).toArray();
+    });
+    expect(await poll("c2_poll_completed_001")).toMatchObject({ polled: 0, results: [] });
+  });
+
   it("upgrades a v7 shadow state in place without losing its binding or sources", async () => {
     const testEnv = teamEnv("form-schema-upgrade");
     await seed(testEnv, "form_schema_001");
@@ -487,6 +537,63 @@ describe("C2.2 Form source import", () => {
       expect(context.storage.sql.exec<{ review_reason: string }>(
         "SELECT review_reason FROM form_source_observations WHERE stable_source_id LIKE '%response_c2_0998'").one().review_reason)
         .toBe("HISTORICAL_UNMAPPED");
+    });
+  });
+
+  it("commits a Form response once when two pull requests race across the Google read", async () => {
+    const testEnv = { ...teamEnv("form-concurrent-pull"),
+      GOOGLE_BRIDGE_URL: "https://script.google.com/macros/s/local-fixture/exec",
+      GOOGLE_BRIDGE_SECRET: "local-test-bridge-secret" } as Env;
+    await seed(testEnv, "form_concurrent_pull_001");
+    expect((await call("/internal/c2/import-sync-foundation", foundation(
+      "c2_concurrent_binding_001", "c2_concurrent_snapshot_001"), testEnv)).status).toBe(200);
+    const stub = testEnv.TEAM_STATE.getByName(testEnv.TEAM_ID);
+    const previous = Date.now() - 60_000;
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(
+        "UPDATE seasons SET season_ends_at='2099-01-01T05:00:00.000Z' WHERE season_id='season_c2_open_2026'").toArray();
+      context.storage.sql.exec(
+        "INSERT INTO form_import_cursors VALUES (?, 1, ?, NULL, NULL, 0, '', ?, ?)",
+        "season_c2_open_2026", previous, previous, new Date(previous).toISOString()).toArray();
+    });
+    let bridgeReads = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      bridgeReads += 1;
+      const envelope = JSON.parse(String(init?.body));
+      const request = JSON.parse(envelope.payload_json);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const submittedAt = new Date(previous + 1_000).toISOString();
+      return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+        protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+        season_id: request.season_id, form_id: "form_c2_fixture_001",
+        binding_version: 1, writer_epoch: envelope.writer_epoch,
+        operation_id: envelope.operation_id, payload_digest: envelope.payload_digest,
+        window_start_ms: request.window_start_ms, after_at_ms: request.after_at_ms,
+        after_id: request.after_id, read_at_ms: Date.now(), has_more: false,
+        next_after_at_ms: previous + 1_000, next_after_id: "response_c2_race_001",
+        responses: [{ response_id: "response_c2_race_001", submitted_at: submittedAt,
+          display_name: "C2 Race Member" }]
+      } });
+    });
+    const requests = ["c2_concurrent_pull_001", "c2_concurrent_pull_002"];
+    const responses = await Promise.all(requests.map((requestId) => call(
+      "/internal/c2/pull-form-responses", { request_id: requestId,
+        season_id: "season_c2_open_2026", limit: 100 }, testEnv)));
+    const results = await Promise.all(responses.map(json));
+    expect(bridgeReads).toBe(2);
+    expect(results.some((row) => row.error?.code === "FORM_IMPORT_STALE")).toBe(true);
+    expect(results.filter((row) => row.ok).reduce((count, row) => count + row.data.result.created, 0)).toBe(1);
+    expect(results.filter((row) => !row.ok).every((row) => row.error.code === "FORM_IMPORT_STALE")).toBe(true);
+    const failedIndex = results.findIndex((row) => row.error?.code === "FORM_IMPORT_STALE");
+    const retried = await json(await call("/internal/c2/pull-form-responses", {
+      request_id: requests[failedIndex], season_id: "season_c2_open_2026", limit: 100
+    }, testEnv));
+    expect(retried).toMatchObject({ data: { result: { created: 0, unchanged: 1 } } });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      expect(context.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM members WHERE season_id='season_c2_open_2026'").one().count).toBe(3);
+      expect(context.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM source_imports WHERE source_external_id='response_c2_race_001'").one().count).toBe(1);
     });
   });
 
@@ -575,6 +682,21 @@ describe("C2.2 Form source import", () => {
       request_id: "c2_form_resolve_login", coach_code: "local-test-coach-code"
     }, testEnv, "C1");
     const token = (await json(login)).data.result.session_token;
+    const reviews = async (requestId: string, cursor?: string) => json(await call(
+      "/internal/c2/list-form-reviews", {
+        request_id: requestId, session_token: token, season_id: "season_c2_open_2026",
+        limit: 1, ...(cursor ? { cursor } : {})
+      }, testEnv));
+    const reviewFirst = await reviews("c2_form_reviews_001");
+    expect(reviewFirst).toMatchObject({ data: { items: [{ response_id: "response_c2_0999",
+      review_reason: "HISTORICAL_UNMAPPED", source_version: 1 }], next_cursor: "response_c2_0999" } });
+    const reviewSecond = await reviews("c2_form_reviews_002", reviewFirst.data.next_cursor);
+    expect(reviewSecond).toMatchObject({ data: { items: [{ response_id: "response_c2_1003",
+      review_reason: "LEGACY_NAME_MATCH", source_version: 1 }], next_cursor: null } });
+    expect((await call("/internal/c2/list-form-reviews", {
+      request_id: "c2_form_reviews_denied", session_token: "x".repeat(40),
+      season_id: "season_c2_open_2026"
+    }, testEnv)).status).toBe(401);
     const resolveInput = {
       request_id: "c2_form_resolve_001", session_token: token,
       season_id: "season_c2_open_2026", response_id: "response_c2_1003",
@@ -582,6 +704,9 @@ describe("C2.2 Form source import", () => {
     };
     expect((await call("/internal/c2/resolve-form-source", resolveInput, testEnv)).status).toBe(200);
     expect((await call("/internal/c2/resolve-form-source", resolveInput, testEnv)).status).toBe(200);
+    const afterResolve = await reviews("c2_form_reviews_003");
+    expect(afterResolve).toMatchObject({ data: { items: [{ response_id: "response_c2_0999" }],
+      next_cursor: null } });
     await runInDurableObject(stub, async (_instance: TeamState, context) => {
       const mapped = context.storage.sql.exec<{ status: string; member_id: string; source_version: number }>(
         "SELECT status, member_id, source_version FROM source_imports WHERE source_external_id='response_c2_1003'").one();

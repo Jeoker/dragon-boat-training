@@ -64,7 +64,7 @@
 
 共享 secret 不出现在请求正文、源码、`wrangler.jsonc`、日志或验收报告中。C0 只验证签名、时间窗、nonce、操作幂等、归属和 Content Service 重定向；Form／Sheet 分段读写、正式回执表及同步恢复属于 C2。生产 Apps Script 在 C4 写入交接前仍是唯一业务后端，不能因为桥接探针存在就关闭旧逻辑。
 
-C2.2 的完整后端源码另外注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。它尚未部署或连到测试 Google 文件；当前独立桥接探针 deployment 仍只验证 C0，不具备此路由。连接和验收门槛见 [C2.2 本地记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+C2.2 的完整后端源码另外注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。该路由已在**独立 C2 测试 Apps Script 项目**的 Web App 版本 1 中连接隔离 Form，并通过真实读取、通知及失败恢复验收；原 C0 桥接探针 deployment 仍只验证 C0，不具备此路由。正式生产 Apps Script 和 Google 文件未连接新后端。证据见 [C2.2 验收记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 
 本地使用 clasp 时，把 `.clasp.json.example` 复制为 `.clasp.json` 并替换测试 Script ID；`rootDir` 已指向 `src`。真实 `.clasp.json`、Code、会话令牌和 Spreadsheet ID 不提交仓库。
 

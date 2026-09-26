@@ -1,41 +1,30 @@
-# C2.2 Form 稳定来源导入：本地实现与隔离连接验收
+# C2.2 Form 稳定来源导入验收
 
-日期：2026-09-25 至 26。状态：**独立 Google→Cloudflare 手动拉取与真实 Form 提交触发验收通过；十分钟调度、失败恢复和完整 C2.2 验收仍未完成。** 已部署的原 staging 仍为 C1.6；生产 Apps Script／Sheets、Pages API 地址与写入归属均未改变。
+日期：2026-09-25 至 26。**C2.2 在隔离 Google Form、独立 `c2test` Worker 和原 staging 的阶段门槛已通过；生产仍由 Apps Script／Sheets 写入，Pages 未切换。** C2.3 的 Sheet 差异读取与双向同步尚未实现。本记录只含虚构测试数据，不含私有文件 ID、密钥或 Coach Code。
 
-## 隔离连接与范围（2026-09-25）
+## 环境与边界
 
-- 使用项目所有者的个人 Google 账号创建了全新的 `Dragon Boat C2 Form Import Isolated Test` Apps Script 项目；与既有 C0 无 Form 探针分离。完整后端构建及仅用于此项目的幂等 fixture 辅助函数已推送。测试源码、本地 `.clasp.json` 和全部私有配置位于仓库外 `D:\agents\dev-master\.c2-form-test`；`rootDir=source` 已核对只推送三个源码文件，不上传私有配置。
-- 项目所有者亲自完成 Google 首次授权，并明确批准匿名测试 Web App 和独立 `workers.dev` 测试 Worker 的部署。测试脚本创建私有 Form、系统 Sheet 和响应 Sheet；先提交两条虚构姓名回答，桥接连通后再提交第三条。浏览器执行日志分别确认回答数 2 和 3。`clasp run` 的默认 GCP Execution API `NOT_FOUND` 仍不可作为函数执行证据。
-- 独立 Apps Script Web App 已部署为版本 1，匿名健康 GET 返回 JSON 200。`cloudflareReadFormResponses` 必须通过项目所有者亲自配置的签名密钥验证；其他公开路由也只能接触此项目的测试文件。私有文件 ID、密钥和 Code 不写入仓库。Web App 仍是可匿名调用的测试入口，阶段结束时应决定保留或撤下。
-- Cloudflare `c2test` Worker／SQLite DO 已单独部署，提交通知版 Worker 版本 `62d1fc36-8cf3-4cf9-94e8-4d81e7cb61ba`，`writer_epoch=0`、无 cron、`C2_FORM_POLL_ENABLED=false`。六项私有 Worker 配置（含桥接 URL 与随机密钥）在首次部署时通过仓库外文件上传；健康接口返回 200，缺少 C2 Key 的内部请求返回 403。既有 C1.6 staging 部署版本仍为 `18b0e059-2f76-4627-9528-d75bab44e465`；生产和 Pages 均未切换。
+- 专用 Apps Script 测试项目、Form、响应 Sheet 和系统 Sheet 位于仓库外；项目所有者完成 OAuth 授权。测试 Web App 版本 1 可匿名访问，但 Form 回答读取必须通过签名、团队、绑定与写入代次校验。测试 Form 安装了一个 `From form - On form submit` 触发器；正式旧 Spreadsheet 触发器和生产文件未改。
+- 专用 `c2test` 使用独立 Worker／SQLite DO、私有配置、`writer_epoch=0`。十分钟 cron 仅为验收暂时启用，验收后配置已恢复为无 cron 且 `C2_FORM_POLL_ENABLED=false`。测试桥接 URL 在故障注入后已恢复。最终 `c2test` Worker 版本为 `11a0e92d-9c41-493f-b63b-91f3625abe6e`。
+- 原 staging 从 C1.6 Worker `0.7.0-c1-acceptance`／schema v6 原地升级到 `0.9.0-c2-form-import`／schema v8，最终部署版本 `ef7cfe37-5e77-4b0a-9622-62973b2b1d19`，仍为隔离代次 `cf-c2-staging-4`、`writer_epoch=0`。其十分钟 cron 配置保留，但 `C2_FORM_POLL_ENABLED=false`；未配置 C2 测试密钥或 Google Form 绑定。生产 Worker 没有 C2 路由。
 
-## 真实 Google→Cloudflare 验收
+## 真实链路证据
 
-- [验收脚本](live-c2-form-acceptance.mjs)硬性限制测试 Worker 主机并要求 `--write-test-data`；绑定信息和密钥由仓库外 `acceptance.env` 提供。初始两条真实 Form 回答按 `limit=1` 分两页导入，各创建一名成员；同一请求编号重放结果不变，24 小时重叠补扫返回两条未变来源。受保护的公开名单读取恰好是 Alpha、Beta 两名虚构成员，稳定成员 ID 不重复。
-- 在已经完成首次扫描后，测试脚本从 Form 再提交 Gamma；以 `--verify-incremental` 运行新增请求，仅创建一名成员，后续重叠补扫把三条均识别为未变。原请求与新增请求再次重放，名单仍恰好三人。这个真实链路同时验证了 Web App 权限、Form 目的地、姓名题目映射和回答稳定 ID；**没有**验证相同毫秒提交时间、网络中断、真实触发器或定时器。
+| 情况 | 结果及证据边界 |
+|---|---|
+| 初次分页、增量与通知 | 真实 Form 回答 Alpha、Beta 按 `limit=1` 各建一人，Gamma 增量建一人。Delta 经正式 responder 页面提交后，Apps Script 触发执行 `Completed`，Cloud logs 记录通知已确认；在无 cron、无手动拉取的条件下名单从三人变四人。之后重叠补扫 `created=0`。见 [手动导入脚本](live-c2-form-acceptance.mjs)与[触发验收脚本](live-c2-form-trigger-acceptance.mjs)。 |
+| 实际十分钟调度 | 暂时启用 `c2test` 的 `*/10` cron；先把**仅测试项目**的通知地址指向无效路径，再提交 Zeta。触发执行失败。`wrangler tail` 观察到真实 scheduled event（计划时间 `2026-09-26T04:50:35Z`，实际事件约 `04:50:45Z`）及 `/internal/c2/poll-active-forms` 200；Zeta 进入六人名单，未重复。恢复通知地址，关闭 cron。Epsilon 的程序提交实际触发了 Form 触发器，不能当作 cron 独占证据；因此改用 Zeta 隔离两条路径。见[调度名单脚本](live-c2-form-cron-acceptance.mjs)。 |
+| Google 桥接故障与恢复 | 暂时把**仅 c2test** 桥接 URL 改成无效测试路径，提交 Eta，通知失败。显式拉取返回 503／`BRIDGE_UNAVAILABLE`，名单保持六人。恢复原测试桥接后用同一请求 ID 重试，`created=1`，名单七人；重放的不可变 `data` 相同。响应 `meta.server_time` 是动态字段，不参与回执等价比较。见[故障脚本](live-c2-form-failure-acceptance.mjs)。 |
+| 旧成员歧义与人工关联 | 在独立 DO 中导入一名虚构旧成员 Theta，真实 Form 新回答被列为 `LEGACY_NAME_MATCH` 待核查。Coach 使用独立测试 Code 登录，经新增的只读 `list-form-reviews` 查看来源 ID、版本与原因，再显式关联原成员；核查清单归零，人数仍为八且 `member_id` 保留，最后退出。见[核查脚本](live-c2-form-review-acceptance.mjs)。 |
+| 通知与拉取重叠 | Iota 提交后立即手动拉取，名单从八到九；之后重叠拉取 `created=0`、`unchanged=9`，ID 唯一。远端触发和手动读取并未在同一毫秒发生，**不将此视为严格并发证明**。本地 Workers／DO 测试强制两个读取并发：只创建一名成员，过期批次返回 `FORM_IMPORT_STALE`，原请求 ID 可重新尝试且不重复建人。见[重叠脚本](live-c2-form-overlap-acceptance.mjs)和 `cloudflare/test/c2-sync-foundation.test.ts`。 |
+| 跨部署持久化 | `c2test` 在多次 Worker 部署、停用 cron 和临时桥接故障后仍保留九人名单及唯一 ID。原 staging 升级前后 123 名公开成员的 ID／姓名／版本摘要及赛季版本相同，待同步 outbox 仍为 `PENDING`；缺少 C2 Key 被拒绝，旧测试 Coach 登录、bootstrap、退出均通过。收尾补扫修复再次部署后两端又分别只读复验。见[staging 升级脚本](live-c2-staging-upgrade-acceptance.mjs)。 |
 
-## 已实现的边界
+## 设计复核与本地验证
 
-- 正式 Apps Script 源码新增受签名保护的只读 `cloudflareReadFormResponses`。脚本核对团队、代次、赛季绑定版本、Form ID、响应 Spreadsheet 目的地及姓名题目映射；以 `FormResponse.getId()`、提交时间和 `(时间, ID)` 游标返回最多 100 条。C0 独立探针构建不包含此路由。
-- Cloudflare C2 导入动作读取当前赛季绑定；严格核对桥接响应范围、顺序和游标。在一个 SQLite 事务中提交成员、稳定来源映射、来源观察／核查、游标和不可变导入回执。批次失败或绑定／游标在读取期间变化时不提交。成功但结果丢失时，同一请求编号重放不可变结果。
-- 新 Form 回答可生成本季成员，现有 Form 来源更新来源姓名而保留管理员覆盖姓名；`MEMBERS_IMPORTED` 每个变化批次只产生一个待同步事件，**不确认或消费 Google outbox**。重名旧成员、缺名、截止后回答，以及首次历史补扫中存在未关联旧成员的回答进入人工核查。Coach 显式确认时保留旧 `member_id`，不能仅凭姓名合并。
-- staging 配置包含十分钟轮询入口，但 `C2_FORM_POLL_ENABLED=false`，production 也固定关闭；每轮最多处理四个绑定赛季。启用前必须完成下述隔离验收。
-- 新增 Google Forms 可安装触发器处理函数和独立安装函数。通知含 Form 回答稳定 ID、赛季与绑定版本、时间戳和随机数，用既有 Google 桥接密钥签名；Worker 在进入 DO 前验证签名、团队、代次和时间窗，DO 再核对当前绑定并按既有事务拉取回答。production C2 路由仍返回 404，正式旧 Spreadsheet 触发器不变；只在独立测试 Form 安装了一个新触发器。
+- Form 来源身份始终由 `season_id + form_id + FormResponse.getId()` 确定；时间和回答 ID 共同排序，24 小时重叠补扫在事务内提交成员、来源观察、游标和不可变回执。读取期间绑定或游标改变则拒绝提交；同时间回答、失败不推进游标、旧行歧义及 v7→v8 原地升级有专项测试。
+- 审查发现原轮询会持续读取已完成赛季；简单跳过截止后的赛季又可能漏掉最后一次失败通知。现只选当前绑定的开放／已完成赛季：截止前照常补扫，截止后直到**一次成功且所有分页完成**的最终补扫，再停止自动读取；失败保留重试资格。管理员可在 `get-sync-overview` 看待核查数量，通过 `list-form-reviews` 分页定位具体来源，再以版本校验的 `resolve-form-source` 明确处理；没有按姓名自动合并。此收尾规则经本地测试和两端重新部署后的只读持久化复验，尚未用真实截止赛季做端到端 Google 验收。
+- 当前本地回归：`npm test` 189／189、`npm run cf:test` 81／81；`npm run cf:check`、`npm run build:backend`、`npm run build` 均通过。`npm run cf:test` 在受限 Windows 环境会有 Wrangler 日志写入 `EPERM` 警告，但测试进程成功退出。部署与真实数据均限隔离环境；没有消费 Google outbox，也没有切换生产流量。
 
-## 真实提交通知验收（2026-09-26）
+## 后续边界
 
-- 新通知代码已推送到独立 Apps Script 项目，`c2test` Worker 已部署。未签名的远端通知返回 HTTP 403／`FORM_NOTIFICATION_INVALID`；[验收脚本](live-c2-form-trigger-acceptance.mjs)在真实表单 UI 提交前确认 DO 名单仍为 Alpha、Beta、Gamma 三人，十分钟补扫关闭。
-- 项目所有者自行完成 Google 新权限授权后，在编辑器运行 `installC2IsolatedFormSubmitTrigger`；执行日志显示安装成功，Triggers 页确认**只有一个** `From form - On form submit → handleCloudflareFormSubmit`。`clasp run` 的 Execution API `NOT_FOUND` 不作为安装证据。
-- 从 Form 的**正式 responder link** 而非无法提交的预览页，手动填写并提交虚构的 Delta；页面显示“您的回复已记录”，Form 回答数从三变四。Apps Script Executions 页记录 `handleCloudflareFormSubmit` 的 `Trigger` 执行 `Completed`，其 Cloud logs 明确记录 `form_notification: acknowledged`、`pages: 1`；同一时段还有 `doPost` Web App 读取完成。
-- 提交后、任何手动拉取前，受保护的 Worker 名单读取已由三人变四人，四个稳定成员 ID 不重复；由于 `c2test` 没有 cron，且该期间没有手动拉取，这一新增来自真实触发通知。之后显式执行一次 24 小时重叠补扫，`created=0`、`unchanged=4`，相同请求编号重放结果一致。第一次只读验收因脚本误按提交顺序断言姓名而报错；接口实际按姓名排序，改为集合比较后通过，未为此重新提交表单。
-
-## 本地证据
-
-`npm test`：189／189；`npm run cf:test`：79／79；`npm run cf:check`、`npm run build:backend`、`npm run build:bridge-probe`、`npm run build`、`npm run cf:dry-run` 均通过。模拟桥接测试覆盖签名分页、同一时间多回答、重叠补扫、失败批次游标不推进、旧行不同名时核查、Coach 手动关联、重复请求、v7→v8 原地升级；新增测试验证提交通知签名、范围、时效和无签名拒绝。dry-run 只构建本地包；真实部署仅限上述独立 `c2test`。
-
-## 仍需完成的 C2.2 验收
-
-1. 已验证独立测试 Form 的正常分页和增量读取；仍需专门核对**相同提交时间边界**、Google 请求失败或超时后的游标不推进、真实 DO 跨部署保留，以及远端旧成员歧义的管理员核查。不得指向生产文件或在文档／仓库写入私有 ID、secret 或 Code。
-2. 在专用 `c2test` 明确启用轮询后，验证**实际十分钟调度**、通知或网络失败后补扫，以及与触发器接近同时重复到达；随后才评估原 staging。当前真实触发后手动补扫通过，不等于定时器竞态通过。期间保持 `writer_epoch=0`、Pages 不切换、Google outbox 不消费。
-
-后续 C2.3 才开始 Sheet 人工修改差异；本切片不能声称双向 Google 同步已经工作。
+C2.2 已满足当前阶段验收，但实际触发与手动拉取的严格同时执行只由确定性的本地并发测试覆盖；真实 Google 超时与配额耗尽也未逐项制造。当前每轮最多选四个符合条件的赛季，适合本团队现阶段规模；扩展到更多并行赛季前，应补公平调度及失败赛季的退避／指标。下一步 C2.3 处理 Sheet 直接修改、三方差异与冲突；在 C2.4 有限补丁和回执完成前，`PENDING` outbox 不能标为 Google 已确认。

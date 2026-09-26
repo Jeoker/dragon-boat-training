@@ -24,7 +24,7 @@ npm run cf:accept:c1-staging
 
 `npm run cf:deploy:staging` 创建或更新隔离 staging。`npm run cf:accept:c1-staging` 使用 Git 忽略的 `.dev.vars` 执行显式远端验收；跨部署只读复验增加 `-- --verify-only`。该脚本不会随普通测试运行。`npm run cf:deploy:production` 只保留为明确的后续命令；C4 前不得用它接管生产业务。Cloudflare 和 Google secret 分别通过平台配置，不写入代码、Wrangler vars 或日志。
 
-账户首次部署还需要在 Cloudflare Dashboard 启用一个 `workers.dev` 子域；Worker 上传成功不代表该公网地址已经可用。staging 的 `C0_TEST_KEY`、`C1_TEST_KEY`、`C2_TEST_KEY`、`COACH_CODE_SECRET`、`SESSION_SECRET`、`GOOGLE_BRIDGE_URL` 和 `GOOGLE_BRIDGE_SECRET` 必须用 Wrangler secret 或平台 secret 配置，不能加入 `wrangler.jsonc`。远端验收使用的 `C1_ACCEPTANCE_COACH_CODE` 只放在本地 `.dev.vars`，不上传为 Worker secret。Code secret 只核对迁入的旧摘要；新后端 session 使用独立 secret。`wrangler dev --remote` 可以验证 Worker 本身，但当前 Wrangler 不支持以该模式访问 Durable Objects SQLite，因此远端 DO 验收必须走已部署的 staging 地址。
+账户首次部署还需要在 Cloudflare Dashboard 启用一个 `workers.dev` 子域；Worker 上传成功不代表该公网地址已经可用。已启用环境所需的 `C0_TEST_KEY`、`C1_TEST_KEY`、`COACH_CODE_SECRET`、`SESSION_SECRET` 及测试桥接配置必须用 Wrangler secret 或平台 secret 配置，不能加入 `wrangler.jsonc`。`C2_TEST_KEY` 仅配置在专用 `c2test`；原 staging 目前故意缺少它，C2 入口因此被拒绝。远端验收使用的 `C1_ACCEPTANCE_COACH_CODE` 只放在本地 `.dev.vars`，不上传为 Worker secret。Code secret 只核对迁入的旧摘要；新后端 session 使用独立 secret。`wrangler dev --remote` 可以验证 Worker 本身，但当前 Wrangler 不支持以该模式访问 Durable Objects SQLite，因此远端 DO 验收必须走已部署的 staging 地址。
 
 ## C0 已验证边界
 
@@ -96,8 +96,8 @@ schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、�
 
 ## C2.2 Form 来源导入
 
-当前本地源码服务版本 `0.9.0-c2-form-import`、schema v8、隔离代次 `cf-c2-staging-4`；已部署 staging 仍为 C1.6。`pull-form-responses` 经签名 Apps Script 桥接读取当前绑定 Form；Cloudflare 校验页范围并在同一事务里提交成员、来源、核查、游标和回执。按回答 ID 保持稳定身份，以时间加回答 ID 排序，24 小时重叠补扫；同一请求 ID 重放结果。旧行不能用姓名推断关联，需 Coach 在 `resolve-form-source` 显式确认。业务 outbox 仍只是待同步，未写 Google。
+隔离 staging 已部署服务 `0.9.0-c2-form-import`、schema v8、代次 `cf-c2-staging-4`；v6→v8 升级保留既有 C1 数据和待同步 outbox。`pull-form-responses` 经签名 Apps Script 桥接读取当前绑定 Form；Cloudflare 校验页范围并在同一事务里提交成员、来源、核查、游标和回执。按回答 ID 保持稳定身份，以时间加回答 ID 排序，24 小时重叠补扫；同一请求 ID 重放结果。旧行不能用姓名推断关联，Coach 先用只读 `list-form-reviews` 分页查看，再用 `resolve-form-source` 显式关联。业务 outbox 仍只是待同步，未写 Google。
 
-十分钟 staging 定时器已写入配置，但 `C2_FORM_POLL_ENABLED=false`；production 无该定时器和 C2 路由。独立 Google 文件与真实 Web App 的手动拉取已验证。可安装 Google Forms 触发器的签名通知入口已部署到专用 `c2test`，真实 responder 页面提交及后续重叠补扫均通过；实际十分钟调度、近同时重复到达和失败恢复仍待验收。具体证据与待验收项见 [C2.2 验收记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+原 staging 十分钟定时器保留配置，但 `C2_FORM_POLL_ENABLED=false`、无 Google Form 绑定和 C2 测试 Key；production 无该定时器和 C2 路由。独立 `c2test` 已验证真实 Form 提交触发、实际十分钟补扫、桥接故障恢复、人工核查及跨部署持久化。轮询只读取当前绑定的开放／已完成赛季，截止后还须成功完成最后一轮所有分页才停止，避免漏掉截止前失败的通知；该边界目前由本地测试覆盖。严格同时竞态由本地 Workers／DO 测试覆盖；远端接近同时到达不作为毫秒级竞态证明。详见 [C2.2 验收记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 
-`wrangler --env c2test` 是 C2.2 真实验收专用的**另一条** Worker／DO 命名空间，不是现有 C1.6 staging 或 production；无 cron，`writer_epoch=0`，独立服务端 secret。该环境已部署，并与独立 Google 测试 Web App 完成三条虚构 Form 回答的手动拉取及 Delta 的真实触发导入；原 staging 仍是 C1.6。`tests/live-c2-form-acceptance.mjs` 只接受该专用 Worker 地址和显式 `--write-test-data`，在第三条测试回答已提交的环境下另传 `--verify-incremental`；[触发器验收脚本](../tests/live-c2-form-trigger-acceptance.mjs)在 `before`／`after` 阶段只读名单，`overlap --write-test-data` 才显式手动拉取并验证去重。敏感绑定通过仓库外本地环境提供。不要将 `.dev.vars` 的旧 staging secret 上传给新环境。十分钟调度及完整 C2.2 验收仍待完成。
+`wrangler --env c2test` 指向 C2.2 专用的**另一条** Worker／DO 命名空间，不是原 staging 或 production；验收后无 cron、`writer_epoch=0`，使用独立服务端 secret。`tests/live-c2-form-acceptance.mjs` 等远端脚本硬性限制测试 Worker 主机；写入阶段必须显式传 `--write-test-data`。敏感绑定通过仓库外本地环境提供，不要将 `.dev.vars` 的旧 staging secret 上传给新环境。C2.2 门槛已完成，下一阶段为 C2.3 的 Sheet 读取与差异；仍不得把隔离连接当成生产同步。

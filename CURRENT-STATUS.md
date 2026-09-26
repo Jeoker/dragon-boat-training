@@ -4,7 +4,7 @@
 
 > 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。仓库拆分本身不等同于 Cloudflare 迁移或新的生产功能验收；后续状态按下方各日期记录及“当前基线”判断。
 
-> Cloudflare 迁移现状：2026-09-25 至 26。C0 与 C1 已完整验收；C1.6 已在隔离 staging 完成全链路、跨部署持久化、远端故障恢复和备份验收。C2.1 已完成本地实现和代码审查；C2.2 源码为 schema v8、服务 `0.9.0-c2-form-import`、原 staging 隔离代次 `cf-c2-staging-4`。**专用 `c2test` Worker 与独立 Google Web App 已真实互连；三条虚构 Form 回答的手动分页和增量导入，以及第四条真实页面提交后的触发器自动导入、重叠去重均通过。十分钟调度、失败恢复和完整 C2.2 验收仍未完成。** 已部署的原 staging 仍是 `0.7.0-c1-acceptance`。Pages、生产 Google 文件和正式写入归属没有改变。本轮 Node 回归为 **189／189**、Cloudflare 回归为 **79／79**；证据见 [C2.2](tests/C2-FORM-IMPORT-ACCEPTANCE.md)，之前的阶段证据见 [C0](tests/C0-CLOUDFLARE-ACCEPTANCE.md)、[C1.6](tests/C1-STAGING-ACCEPTANCE.md)、[C2.1](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)及[后续代码审查](tests/POST-C2.1-CODE-REVIEW.md)。
+> Cloudflare 迁移现状：2026-09-26。C0、C1 和 C2.2 阶段门槛已通过；C2.1 是同步基础，C2.2 完成隔离 Form 手动拉取、真实提交通知、实际十分钟补扫、桥接故障恢复、旧成员人工核查及跨部署保持。原 staging 已由 C1.6 原地升级为 schema v8、服务 `0.9.0-c2-form-import`，保留原业务数据，十分钟轮询仍关闭。**生产仍由 Apps Script／Sheets 写入，Pages 未切换，也没有开始 Sheet 双向同步。** 本轮 Node 回归 **189／189**、Cloudflare 回归 **81／81**。证据见 [C2.2](tests/C2-FORM-IMPORT-ACCEPTANCE.md)，此前门槛见 [C0](tests/C0-CLOUDFLARE-ACCEPTANCE.md)、[C1.6](tests/C1-STAGING-ACCEPTANCE.md)和 [C2.1](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)。
 
 本文件记录当前交付状态、验证边界和下一步。第一次接手项目先读[项目总览](PROJECT-OVERVIEW.md)；产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
 
@@ -12,7 +12,7 @@
 
 采用 **Cloudflare Workers + Durable Objects（SQLite）** 保存在线业务主数据，GitHub Pages 保留现有网页，Apps Script 收敛为 Google Form／Sheets 桥接。支持偶尔直接修改 Sheet，通过基线对比、业务校验和 Coach Mode 冲突处理导入；有变化时默认十分钟批量导出，网页保存不等待 Google。
 
-目标架构、C0–C4 顺序、三个 Epic 的新增工作包、真实 Google 边界及切换／回退门槛已整理到[Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md)。**C2.2 的独立测试 Form 手动拉取及真实提交触发已通过；下一步测实际十分钟调度、通知失败后补扫及原 staging。** 下方仍是实际运行中的 Apps Script 生产基线，不代表新架构已经上线。
+目标架构、C0–C4 顺序、三个 Epic 的新增工作包、真实 Google 边界及切换／回退门槛已整理到[Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md)。**下一步为 C2.3：在隔离 Sheet 上读取人工修改、比较 `B/C/G` 并分类冲突。** 下方仍是实际运行中的 Apps Script 生产基线，不代表新架构已经上线。
 
 2026-09-19 已按 [C0 可执行工作清单](cloudflare-migration-plan.md#c0-可执行工作清单)建立 Worker、SQLite schema v1、不可变请求结果、事务审计／outbox／任务、alarm 租约与应用级重试、旧摘要兼容向量和签名桥接协议。真实本地 Wrangler 进程重启后数据、请求去重结果和待执行任务仍在；并发、回滚、闹钟修复及超过六次失败后的继续续排已有专项测试。独立 Apps Script Web App 的真实往返、重放及过期／篡改／错团队／错 binding／错代次拒绝均通过；实际 Free 计划和 Worker／DO 用量入口已核对。详细证据和观察边界见 [C0 验收记录](tests/C0-CLOUDFLARE-ACCEPTANCE.md)。
 
@@ -29,9 +29,8 @@
 - C1.4 完成后的代码健康复核已收紧排座影子导入：相同版本的状态元数据不可漂移，最新正式版重新核对当前角色／报名／完整排座，姓名快照只保存实际参与者；导入分组索引消除按场次重复扫描，共用报名投影与队列排序不再维护两份。发布重放、同编号换参数和旧版本写入已有直接回归。详见 [C1.4 后代码审查](tests/POST-C1.4-CODE-REVIEW.md)。
 - C1.5 本地验收通过：schema v6、最终显示姓名／角色／船位快照、`UNPUBLISHED` 历史、取消过滤、赛季荣誉墙、追加式历史说明、稳定分页审计、分块备份与交叉摘要校验、任务自愈及应用用量已进入隔离新后端；Cloudflare Workers／DO **65／65**，项目 Node **184／184**。自动历史维护在 `writer_epoch=0` 的影子阶段默认关闭，本地专项测试显式开启内部设置；备份不含短期会话、公开限流或备份自身表。详见 [C1.5 验收](tests/C1-HISTORY-ACCEPTANCE.md)。
 - C1.6 隔离 staging 验收通过：服务 `0.7.0-c1-acceptance`、schema v6、`writer_epoch=0`。125 名虚构成员和两个赛季完成全域迁移；最后名额并发、私有排座／公开 revision、历史与审计分页、191 条记录／29 分块备份、本地摘要复算及连续七次失败后的第八次任务恢复均通过。再次部署为 Worker version `18b0e059-2f76-4627-9528-d75bab44e465` 后，同一业务数据及备份仍可读取。C1 outbox 保持待同步、自动历史任务保持关闭；未连接 Pages 或 Google。详见 [C1.6 验收](tests/C1-STAGING-ACCEPTANCE.md)。
-- C2.1 本地实现与审查通过：schema v7 增加绑定、依赖组基线、稳定来源、冲突和批次模型；三方比较区分自动导入、业务校验、管理员确认、拒绝和冲突。元数据影子导入使用独立 `C2_TEST_KEY`，拒绝绑定复用、非法真实 Google 标识、版本漂移、错误实体身份和来源换人；受保护概览复用 Coach session。该切片不调用 Google、不创建或确认 outbox，也未部署 staging。详见 [C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)。
-- C2.1 后代码审查补齐了跨绑定版本的稳定来源延续、同版运行元数据更新、整季来源概览、同步值校验和跨赛季 Form 唯一性；三个页面的路径及 API 回退地址已集中定义，Cloudflare TypeScript 已开启未使用符号检查。这些修改仅在本地，未改变正式 API 地址或已部署版本。详见[本轮代码审查](tests/POST-C2.1-CODE-REVIEW.md)。
-- C2.2 实现与隔离连接：签名 Apps Script 只读桥接按回答稳定 ID、提交时间及字段映射返回有界页；DO 在一个事务内写成员、来源观察、人工核查、游标和不可变回执。同时间回答、失败不推进游标和旧行歧义由模拟桥接测试覆盖。独立 Google Web App 版本 1 与专用 `c2test` Worker 已部署：真实 Form 的 Alpha／Beta 分页各创建一人，后续 Gamma 增量创建一人。项目所有者完成新增 Google 授权后，独立 Form 安装一个 `onFormSubmit`；真实 responder 页面提交 Delta 后，触发执行日志显示通知获回执，Worker 名单在无手动拉取且无 cron 的条件下由三人变四人；之后重叠补扫 `created=0`、`unchanged=4`。原 staging 十分钟轮询仍关闭；不能视为完整 C2.2 或生产同步。现有 C1.6 staging 与生产均未改动。详见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+- C2.1 同步基础：schema v7 的绑定、基线、稳定来源、冲突和批次模型及三方比较已通过本地测试；后续审查补齐跨绑定版本身份延续和元数据边界。该切片本身不调用 Google；代码现已随 C2.2 部署到隔离 staging，仍未确认任何 outbox。详见 [C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)和[后续审查](tests/POST-C2.1-CODE-REVIEW.md)。
+- C2.2 Form 来源导入：签名只读桥接、稳定回答 ID、事务游标／回执、触发通知和十分钟补扫在独立 Form／Worker 上通过；故障后同一请求可恢复，旧成员同名必须经 Coach 查看核查清单并显式关联。审查后轮询在赛季截止后完成一次成功的收尾分页才停止，不会永久读取旧赛季；此边界由本地测试覆盖。原 staging 升级到 schema v8 后 123 名公开成员及待同步 outbox 保留，C2 入口仍缺测试 Key 且被拒绝。正式生产不变。详见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 - 当前跟踪文件不包含 Script ID、私有 Spreadsheet ID、Coach Code、会话令牌或服务端 secret。早期测试夹具曾复用实际 Coach Code，普通提交不会清除 Git 历史，因此下一次管理后端部署前必须轮换该 Code。
 
 ## 运行中 Apps Script 的写入与恢复约束
@@ -64,8 +63,8 @@
 | P5 性能与部署 | 159／159 回归及双构建通过；连续排座两秒合并、开放赛季按时冻结、审计与历史分页、公开历史缓存、紧凑索引、批量写入、归档工作量上限和断点续跑均有专项测试。Apps Script Version 14、生产初始化、health、公开历史空状态和 Pages 三页产物已验证；非空分页、长期 Google 延迟／配额及 Safari／实体手机仍待验收，见[P5 性能报告](tests/P5-PERFORMANCE-ACCEPTANCE.md) |
 | C0 Cloudflare 基础 | 阶段通过。本地 Worker／DO 事务、请求去重、回滚、持久任务、alarm 修复、应用级重试和桥接拒绝路径通过；真实本地进程重启与远端重新部署均保持状态。隔离 staging 公网 health、原子提交、跨部署保持、真实 Apps Script 签名往返／重放／负向范围和 Free 计划用量入口均已验证，见[C0 验收记录](tests/C0-CLOUDFLARE-ACCEPTANCE.md) |
 | C1.1–C1.6 Cloudflare 业务迁移 | schema v1→v6 原地升级、核心／排期／报名／排座／历史影子导入、个人 Code 新会话、私有周与排座草稿、容量候补、最终更正、冻结历史、公开荣誉墙、分页审计、分块备份及远端故障恢复通过；隔离 staging 跨 deployment 保持数据，仍未连接 Pages 或 Google，见[C1.1](tests/C1-CORE-ACCEPTANCE.md)、[C1.2](tests/C1-SCHEDULE-ACCEPTANCE.md)、[C1.3](tests/C1-SIGNUP-ACCEPTANCE.md)、[C1.4](tests/C1-SEATING-ACCEPTANCE.md)、[C1.5](tests/C1-HISTORY-ACCEPTANCE.md)及[C1.6](tests/C1-STAGING-ACCEPTANCE.md)验收记录 |
-| C2.1 同步基础 | schema v7 原地升级保留 C1 数据；受控绑定／基线／来源影子导入、三方比较、严格 Google ID 和稳定来源约束、C2 独立传输门及 Coach 概览通过。本切片只完成本地基础，不访问 Google、不消费 outbox、未部署，见[C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md) |
-| C2.2 Form 来源导入 | schema v8 的签名只读分页、游标／回执原子提交、重叠去重、旧来源核查与 Coach 显式关联由本地测试通过。专用远端测试 Worker 已对真实隔离 Form 完成三条虚构回答的手动导入，以及第四条真实页面提交后的触发器自动导入和重叠去重；十分钟调度、失败恢复及原 staging 未验收，见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md) |
+| C2.1 同步基础 | schema v7 的受控绑定／基线／来源影子导入、三方比较、严格 Google ID 和稳定来源约束、C2 独立传输门及 Coach 概览通过；该逻辑随 C2.2 已部署隔离 staging，但仍不自行访问 Google 或消费 outbox。见[C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md) |
+| C2.2 Form 来源导入 | 隔离 Form 的分页、通知、十分钟补扫、桥接故障恢复、人工核查与跨部署持久化通过；并发提交由本地强制竞态测试覆盖。原 staging v6→v8 保留 C1 数据与待同步 outbox；生产未切换。见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md) |
 
 完整 P3 场景、版本和验证层次见[P3 验收报告](tests/P3-ACCEPTANCE.md)。[P2](tests/live-p2-acceptance.mjs)和[P3](tests/live-p3-acceptance.mjs)真实脚本均为显式手动运行，不随 `npm test` 执行，不修改真实训练时间。运行限制见[后端说明](backend/README.md#验证边界)。
 
@@ -88,7 +87,7 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 
 ## 未完成范围与下一步
 
-1. **完成 C2.2 剩余验收**：独立测试 Form 的手动拉取与真实 `onFormSubmit` 自动导入已通过。仍需实测与十分钟轮询接近同时到达、同时间边界、网络失败后补扫、远端 DO 跨部署保持及管理员核查，再考虑把已验证代码部署到原 staging。不得连接生产 Pages／Google 文件或改变 Apps Script 写入归属。具体门槛见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+1. **开始 C2.3 Sheet 差异读取**：在独立测试 Sheet 上处理人工改名、排序、删行、改 ID、重复来源与关联字段冲突；仅形成三方比较与核查结果，不向 Google 写回、不消费 `PENDING` outbox。现有 C2.2 的严格远端同时竞态与 Google 配额耗尽未实证，应在后续隔离运行观察中保留其证据边界。不得连接生产 Pages／Google 文件或改变 Apps Script 写入归属。计划见[Cloudflare 迁移计划](cloudflare-migration-plan.md#c2-可执行工作清单)。
 2. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
 3. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
 4. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。
