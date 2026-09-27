@@ -6,6 +6,8 @@
 
 > Cloudflare 迁移现状：2026-09-26。C0、C1、C2.2 和 C2.3 阶段门槛已通过。专用 `c2test` 运行 C2.4 成员导出切片（独立 Apps Script v9、Worker `0.11.0-c2-member-export`、schema v9）；**两名隔离测试队员已真实写入 Google `Members`，同一请求重放不会写下一名，但 C2.4 整体未通过**。原 staging 仍为 C2.2／schema v8。生产仍由 Apps Script／Sheets 写入，Pages 未切换；生产与原 staging 没有启用 Google 写回。证据见 [C2.4 隔离验收](tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)、[C2.3](tests/C2-SHEET-DIFF-ACCEPTANCE.md)和 [C2.2](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 
+> 2026-09-27 系统级复核：正式三页、只读 API、Coach 真实登录／受保护读取／退出通过；隔离 C2 五类 Sheet 重复读取与名单不变通过。正式三场测试训练均已结束，故本轮没有重新执行报名写入。隔离赛季存在 `BASELINE_INCOMPLETE` 开放诊断及七个待处理 outbox，本地新增赛季版本导出尚未部署；**这不是 Cloudflare 端到端或生产切换验收通过**。验收开始时本地分支领先 `origin/main` 27 个提交，线上 HTML 与本轮本地构建不一致。详见[系统级验收快照](tests/SYSTEM-LEVEL-ACCEPTANCE-2026-09-27.md)。
+
 本文件记录当前交付状态、验证边界和下一步。第一次接手项目先读[项目总览](PROJECT-OVERVIEW.md)；产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
 
 ## 已确认的下一阶段
