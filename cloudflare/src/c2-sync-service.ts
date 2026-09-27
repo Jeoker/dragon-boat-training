@@ -489,8 +489,16 @@ export class C2SyncService {
           `SELECT practice_id, side, row_number, COALESCE(member_id, '') AS member_id
            FROM seat_plan_draft_seats WHERE season_id=? ORDER BY practice_id, side, row_number`,
           input.season_id).toArray();
-        for (const row of rows) row.seats = seats.filter((seat) => seat.practice_id === row.practice_id)
-          .map((seat) => ({ side: seat.side, row_number: Number(seat.row_number), member_id: seat.member_id }));
+        const seatsByPractice = new Map<string, Array<{ side: string; row_number: number;
+          member_id: string }>>();
+        for (const seat of seats) {
+          const practiceId = String(seat.practice_id);
+          const group = seatsByPractice.get(practiceId) ?? [];
+          group.push({ side: String(seat.side), row_number: Number(seat.row_number),
+            member_id: String(seat.member_id) });
+          seatsByPractice.set(practiceId, group);
+        }
+        for (const row of rows) row.seats = seatsByPractice.get(String(row.practice_id)) ?? [];
       }
       const key = (row: Record<string, unknown>) => input.entity_type === "MEMBER"
         ? String(row.member_id) : input.entity_type === "SEASON" ? String(row.season_id) :

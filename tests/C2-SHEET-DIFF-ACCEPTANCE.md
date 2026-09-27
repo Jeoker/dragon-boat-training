@@ -31,3 +31,9 @@ C2.4 应先依据当前 B/C/G 和开放诊断决定哪些字段可安全导出�
 修正后 `npm test` **190／190**、`npm run cf:test` **91／91**、`npm run cf:check`、前端及 Apps Script 构建、桥接探针构建、Worker dry run 和 `git diff --check` 通过。Wrangler 的本机日志 `EPERM` 未影响测试退出码。
 
 已把同一构建推送到**独立** Apps Script 测试 Web App v7，并更新专用 `c2test` Worker version `631907b5-32b3-4313-bf0e-ff631d40cfc2`，服务版本与 schema 仍分别为 `0.10.0-c2-sheet-inspection` 和 v9。真实 Coach 登录后，五类登记 Sheet 均成功只读检查并逐一重复检查；重复时新增／过时诊断均为 0。赛季表读到 1 行、成员表当前 0 行，其他三类业务范围也是空表；Cloudflare 已导入的九名成员仍仅为待导出候选。最后成功退出，前后公开名单摘要一致。**实际测试数据未触发超限或非法 ID；这些拒绝路径由本地测试证明，不能称为真实 Google 异常验收。** 原 staging、正式 Pages、生产 Apps Script 和 Google 文件均未更新。
+
+## 有界诊断复核（2026-09-26）
+
+发现前 100 条普通待导出记录可能占满检查响应，导致后续真正的 `CONFLICT` 连持久诊断也无法进入。现按严重程度保留有界结果：冲突／被拒绝的变更优先，其次是需核查项，再是普通变化；总数和 `truncated` 仍如实反映遗漏。超过 100 条同级异常仍可能被截断，因此 C2.4 不能把响应列表当作完整写入计划。另将草稿座位读取从“每个场次重扫所有座位”改为一次按场次分组，不改变座位排序和比较规则。
+
+本地以 101 条普通待导出或需核查项加一条靠后的冲突验证优先保留，并检查冲突可进入持久诊断准备；`npm test` **190／190**、`npm run cf:test` **92／92**、`npm run cf:check`、Worker dry run 和 `git diff --check` 通过。新 Worker version `848e4a29-36da-4c74-aa7e-f4c48b0f3395` 仅部署到独立 `c2test`，原 Apps Script 测试 Web App 仍为 v7。五类真实只读检查及重复检查再次通过，公开名单摘要不变，Coach 已退出；测试文件没有 100 条以上的真实差异，因此优先级行为仍只由本地测试证明。原 staging、正式 Pages 和生产环境均未更新。

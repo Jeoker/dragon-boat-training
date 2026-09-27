@@ -56,9 +56,20 @@ export function analyzeSheetPage(input: {
   const findings: SheetFinding[] = [];
   const maximum = input.max_findings ?? 100;
   let findingsCount = 0;
+  const priority = (outcome: SheetFinding["outcome"]) =>
+    outcome === "CONFLICT" || outcome === "REJECTED" ? 3 : outcome === "REVIEW_REQUIRED" ? 2 : 1;
   const push = (value: SheetFinding) => {
     findingsCount += 1;
-    if (findings.length < maximum) findings.push(value);
+    if (findings.length < maximum) {
+      findings.push(value);
+      return;
+    }
+    for (let index = findings.length - 1; index >= 0; index -= 1) {
+      if (priority(findings[index].outcome) >= priority(value.outcome)) continue;
+      findings.splice(index, 1);
+      findings.push(value);
+      return;
+    }
   };
   const expectedHeaders = SHEET_SCOPES[scope].headers;
   if (canonicalJson(page.headers) !== canonicalJson(expectedHeaders)) {

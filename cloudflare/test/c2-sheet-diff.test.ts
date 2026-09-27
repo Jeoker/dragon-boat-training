@@ -125,6 +125,31 @@ describe("C2.3 Sheet inspection", () => {
     expect(prepared).toHaveLength(1);
   });
 
+  it("retains a late conflict when export candidates fill the bounded result", async () => {
+    const exports = Array.from({ length: 101 }, (_, index) => ({ ...member,
+      member_id: `member_bulk_${String(index).padStart(3, "0")}` }));
+    const result = analyzeSheetPage({ season_id: seasonId,
+      page: page("MEMBER", [{ ...member, display_name_override: "Google" }]),
+      baselines: baselines("MEMBER", memberId, member),
+      cloud_rows: [...exports, { ...member, display_name_override: "Cloud" }],
+      max_findings: 100 });
+    expect(result).toMatchObject({ status: "OK", findings_count: 102, truncated: true });
+    expect(result.findings).toHaveLength(100);
+    expect(result.findings).toContainEqual(expect.objectContaining({
+      entity_id: memberId, dependency_group: "MEMBER_NAME", outcome: "CONFLICT" }));
+    const persisted = await prepareSheetFindings({ season_id: seasonId, binding_version: 1,
+      entity_type: "MEMBER", findings: result.findings, cloud_rows: [...exports, member] });
+    expect(persisted).toContainEqual(expect.objectContaining({
+      entity_id: memberId, dependency_group: "MEMBER_NAME", outcome: "CONFLICT" }));
+    const reviews = analyzeSheetPage({ season_id: seasonId,
+      page: page("MEMBER", [...exports, { ...member, display_name_override: "Google" }]),
+      baselines: baselines("MEMBER", memberId, member),
+      cloud_rows: [...exports, { ...member, display_name_override: "Cloud" }],
+      max_findings: 100 });
+    expect(reviews.findings).toContainEqual(expect.objectContaining({
+      entity_id: memberId, dependency_group: "MEMBER_NAME", outcome: "CONFLICT" }));
+  });
+
   it("rejects hand edits to protected source and version cells", () => {
     const baseline = baselines("MEMBER", memberId, member);
     const result = analyzeSheetPage({ season_id: seasonId,
