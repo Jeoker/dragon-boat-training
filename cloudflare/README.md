@@ -112,4 +112,4 @@ schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、�
 
 `export-next-member` 只处理已到十分钟期限的 Form 成员导入或 Coach 成员修正 outbox，每次准备一个成员目标；一个 Form 事件含多人时逐个持久确认，全部完成后才确认事件。首次发送前重新读取完整登记的 `Members` Tab 和该成员的全部 B 依赖组；Google 行缺失且无 B 时可新增，已有行必须有完整 B 且没有待导入或人工核查的 Google 改动。批次、前值、目标、版本及摘要先写入 SQLite，Google 私有回执表在写业务行前记 `PREPARED`，逐行记 `PARTIAL`，重读通过后记 `VERIFIED`。响应丢失时沿原批次重试，不重新规划目标；仅严格回执能推进捕获版本的 B。独立成员行写入仍受 Google 人工编辑窗口限制，无法声称具备数据库级条件更新。
 
-当前切片已部署到专用 `c2test`／独立 Google Web App v9，完成两名测试成员的真实写入与同一请求重放验收。入口受 C2 测试传输门及 `C2_MEMBER_EXPORT_ENABLED` 控制，生产和原 staging 的配置关闭；没有自动调度、普通页面入口、非成员写回或 Google 修改导入。真实人工冲突、部分写入与响应丢失仍只由本地故障注入覆盖，余下实体批次完成前不能把 C2.4 标记为通过。见 [隔离验收](../tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)。
+当前切片已部署到专用 `c2test`／独立 Google Web App v9，完成两名测试成员的真实写入与同一请求重放验收。入口受 C2 测试传输门及 `C2_MEMBER_EXPORT_ENABLED` 控制，生产和原 staging 的配置关闭；没有普通页面入口、赛季／报名／训练／座位写回或 Google 修改导入。真实人工冲突、部分写入与响应丢失仍只由本地故障注入覆盖，余下实体批次完成前不能把 C2.4 标记为通过。自动调度、失败退避与暂停／恢复按迁移计划属于 C2.5。见 [隔离验收](../tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)。
