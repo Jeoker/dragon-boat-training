@@ -38,7 +38,7 @@ async function rosterDigest() {
 }
 
 const health = await (await fetch(new URL("/health", base))).json();
-assert.equal(health.meta?.service_version, "0.11.0-c2-member-export");
+assert.equal(health.meta?.service_version, "0.12.0-c2-season-export");
 const before = await rosterDigest();
 const login = await api("/internal/c1/coach-login", c1Key,
   { request_id: requestId("login"), coach_code: coachCode });
