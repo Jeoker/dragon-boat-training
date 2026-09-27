@@ -294,8 +294,14 @@ export class C1SignupService {
       if (!noChange) this.core.enqueueChange(identity, "SIGNUPS_CHANGED", action,
         { season_id: input.season_id, practice_id: input.practice_id,
           member_id: input.member_id, promoted_member_ids: promoted,
+          snapshot_schema: 1,
+          practice_version: Number(practice.practice_version), signup_version: nextVersion,
+          signup_rows: changed.map(signupComparable).sort((left, right) =>
+            String(left.member_id).localeCompare(String(right.member_id))),
           ...(seating ? { seat_plan_version: seating.seat_plan_version,
-            published_revision: seating.published_revision } : {}) }, at);
+            published_revision: seating.published_revision,
+            draft_changed: seating.draft_changed,
+            published_changed: seating.published_changed } : {}) }, at);
     });
     return this.currentView(response, input.season_id, input.practice_id);
   }

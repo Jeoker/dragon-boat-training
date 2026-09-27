@@ -120,6 +120,49 @@ async function fill(fixture: Fixture, start: number, count: number, preference: 
 }
 
 describe("C1.3 signup and waitlist migration slice", () => {
+  it("captures promotions, cancellation and re-signup before later edits can replace them", async () => {
+    const fixture = await setup("captured-transitions", 3, 1, 1);
+    await mutate(fixture, "signup", 0, "LEFT");
+    await mutate(fixture, "signup", 1, "LEFT");
+    const moved = await mutate(fixture, "update-signup", 0, "RIGHT");
+    expect(moved.data.result.promoted_member_ids).toEqual([fixture.members[1]]);
+    await mutate(fixture, "cancel-signup", 0);
+    await mutate(fixture, "signup", 0, "RIGHT");
+    const stub = fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const events = context.storage.sql.exec<{ payload_json: string }>(
+        "SELECT payload_json FROM sync_outbox WHERE topic='SIGNUPS_CHANGED' ORDER BY rowid").toArray()
+        .map((row) => JSON.parse(row.payload_json).entity);
+      expect(events).toHaveLength(5);
+      expect(events.every((event: any) => event.snapshot_schema === 1)).toBe(true);
+      expect(events.map((event: any) => event.signup_version)).toEqual([1, 2, 3, 4, 5]);
+      expect(events.every((event: any) => event.practice_version === 2)).toBe(true);
+      expect(events[0].signup_rows).toMatchObject([{ member_id: fixture.members[0],
+        preference: "LEFT", status: "CONFIRMED", queue_sequence: 1 }]);
+      expect(events[1].signup_rows).toMatchObject([{ member_id: fixture.members[1],
+        preference: "LEFT", status: "WAITLISTED", queue_sequence: 2 }]);
+      expect(events[2].signup_rows).toMatchObject([
+        { member_id: fixture.members[0], preference: "RIGHT", status: "CONFIRMED", queue_sequence: 1 },
+        { member_id: fixture.members[1], preference: "LEFT", status: "CONFIRMED", queue_sequence: 2 }
+      ]);
+      expect(events[2].signup_rows.map((row: any) => row.last_request_id))
+        .toEqual([moved.payload.request_id, moved.payload.request_id]);
+      expect(Object.keys(events[2].signup_rows[0]).sort()).toEqual([
+        "last_request_id", "member_id", "practice_id", "preference", "queue_at",
+        "queue_sequence", "season_id", "status", "updated_at"
+      ]);
+      expect(events[3].signup_rows).toMatchObject([{ member_id: fixture.members[0],
+        status: "CANCELLED", queue_sequence: 1 }]);
+      expect(events[4].signup_rows).toMatchObject([{ member_id: fixture.members[0],
+        status: "CONFIRMED", queue_sequence: 3 }]);
+      const current = context.storage.sql.exec<{ member_id: string; preference: string }>(
+        "SELECT member_id,preference FROM signups WHERE season_id=? AND practice_id=? AND member_id=?",
+        fixture.seasonId, fixture.practiceId, fixture.members[0]).one();
+      expect(current.preference).toBe("RIGHT");
+      expect(events[0].signup_rows[0].preference).toBe("LEFT");
+    });
+  });
+
   it("upgrades schema v3 in place and exposes an empty public practice view", async () => {
     const fixture = await setup("schema", 2);
     const stub = fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID);

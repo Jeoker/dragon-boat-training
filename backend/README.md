@@ -23,7 +23,7 @@
 - `src/Setup.gs`：一次性初始化及新增／重置个人 Coach Code。
 - `src/FormBridge.gs`：C2.2 只读 Form 回答分页桥接，仅纳入完整后端构建；不进入独立 C0 探针。
 - `src/SheetBridge.gs`：C2.3 签名只读 Sheet 桥接，按当前赛季绑定读取登记 Tab 的显示值、稳定行号和数字 Tab ID；缺少或超出界限的 Tab 返回错误，不修复、不写入。只纳入完整后端构建，不进入独立 C0 探针。
-- `src/BoundRowPatchBridge.gs`：C2.4 有界行补丁。成员写回已在独立测试 Web App v9 验收；新增加的赛季行补丁仅本地通过，尚未部署。两者共用签名、绑定／前值检查、私有 `BridgeExportReceipts` 及重放后目标行复核。赛季补丁仅修改业务字段，不能新建赛季行或改写 Google 的 Form／Spreadsheet 绑定列。只进入完整后端构建，不进入 C0 探针；生产未部署。
+- `src/BoundRowPatchBridge.gs`：C2.4 有界行补丁。成员及赛季名单版本写回已在独立测试 Web App v10 验收；两者共用签名、绑定／前值检查、私有 `BridgeExportReceipts` 及重放后目标行复核。赛季补丁不能新建赛季行或改写 Google 的 Form／Spreadsheet 绑定列。只进入完整后端构建，不进入 C0 探针；生产未部署。报名、训练及排座补丁仍未实现。
 - `src/FormNotify.gs`：C2.2 可安装的 Google Forms 提交触发器及签名 Cloudflare 通知。只在 Cloudflare 拥有写入权的赛季显式安装；现有生产赛季继续使用旧 Spreadsheet 提交触发器，不能并装或把独立 `c2test` 通知地址写入生产项目。当前仅在独立 C2 测试项目安装一个 Form 触发器，并已通过真实 responder 页面提交验收。
 - `src/appsscript.json`：V8 运行时配置。
 - `.clasp.json.example`：测试项目配置示例；真实 Script ID 不提交仓库。
