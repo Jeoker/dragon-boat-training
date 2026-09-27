@@ -10,7 +10,7 @@ test("every production action and HTTP method matches the executable route regis
   const routes = context.dragonBoatRoutes_();
   assert.deepEqual(Object.keys(routes).filter(name => ![
     "cloudflareBridgeProbe", "cloudflareReadFormResponses", "cloudflareReadSheetRecords",
-    "cloudflarePatchMemberSheet"
+    "cloudflarePatchMemberSheet", "cloudflarePatchSeasonSheet"
   ].includes(name)).sort(),
     Object.keys(contract.actions).sort());
   for (const [name, definition] of Object.entries(contract.actions)) {

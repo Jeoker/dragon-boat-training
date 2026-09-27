@@ -120,4 +120,8 @@ test("member patch writes minimally, verifies, and resumes the same batch withou
     items: [{ member_id: formula[1], expected: null, target: formula }]
   }, formulaId)).error.code, "BRIDGE_PAYLOAD_INVALID");
   assert.equal(sheet.rows.some((cells) => cells[1] === formula[1]), false);
+  const firstNewRow = sheet.rows.find((cells) => cells[1] === firstNew[1]);
+  firstNewRow[4] = "Manual edit after verification";
+  assert.equal(post(backend.context, patchRequest(season.season_id, partialPayload, partialId))
+    .error.code, "SHEET_PATCH_CONFLICT");
 });

@@ -32,7 +32,7 @@
 - C2.1 同步基础：schema v7 的绑定、基线、稳定来源、冲突和批次模型及三方比较已通过本地测试；后续审查补齐跨绑定版本身份延续和元数据边界。该切片本身不调用 Google；代码现已随 C2.2 部署到隔离 staging，仍未确认任何 outbox。详见 [C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)和[后续审查](tests/POST-C2.1-CODE-REVIEW.md)。
 - C2.2 Form 来源导入：签名只读桥接、稳定回答 ID、事务游标／回执、触发通知和十分钟补扫在独立 Form／Worker 上通过；故障后同一请求可恢复，旧成员同名必须经 Coach 查看核查清单并显式关联。审查后轮询在赛季截止后完成一次成功的收尾分页才停止，不会永久读取旧赛季；此边界由本地测试覆盖。原 staging 升级到 schema v8 后 123 名公开成员及待同步 outbox 保留，C2 入口仍缺测试 Key 且被拒绝。正式生产不变。详见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 - C2.3 Sheet 差异：独立测试 Apps Script Web App 已从 v6 更新到 v7，只保留正式签名只读入口；`c2test` Worker `0.10.0-c2-sheet-inspection`／schema v9。Coach 会话下检查赛季、成员、报名、训练和草稿座位表，按登记 Tab、稳定 ID 与依赖组比较 B/C/G；结构异常及业务冲突写入 `sync_conflicts`，重复检查不重复建，完整检查后已消失的诊断转为 `SUPERSEDED`。真实隔离 Sheet 的改名／恢复通过，临时写入夹具入口已删除；名单与 outbox 未改变。后续审查修正了非法 ID、坏结构下的旧诊断保留、读量上限及诊断截断时的冲突优先级，并在独立测试环境复验五类只读检查。无 Google 写回、无自动业务导入、无 Coach 冲突处理页面。原 staging 与生产未部署本切片。详见[C2.3 验收及审查](tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
-- C2.4 成员导出（隔离切片）：Google 桥接可按固定 `Members` Tab 及稳定 ID 进行单元格补丁，在私有系统 Sheet 记录 PREPARED／PARTIAL／VERIFIED 并回读核验。Cloudflare 只处理到期的成员 outbox，先保存目标批次，收到严格回执后推进捕获版本的 B；多人事件逐目标确认，最后才确认事件。同一 `request_id` 重放固定结果。Google 人工改动、缺失／不完整 B 或坏列头会停止写入。专用 `c2test` 已完成两名隔离队员真实写入和重放验收；原 staging／生产未启用。非成员写回、自动调度及 Coach 页面仍未实现。见[C2.4 隔离验收](tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)。
+- C2.4 成员导出（隔离切片）：Google 桥接可按固定 `Members` Tab 及稳定 ID 进行单元格补丁，在私有系统 Sheet 记录 PREPARED／PARTIAL／VERIFIED 并回读核验。Cloudflare 只处理到期的成员 outbox，先保存目标批次，收到严格回执后推进捕获版本的 B；多人事件逐目标确认，最后才确认事件。同一 `request_id` 重放固定结果。Google 人工改动、缺失／不完整 B 或坏列头会停止写入。专用 `c2test` 已完成两名隔离队员真实写入和重放验收；原 staging／生产未启用。新增的共用桥接可对既有 Google `Seasons` 行只补丁业务列，并在旧 `VERIFIED` 回执重放时复核目标行；**赛季补丁仍仅本地通过，没有 Cloudflare 调用方或远端部署**。见[C2.4 成员隔离验收](tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)与[赛季补丁本地记录](tests/C2-SEASON-PATCH-LOCAL.md)。
 - 当前跟踪文件不包含 Script ID、私有 Spreadsheet ID、Coach Code、会话令牌或服务端 secret。早期测试夹具曾复用实际 Coach Code，普通提交不会清除 Git 历史，因此下一次管理后端部署前必须轮换该 Code。
 
 ## 运行中 Apps Script 的写入与恢复约束
@@ -68,7 +68,7 @@
 | C2.1 同步基础 | schema v7 的受控绑定／基线／来源影子导入、三方比较、严格 Google ID 和稳定来源约束、C2 独立传输门及 Coach 概览通过；该逻辑随 C2.2 已部署隔离 staging，但仍不自行访问 Google 或消费 outbox。见[C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md) |
 | C2.2 Form 来源导入 | 隔离 Form 的分页、通知、十分钟补扫、桥接故障恢复、人工核查与跨部署持久化通过；并发提交由本地强制竞态测试覆盖。原 staging v6→v8 保留 C1 数据与待同步 outbox；生产未切换。见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md) |
 | C2.3 Sheet 读取与差异 | 五类登记 Sheet 的真实只读读取、B/C/G 人工改名与恢复、持久诊断幂等和过时状态通过；异常结构、删行、改 ID、重复 ID、报名与排座依赖组由本地测试覆盖。`c2test` schema v9，原 staging／生产未升级；没有 Google 写回或自动导入。见[C2.3 验收](tests/C2-SHEET-DIFF-ACCEPTANCE.md) |
-| C2.4 成员导出首个切片 | 单成员目标有界批次、前值校验、Google 私有进度／回执及捕获版本 B 更新；同一请求结果可重放，多人事件不提前确认。已在独立 `c2test`／Google 文件真实写入两名测试成员，原 staging／生产未启用；自动调度及其他实体仍待实现。见[C2.4 隔离验收](tests/C2-MEMBER-EXPORT-ACCEPTANCE.md) |
+| C2.4 成员导出及赛季桥接切片 | 成员有界批次、前值校验、Google 私有进度／回执及捕获版本 B 更新；同一请求结果可重放。已在独立 `c2test`／Google 文件真实写入两名测试成员。赛季行的受限补丁和 VERIFIED 重放复核仅本地通过，尚无 Worker 赛季导出器；原 staging／生产未启用。见[成员隔离验收](tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)和[赛季本地记录](tests/C2-SEASON-PATCH-LOCAL.md) |
 
 完整 P3 场景、版本和验证层次见[P3 验收报告](tests/P3-ACCEPTANCE.md)。[P2](tests/live-p2-acceptance.mjs)和[P3](tests/live-p3-acceptance.mjs)真实脚本均为显式手动运行，不随 `npm test` 执行，不修改真实训练时间。运行限制见[后端说明](backend/README.md#验证边界)。
 
@@ -91,7 +91,7 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 
 ## 未完成范围与下一步
 
-1. **继续 C2.4 有限补丁与回执**：成员导出已在独立环境验收真实新增和同一请求重放；下一步补验真实人工冲突、部分写入与响应丢失，再扩展赛季、报名、训练、排座及多 Tab 批次。只有 Google 核验后才能推进对应基线和 outbox。十分钟周期调度、失败退避及暂停／恢复的运维闭环按迁移计划属于 C2.5，不作为 C2.4 的已实现功能。C2.2 的严格远端同时竞态与 Google 配额耗尽仍未实证。不得连接生产 Pages／Google 文件或改变 Apps Script 写入归属。计划见[Cloudflare 迁移计划](cloudflare-migration-plan.md#c2-可执行工作清单)。
+1. **继续 C2.4 有限补丁与回执**：成员导出已在独立环境验收真实新增和同一请求重放；赛季补丁桥接仅本地完成。下一步先让 Cloudflare 将赛季行与成员事件推进的 `roster_version` 作为关联目标规划和核验，不得在成员行确认后提前确认整个 outbox；再补验真实人工冲突、部分写入与响应丢失，扩展报名、训练、排座及多 Tab 批次。只有 Google 核验后才能推进对应基线和 outbox。十分钟周期调度、失败退避及暂停／恢复的运维闭环按迁移计划属于 C2.5，不作为 C2.4 的已实现功能。C2.2 的严格远端同时竞态与 Google 配额耗尽仍未实证。不得连接生产 Pages／Google 文件或改变 Apps Script 写入归属。计划见[Cloudflare 迁移计划](cloudflare-migration-plan.md#c2-可执行工作清单)。
 2. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
 3. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
 4. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。
