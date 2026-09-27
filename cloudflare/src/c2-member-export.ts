@@ -5,26 +5,36 @@ import { sha256Base64Url } from "./crypto";
 import { ApiError } from "./http";
 import { firstRow, parseContract, type SqlRow } from "./c1-support";
 import { C1Service } from "./c1-service";
-import { patchGoogleMembers, readGoogleSheet, SHEET_SCOPES,
-  type MemberPatchItem, type MemberPatchReceipt } from "./c2-sheet-bridge";
+import { patchGoogleMembers, patchGoogleSeason, readGoogleSheet, SHEET_SCOPES,
+  type MemberPatchItem, type MemberPatchReceipt, type SeasonPatchItem,
+  type SeasonPatchReceipt } from "./c2-sheet-bridge";
 
 interface ExportEvent extends SqlRow { outbox_id: string; payload_json: string; sequence: number; }
 interface StoredBatch extends SqlRow { batch_id: string; season_id: string; binding_version: number;
   writer_epoch: number; status: string; payload_digest: string; first_outbox_id: string; }
 interface StoredTarget { member_id: string; expected: string[] | null; target: string[];
   spreadsheet_id: string; tab_id: string; cloud_version: number; }
+interface StoredSeasonTarget { season_id: string; expected: string[]; target: string[];
+  spreadsheet_id: string; tab_id: string; roster_version: number; season_version: number; }
 
 const definitions = SYNC_FIELD_DEFINITIONS.MEMBER;
 const groups = [...new Set(definitions.map((field) => field.dependency_group))];
 const headers = SHEET_SCOPES.MEMBER.headers;
+const seasonHeaders = SHEET_SCOPES.SEASON.headers;
+const seasonDefinitions = SYNC_FIELD_DEFINITIONS.SEASON;
+const seasonGroups = [...new Set(seasonDefinitions.map((field) => field.dependency_group))];
 
 function memberIds(event: ExportEvent): string[] {
   let payload: unknown;
   try { payload = JSON.parse(event.payload_json); } catch { payload = null; }
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new ApiError("SYNC_OUTBOX_INVALID", "The member outbox has an invalid payload.", 409);
+  }
   const data = payload as Record<string, unknown>;
   const entity = data.entity;
-  if (!entity || typeof entity !== "object" || Array.isArray(entity)) return [];
+  if (!entity || typeof entity !== "object" || Array.isArray(entity)) {
+    throw new ApiError("SYNC_OUTBOX_INVALID", "The member outbox has an invalid entity.", 409);
+  }
   const ids = (entity as Record<string, unknown>).member_ids ??
     ((entity as Record<string, unknown>).member_id ? [(entity as Record<string, unknown>).member_id] : []);
   if (!Array.isArray(ids) || !ids.length || ids.length > 100 ||
@@ -33,6 +43,51 @@ function memberIds(event: ExportEvent): string[] {
     throw new ApiError("SYNC_OUTBOX_INVALID", "The member outbox has invalid target IDs.", 409);
   }
   return ids as string[];
+}
+
+function eventRosterVersion(sql: SqlStorage, event: ExportEvent, current: number): number {
+  const payload = JSON.parse(event.payload_json) as { entity?: { roster_version?: unknown } };
+  const captured = payload.entity?.roster_version;
+  if (captured !== undefined) {
+    if (!Number.isSafeInteger(captured) || Number(captured) < 0 || Number(captured) > current) {
+      throw new ApiError("SYNC_OUTBOX_INVALID", "The captured roster version is invalid.", 409);
+    }
+    return Number(captured);
+  }
+  // Pre-capture events can only use the live version when no later roster event exists.
+  // Otherwise the version at this event cannot be reconstructed without guessing.
+  const later = firstRow<SqlRow>(sql,
+    `SELECT outbox_id FROM sync_outbox WHERE rowid>? AND status='PENDING'
+     AND json_extract(payload_json,'$.entity.season_id')=? AND
+       (topic='MEMBERS_IMPORTED' OR (topic='CORE_CHANGED' AND
+        json_extract(payload_json,'$.action')='updateMember')) LIMIT 1`,
+    event.sequence, (payload.entity as { season_id?: string } | undefined)?.season_id ?? "");
+  if (later) throw new ApiError("SYNC_ROSTER_VERSION_UNCAPTURED",
+    "An older member event has no captured roster version and newer member events exist.", 409);
+  return current;
+}
+
+function memberTargetsVerified(sql: SqlStorage, outboxId: string): boolean {
+  const event = firstRow<SqlRow>(sql,
+    "SELECT payload_json,status FROM sync_outbox WHERE outbox_id=?", outboxId);
+  if (event?.status !== "PENDING") return false;
+  const ids = memberIds({ outbox_id: outboxId, payload_json: String(event.payload_json), sequence: 0 });
+  const done = new Set(sql.exec<{ entity_id: string }>(
+    `SELECT i.entity_id FROM sync_batch_items i JOIN sync_batches b ON b.batch_id=i.batch_id
+     WHERE b.first_outbox_id=? AND b.last_outbox_id=? AND b.status='CONFIRMED'
+       AND i.entity_type='MEMBER' AND i.status='VERIFIED'`, outboxId, outboxId)
+    .toArray().map((row) => row.entity_id));
+  return ids.every((id) => done.has(id));
+}
+
+function seasonGroup(row: Record<string, unknown>, group: string): Record<string, unknown> {
+  try {
+    return Object.fromEntries(seasonDefinitions.filter((field) => field.dependency_group === group)
+      .map((field) => [field.field,
+        normalizeSyncValue(row[field.field], field.kind, field.allowed_values)]));
+  } catch {
+    throw new ApiError("SYNC_SEASON_INVALID", "The season has an invalid mapped value.", 409);
+  }
 }
 
 function normalizedGroup(row: Record<string, unknown>, group: string): Record<string, unknown> {
@@ -136,7 +191,7 @@ export class C2MemberExportService {
       }
       return this.send(ownBatch, input.request_id, identity);
     }
-    const season = firstRow<SqlRow>(sql, "SELECT binding_version FROM seasons WHERE season_id=?", input.season_id);
+    const season = firstRow<SqlRow>(sql, "SELECT binding_version,roster_version FROM seasons WHERE season_id=?", input.season_id);
     const binding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", input.season_id);
     if (!season || !binding || Number(season.binding_version) !== Number(binding.binding_version) ||
         Number(binding.export_paused) !== 0) {
@@ -161,6 +216,20 @@ export class C2MemberExportService {
        AND json_extract(payload_json,'$.entity.season_id')=? LIMIT 1`, event.sequence, input.season_id);
     if (earlier) throw new ApiError("SYNC_OUTBOX_BLOCKED",
       "An earlier season event needs its own export handler first.", 409);
+    const capturedRosterVersion = eventRosterVersion(sql, event, Number(season.roster_version));
+    const seasonBaselines = sql.exec<SqlRow>(
+      `SELECT dependency_group,baseline_json FROM sync_baselines
+       WHERE season_id=? AND binding_version=? AND entity_type='SEASON' AND entity_id=?`,
+      input.season_id, binding.binding_version, input.season_id).toArray();
+    if (seasonBaselines.length !== seasonGroups.length ||
+        new Set(seasonBaselines.map((row) => String(row.dependency_group))).size !== seasonGroups.length) {
+      throw new ApiError("SYNC_BASELINE_INCOMPLETE", "The season needs every baseline group before member export.", 409);
+    }
+    const versionBaseline = seasonBaselines.find((row) => row.dependency_group === "SYSTEM_VERSION");
+    if (!versionBaseline || Number((JSON.parse(String(versionBaseline.baseline_json)) as {
+      roster_version: unknown }).roster_version) > capturedRosterVersion) {
+      throw new ApiError("SYNC_ROSTER_VERSION_REGRESSION", "The confirmed roster version is ahead of this event.", 409);
+    }
     const ids = memberIds(event);
     const verified = new Set(sql.exec<{ entity_id: string }>(
       `SELECT i.entity_id FROM sync_batch_items i JOIN sync_batches b ON b.batch_id=i.batch_id
@@ -169,17 +238,7 @@ export class C2MemberExportService {
       .toArray().map((row) => row.entity_id));
     const nextId = ids.find((id) => !verified.has(id));
     if (!nextId) {
-      const result = { season_id: input.season_id, status: "EVENT_CONFIRMED", outbox_id: event.outbox_id };
-      return this.ctx.storage.transactionSync(() => {
-        const prior = core.replayRequest(identity.requestKey, identity.payloadDigest);
-        if (prior) return prior;
-        const at = new Date().toISOString();
-        sql.exec("UPDATE sync_outbox SET status='CONFIRMED',completed_at=?,last_error='' WHERE outbox_id=? AND status='PENDING'",
-          at, event.outbox_id).toArray();
-        core.recordRequest(identity, "C2:EXPORT", "exportNextMember", input.request_id, result,
-          { season_id: input.season_id, status: result.status, outbox_id: event.outbox_id }, at);
-        return result;
-      });
+      return this.prepareSeason(event, binding, input.request_id, requestBatchId, identity);
     }
     const member = firstRow<SqlRow>(sql, "SELECT * FROM members WHERE season_id=? AND member_id=?",
       input.season_id, nextId);
@@ -253,7 +312,110 @@ export class C2MemberExportService {
       input.request_id, identity);
   }
 
+  private async prepareSeason(event: ExportEvent, binding: SqlRow, requestId: string, batchId: string,
+    identity: Awaited<ReturnType<C1Service["createRequestIdentity"]>>): Promise<Record<string, unknown>> {
+    const sql = this.ctx.storage.sql;
+    const season = firstRow<SqlRow>(sql, "SELECT * FROM seasons WHERE season_id=?", binding.season_id);
+    if (!season) throw new ApiError("SEASON_NOT_FOUND", "The season does not exist.", 404);
+    const rosterVersion = eventRosterVersion(sql, event, Number(season.roster_version));
+    const page = await readGoogleSheet(this.env, { request_id: requestId,
+      operation_id: `inspect_${(await sha256Base64Url(`${event.outbox_id}\nSEASON`)).slice(0, 35)}`,
+      season_id: String(season.season_id), entity_type: "SEASON",
+      binding_version: Number(binding.binding_version),
+      runtime_spreadsheet_id: String(binding.runtime_spreadsheet_id) });
+    if (canonicalJson(page.headers) !== canonicalJson(seasonHeaders)) {
+      throw new ApiError("SHEET_STRUCTURE_INVALID", "The season tab columns changed.", 409);
+    }
+    const matches = page.rows.filter((row) => row.cells[0] === season.season_id);
+    if (matches.length !== 1) {
+      throw new ApiError("SYNC_SEASON_NEEDS_REVIEW", "The bound season row is missing or duplicated.", 409);
+    }
+    const expected = matches[0].cells;
+    const observed = Object.fromEntries(seasonHeaders.map((header, index) => [header, expected[index]]));
+    if (observed.form_id !== binding.form_id ||
+        observed.runtime_spreadsheet_id !== binding.runtime_spreadsheet_id ||
+        observed.response_sheet_id !== binding.response_sheet_id ||
+        observed.binding_version !== String(binding.binding_version)) {
+      throw new ApiError("SYNC_BINDING_STALE", "The Google season binding identity changed.", 409);
+    }
+    const baselines = sql.exec<SqlRow>(
+      `SELECT dependency_group,baseline_json,cloud_version FROM sync_baselines
+       WHERE season_id=? AND binding_version=? AND entity_type='SEASON' AND entity_id=?`,
+      season.season_id, binding.binding_version, season.season_id).toArray();
+    if (baselines.length !== seasonGroups.length ||
+        new Set(baselines.map((row) => String(row.dependency_group))).size !== seasonGroups.length) {
+      throw new ApiError("SYNC_BASELINE_INCOMPLETE", "The season needs every baseline group before export.", 409);
+    }
+    for (const group of seasonGroups) {
+      const saved = baselines.find((row) => row.dependency_group === group);
+      if (!saved) throw new ApiError("SYNC_BASELINE_INCOMPLETE", "A season baseline is missing.", 409);
+      let baseline: Record<string, unknown>;
+      try { baseline = JSON.parse(String(saved.baseline_json)) as Record<string, unknown>; }
+      catch { throw new ApiError("SYNC_BASELINE_INCOMPLETE", "A season baseline is invalid.", 409); }
+      if (canonicalJson(seasonGroup(observed, group)) !== canonicalJson(seasonGroup(baseline, group))) {
+        throw new ApiError("SYNC_SEASON_NEEDS_REVIEW", "The Google season row changed since its baseline.", 409);
+      }
+    }
+    if (rosterVersion < Number(observed.roster_version)) {
+      throw new ApiError("SYNC_ROSTER_VERSION_REGRESSION", "The Google roster version is ahead of this event.", 409);
+    }
+    const target = [...expected];
+    target[seasonHeaders.indexOf("roster_version")] = String(rosterVersion);
+    const stored: StoredSeasonTarget = { season_id: String(season.season_id), expected, target,
+      spreadsheet_id: page.spreadsheet_id, tab_id: page.tab_id,
+      roster_version: rosterVersion, season_version: Number(observed.season_version) };
+    const payload = { season_id: stored.season_id, batch_id: batchId,
+      spreadsheet_id: stored.spreadsheet_id, tab_id: stored.tab_id,
+      items: [{ season_id: stored.season_id, expected, target }] };
+    if (JSON.stringify(payload).length > 9500) {
+      throw new ApiError("SYNC_BATCH_TOO_LARGE", "The season row exceeds the bridge batch limit.", 409);
+    }
+    const payloadDigest = await sha256Base64Url(JSON.stringify(payload));
+    const expectedDigest = `sha256_v1:${await sha256Base64Url(canonicalJson(expected))}`;
+    const targetDigest = `sha256_v1:${await sha256Base64Url(canonicalJson(target))}`;
+    const at = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      const current = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", season.season_id);
+      const currentSeason = firstRow<SqlRow>(sql, "SELECT binding_version,roster_version FROM seasons WHERE season_id=?", season.season_id);
+      const competing = firstRow<SqlRow>(sql,
+        `SELECT batch_id FROM sync_batches WHERE season_id=? AND direction='CLOUDFLARE_TO_GOOGLE'
+         AND status IN ('PREPARED','SENT','PARTIAL','FAILED') LIMIT 1`, season.season_id);
+      const currentEvent = firstRow<SqlRow>(sql, "SELECT status FROM sync_outbox WHERE outbox_id=?", event.outbox_id);
+      if (!current || !currentSeason || Number(current.binding_version) !== Number(binding.binding_version) ||
+          Number(currentSeason.binding_version) !== Number(binding.binding_version) ||
+          Number(current.export_paused) !== 0 ||
+          current.runtime_spreadsheet_id !== binding.runtime_spreadsheet_id ||
+          Number(currentSeason.roster_version) < rosterVersion ||
+          currentEvent?.status !== "PENDING" || competing ||
+          firstRow<SqlRow>(sql, "SELECT batch_id FROM sync_batches WHERE batch_id=?", batchId)) {
+        throw new ApiError("SYNC_EXPORT_STALE", "The season export changed during inspection.", 409, true);
+      }
+      sql.exec(
+        `INSERT INTO sync_batches(batch_id,season_id,binding_version,writer_epoch,direction,status,
+          payload_digest,first_outbox_id,last_outbox_id,created_at,updated_at)
+         VALUES (?,?,?,?,'CLOUDFLARE_TO_GOOGLE','PREPARED',?,?,?,?,?)`,
+        batchId, season.season_id, binding.binding_version, Number(this.env.WRITER_EPOCH),
+        payloadDigest, event.outbox_id, event.outbox_id, at, at).toArray();
+      sql.exec(
+        `INSERT INTO sync_batch_items(batch_id,item_index,entity_type,entity_id,dependency_group,
+          expected_sheet_digest,target_json,target_digest,status,updated_at)
+         VALUES (?,0,'SEASON',?,'SYSTEM_VERSION',?,?,?,'PENDING',?)`,
+        batchId, season.season_id, expectedDigest, JSON.stringify(stored), targetDigest, at).toArray();
+    });
+    return this.send(firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batchId)!,
+      requestId, identity);
+  }
+
   private async send(batch: StoredBatch, requestId: string,
+    identity: Awaited<ReturnType<C1Service["createRequestIdentity"]>>): Promise<Record<string, unknown>> {
+    const item = firstRow<SqlRow>(this.ctx.storage.sql,
+      "SELECT entity_type FROM sync_batch_items WHERE batch_id=? AND item_index=0", batch.batch_id);
+    if (item?.entity_type === "MEMBER") return this.sendMember(batch, requestId, identity);
+    if (item?.entity_type === "SEASON") return this.sendSeason(batch, requestId, identity);
+    throw new ApiError("SYNC_BATCH_INVALID", "The export batch has an invalid target.", 409);
+  }
+
+  private async sendMember(batch: StoredBatch, requestId: string,
     identity: Awaited<ReturnType<C1Service["createRequestIdentity"]>>): Promise<Record<string, unknown>> {
     const sql = this.ctx.storage.sql;
     const saved = firstRow<SqlRow>(sql, "SELECT * FROM sync_batch_items WHERE batch_id=? AND item_index=0", batch.batch_id);
@@ -350,20 +512,6 @@ export class C2MemberExportService {
         JSON.stringify(receipt), at, batch.batch_id).toArray();
       sql.exec("UPDATE sync_batches SET status='CONFIRMED',last_error='',updated_at=?,completed_at=? WHERE batch_id=?",
         at, at, batch.batch_id).toArray();
-      const event = firstRow<SqlRow>(sql,
-        "SELECT outbox_id,payload_json,status FROM sync_outbox WHERE outbox_id=?", batch.first_outbox_id);
-      if (event?.status === "PENDING") {
-        const ids = memberIds({ outbox_id: String(event.outbox_id),
-          payload_json: String(event.payload_json), sequence: 0 });
-        const done = new Set(sql.exec<{ entity_id: string }>(
-          `SELECT i.entity_id FROM sync_batch_items i JOIN sync_batches b ON b.batch_id=i.batch_id
-           WHERE b.first_outbox_id=? AND b.last_outbox_id=? AND b.status='CONFIRMED'
-             AND i.entity_type='MEMBER' AND i.status='VERIFIED'`,
-          batch.first_outbox_id, batch.first_outbox_id).toArray().map((row) => row.entity_id));
-        if (ids.every((id) => done.has(id))) sql.exec(
-          "UPDATE sync_outbox SET status='CONFIRMED',completed_at=?,last_error='' WHERE outbox_id=? AND status='PENDING'",
-          at, batch.first_outbox_id).toArray();
-      }
       sql.exec("UPDATE sync_bindings SET last_push_at=?,updated_at=? WHERE season_id=? AND binding_version=?",
         at, at, batch.season_id, batch.binding_version).toArray();
       new C1Service(this.ctx, this.env).recordRequest(identity, "C2:EXPORT", "exportNextMember",
@@ -372,6 +520,127 @@ export class C2MemberExportService {
     });
     if (bindingChanged) throw new ApiError("SYNC_BINDING_CHANGED_AFTER_WRITE",
       "Google verified the batch, but the binding changed before Cloudflare confirmed it.", 409);
+    return this.remember(identity, requestId, result());
+  }
+
+  private async sendSeason(batch: StoredBatch, requestId: string,
+    identity: Awaited<ReturnType<C1Service["createRequestIdentity"]>>): Promise<Record<string, unknown>> {
+    const sql = this.ctx.storage.sql;
+    const saved = firstRow<SqlRow>(sql,
+      "SELECT * FROM sync_batch_items WHERE batch_id=? AND item_index=0", batch.batch_id);
+    if (!saved || saved.entity_type !== "SEASON" || saved.entity_id !== batch.season_id) {
+      throw new ApiError("SYNC_BATCH_INVALID", "The season batch is incomplete.", 409);
+    }
+    const target = JSON.parse(String(saved.target_json)) as StoredSeasonTarget;
+    const result = () => ({ season_id: batch.season_id, status: "EVENT_CONFIRMED",
+      batch_id: batch.batch_id, outbox_id: batch.first_outbox_id,
+      roster_version: target.roster_version });
+    if (batch.status === "CONFIRMED") return this.remember(identity, requestId, result());
+    const binding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", batch.season_id);
+    const season = firstRow<SqlRow>(sql, "SELECT binding_version,roster_version FROM seasons WHERE season_id=?", batch.season_id);
+    if (!binding || !season || Number(binding.binding_version) !== Number(batch.binding_version) ||
+        Number(season.binding_version) !== Number(batch.binding_version) ||
+        Number(season.roster_version) < target.roster_version ||
+        String(target.season_id) !== String(batch.season_id) ||
+        String(binding.runtime_spreadsheet_id) !==
+          target.expected[seasonHeaders.indexOf("runtime_spreadsheet_id")]) {
+      throw new ApiError("SYNC_BINDING_STALE", "The prepared season batch belongs to an old state.", 409);
+    }
+    if (!memberTargetsVerified(sql, String(batch.first_outbox_id))) {
+      throw new ApiError("SYNC_BATCH_INVALID", "The event members are not all verified.", 409);
+    }
+    const item: SeasonPatchItem = { season_id: target.season_id,
+      expected: target.expected, target: target.target };
+    const payload = { season_id: String(batch.season_id), batch_id: batch.batch_id,
+      spreadsheet_id: target.spreadsheet_id, tab_id: target.tab_id, items: [item] };
+    if (await sha256Base64Url(JSON.stringify(payload)) !== String(batch.payload_digest) ||
+        `sha256_v1:${await sha256Base64Url(canonicalJson(target.expected))}` !== String(saved.expected_sheet_digest) ||
+        `sha256_v1:${await sha256Base64Url(canonicalJson(target.target))}` !== String(saved.target_digest) ||
+        Number(batch.writer_epoch) !== Number(this.env.WRITER_EPOCH)) {
+      throw new ApiError("SYNC_BATCH_INVALID", "The prepared season batch or writer epoch changed.", 409);
+    }
+    const alreadyConfirmed = this.ctx.storage.transactionSync(() => {
+      const current = firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batch.batch_id);
+      if (!current || current.payload_digest !== batch.payload_digest) {
+        throw new ApiError("SYNC_BATCH_INVALID", "The prepared season batch changed before sending.", 409);
+      }
+      if (current.status === "CONFIRMED") return true;
+      sql.exec(
+        `UPDATE sync_batches SET status='SENT',attempt_count=attempt_count+1,updated_at=?
+         WHERE batch_id=? AND status IN ('PREPARED','SENT','PARTIAL','FAILED')`,
+        new Date().toISOString(), batch.batch_id).toArray();
+      return false;
+    });
+    if (alreadyConfirmed) return this.remember(identity, requestId, result());
+    let receipt: SeasonPatchReceipt;
+    try {
+      receipt = await patchGoogleSeason(this.env, { request_id: requestId,
+        batch_id: batch.batch_id, season_id: String(batch.season_id),
+        binding_version: Number(batch.binding_version), spreadsheet_id: target.spreadsheet_id,
+        tab_id: target.tab_id, items: [item] });
+    } catch (error) {
+      sql.exec("UPDATE sync_batches SET status='FAILED',last_error=?,updated_at=? WHERE batch_id=? AND status='SENT'",
+        error instanceof Error ? error.message.slice(0, 400) : "Unknown bridge error.",
+        new Date().toISOString(), batch.batch_id).toArray();
+      throw error;
+    }
+    const baseline = seasonGroup(Object.fromEntries(seasonHeaders.map((header, index) =>
+      [header, target.target[index]])), "SYSTEM_VERSION");
+    const digest = `sha256_v1:${await sha256Base64Url(canonicalJson(baseline))}`;
+    let bindingChanged = false;
+    this.ctx.storage.transactionSync(() => {
+      const currentBinding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", batch.season_id);
+      const currentSeason = firstRow<SqlRow>(sql,
+        "SELECT binding_version,roster_version FROM seasons WHERE season_id=?", batch.season_id);
+      const currentBatch = firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batch.batch_id);
+      if (currentBatch?.status === "CONFIRMED") return;
+      if (!currentBinding || !currentSeason || !currentBatch ||
+          Number(currentBinding.binding_version) !== Number(batch.binding_version) ||
+          Number(currentSeason.binding_version) !== Number(batch.binding_version) ||
+          Number(currentSeason.roster_version) < target.roster_version ||
+          String(currentBinding.runtime_spreadsheet_id) !==
+            target.expected[seasonHeaders.indexOf("runtime_spreadsheet_id")] ||
+          String(currentBatch.payload_digest) !== receipt.payload_digest ||
+          String(currentBatch.first_outbox_id) !== String(batch.first_outbox_id) ||
+          !memberTargetsVerified(sql, String(batch.first_outbox_id))) {
+        bindingChanged = true;
+        sql.exec("UPDATE sync_batches SET status='PARTIAL',last_error=?,updated_at=? WHERE batch_id=?",
+          "Google verified the season row, but the current binding changed; review before confirming.",
+          new Date().toISOString(), batch.batch_id).toArray();
+        return;
+      }
+      const currentBaseline = firstRow<SqlRow>(sql,
+        `SELECT baseline_json FROM sync_baselines WHERE season_id=? AND binding_version=?
+         AND entity_type='SEASON' AND entity_id=? AND dependency_group='SYSTEM_VERSION'`,
+        batch.season_id, batch.binding_version, batch.season_id);
+      if (!currentBaseline || Number((JSON.parse(String(currentBaseline.baseline_json)) as { roster_version: number }).roster_version) >
+          target.roster_version) {
+        throw new ApiError("SYNC_BASELINE_INVALID", "A later season baseline cannot be replaced.", 409);
+      }
+      const at = new Date().toISOString();
+      sql.exec(
+        `INSERT INTO sync_baselines(season_id,binding_version,entity_type,entity_id,dependency_group,
+          baseline_json,baseline_digest,cloud_version,sheet_digest,updated_at)
+         VALUES (?,?,'SEASON',?,'SYSTEM_VERSION',?,?,?,?,?)
+         ON CONFLICT(season_id,binding_version,entity_type,entity_id,dependency_group)
+         DO UPDATE SET baseline_json=excluded.baseline_json,baseline_digest=excluded.baseline_digest,
+           cloud_version=excluded.cloud_version,sheet_digest=excluded.sheet_digest,updated_at=excluded.updated_at`,
+        batch.season_id, batch.binding_version, batch.season_id,
+        canonicalJson(baseline), digest, target.season_version, digest, at).toArray();
+      sql.exec("UPDATE sync_batch_items SET status='VERIFIED',receipt_json=?,updated_at=? WHERE batch_id=? AND item_index=0",
+        JSON.stringify(receipt), at, batch.batch_id).toArray();
+      sql.exec("UPDATE sync_batches SET status='CONFIRMED',last_error='',updated_at=?,completed_at=? WHERE batch_id=?",
+        at, at, batch.batch_id).toArray();
+      sql.exec("UPDATE sync_outbox SET status='CONFIRMED',completed_at=?,last_error='' WHERE outbox_id=? AND status='PENDING'",
+        at, batch.first_outbox_id).toArray();
+      sql.exec("UPDATE sync_bindings SET last_push_at=?,updated_at=? WHERE season_id=? AND binding_version=?",
+        at, at, batch.season_id, batch.binding_version).toArray();
+      new C1Service(this.ctx, this.env).recordRequest(identity, "C2:EXPORT", "exportNextMember",
+        requestId, result(), { season_id: batch.season_id, status: "EVENT_CONFIRMED",
+          batch_id: batch.batch_id }, at);
+    });
+    if (bindingChanged) throw new ApiError("SYNC_BINDING_CHANGED_AFTER_WRITE",
+      "Google verified the season row, but the binding changed before Cloudflare confirmed it.", 409);
     return this.remember(identity, requestId, result());
   }
 }

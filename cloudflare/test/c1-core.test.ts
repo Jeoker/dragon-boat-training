@@ -217,6 +217,10 @@ describe("C1 contract and core business slice", () => {
         "SELECT topic, status FROM sync_outbox WHERE topic='CORE_CHANGED' ORDER BY created_at"
       ).toArray();
       expect(rows).toEqual([{ topic: "CORE_CHANGED", status: "PENDING" }, { topic: "CORE_CHANGED", status: "PENDING" }]);
+      const captured = context.storage.sql.exec<{ roster_version: number }>(
+        `SELECT CAST(json_extract(payload_json,'$.entity.roster_version') AS INTEGER) AS roster_version
+         FROM sync_outbox WHERE json_extract(payload_json,'$.action')='updateMember'`).one();
+      expect(captured.roster_version).toBe(3);
     });
   });
 

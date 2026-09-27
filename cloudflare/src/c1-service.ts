@@ -167,11 +167,16 @@ export class C1Service {
 
   enqueueChange(identity: Pick<C1RequestIdentity, "requestKey">, topic: string, action: string,
     entity: Record<string, unknown>, at: string): void {
+    const memberChange = topic === "MEMBERS_IMPORTED" || topic === "CORE_CHANGED" && action === "updateMember";
+    const season = memberChange && typeof entity.season_id === "string"
+      ? firstRow<SqlRow>(this.ctx.storage.sql,
+        "SELECT roster_version FROM seasons WHERE season_id=?", entity.season_id) : null;
+    const capturedEntity = season ? { ...entity, roster_version: Number(season.roster_version) } : entity;
     this.ctx.storage.sql.exec(
       `INSERT INTO sync_outbox(outbox_id, request_key, topic, payload_json, status, due_at_ms, created_at)
        VALUES (?, ?, ?, ?, 'PENDING', ?, ?)`,
       `out_${identity.requestKey.slice(7)}`, identity.requestKey, topic,
-      JSON.stringify({ action, entity }), Date.parse(at) + 600_000, at
+      JSON.stringify({ action, entity: capturedEntity }), Date.parse(at) + 600_000, at
     ).toArray();
   }
 

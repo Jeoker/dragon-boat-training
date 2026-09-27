@@ -1,4 +1,4 @@
-export const C2_CONTRACT_VERSION = "2026-09-26.c2.4-member";
+export const C2_CONTRACT_VERSION = "2026-09-27.c2.4-season";
 
 export const C2_SYNC_ACTIONS = {
   "/internal/c2/import-sync-foundation": { method: "POST", authentication: "transport_only", writes: true },

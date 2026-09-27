@@ -14,6 +14,13 @@ const testEnv = (suffix: string) => ({ ...env, TEAM_ID: `member-export-${suffix}
   C2_MEMBER_EXPORT_ENABLED: "true", GOOGLE_BRIDGE_URL: "https://script.google.com/macros/s/test/exec",
   GOOGLE_BRIDGE_SECRET: "local-bridge-secret" } as unknown as Env);
 const headers = { authorization: "Bearer local-c2-test-key", "content-type": "application/json" };
+const seasonCells = () => SHEET_SCOPES.SEASON.headers.map((header) => ({
+  season_id: seasonId, name: "Export Season", start_date: "2026-04-01", end_date: "2026-12-31",
+  timezone: "America/New_York", season_ends_at: "2027-01-01T05:00:00.000Z", status: "OPEN",
+  form_id: "form_export_test_001", runtime_spreadsheet_id: "spreadsheet_export_test_001",
+  response_sheet_id: "0", binding_version: "1", season_version: "1", roster_version: "0",
+  updated_at: "2026-09-01T12:00:00.000Z"
+} as Record<string, string>)[header] ?? "");
 
 async function call(testEnvironment: Env, path: string, value: Record<string, unknown>, c1 = false) {
   return worker.fetch(new IncomingRequest(`https://example.test${path}`, {
@@ -61,6 +68,17 @@ async function seed(testEnvironment: Env) {
       requestKey,
       JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId, member_ids: memberIds } }),
       Date.now() - 1000, at).toArray();
+    const record = Object.fromEntries(SHEET_SCOPES.SEASON.headers.map((name, index) =>
+      [name, seasonCells()[index]]));
+    for (const group of new Set(SYNC_FIELD_DEFINITIONS.SEASON.map((field) => field.dependency_group))) {
+      const baseline = Object.fromEntries(SYNC_FIELD_DEFINITIONS.SEASON
+        .filter((field) => field.dependency_group === group)
+        .map((field) => [field.field, normalizeSyncValue(record[field.field], field.kind, field.allowed_values)]));
+      context.storage.sql.exec(
+        `INSERT INTO sync_baselines VALUES (?,1,'SEASON',?,?,?,?,?,?,?)`,
+        seasonId, seasonId, group, JSON.stringify(baseline), "sha256_v1:fixture_digest",
+        1, "sha256_v1:fixture_digest", at).toArray();
+    }
   });
   return stub;
 }
@@ -71,37 +89,52 @@ it("exports a multi-member event one verified target at a time and survives a lo
   const environment = testEnv("lost-reply");
   const stub = await seed(environment);
   const sheetRows: string[][] = [];
+  let seasonRow = seasonCells();
   const verified = new Map<string, Record<string, unknown>>();
   let loseReply = true;
+  let loseSeasonReply = true;
   let patchCalls = 0;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
     const envelope = JSON.parse(String(init?.body));
     const payload = JSON.parse(envelope.payload_json);
-    if (envelope.action === "cloudflareReadSheetRecords") return Response.json({
+    if (envelope.action === "cloudflareReadSheetRecords") {
+      const season = payload.entity_type === "SEASON";
+      return Response.json({
       ok: true, meta: { request_id: envelope.request_id }, data: {
         protocol_version: envelope.protocol_version, team_id: envelope.team_id,
-        season_id: seasonId, entity_type: "MEMBER", binding_version: 1,
+        season_id: seasonId, entity_type: payload.entity_type, binding_version: 1,
         writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
-        payload_digest: envelope.payload_digest, spreadsheet_id: "spreadsheet_export_test_001",
-        tab_name: "Members", tab_id: "101", read_at_ms: Date.now(),
-        headers: [...SHEET_SCOPES.MEMBER.headers], secondary: null,
-        rows: sheetRows.map((cells, index) => ({ row_number: index + 2, cells }))
+        payload_digest: envelope.payload_digest,
+        spreadsheet_id: season ? "system_export_test_001" : "spreadsheet_export_test_001",
+        tab_name: season ? "Seasons" : "Members", tab_id: season ? "100" : "101", read_at_ms: Date.now(),
+        headers: [...SHEET_SCOPES[season ? "SEASON" : "MEMBER"].headers], secondary: null,
+        rows: season ? [{ row_number: 2, cells: seasonRow }] :
+          sheetRows.map((cells, index) => ({ row_number: index + 2, cells }))
       }
     });
+    }
     patchCalls += 1;
     let receipt = verified.get(envelope.operation_id);
     if (!receipt) {
-      for (const item of payload.items) sheetRows.push(item.target);
+      for (const item of payload.items) {
+        if (envelope.action === "cloudflarePatchSeasonSheet") seasonRow = item.target;
+        else sheetRows.push(item.target);
+      }
       receipt = { status: "verified", protocol_version: envelope.protocol_version,
         team_id: envelope.team_id, season_id: seasonId, binding_version: 1,
         writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
         payload_digest: envelope.payload_digest, spreadsheet_id: payload.spreadsheet_id,
         tab_id: payload.tab_id,
-        verified_member_ids: payload.items.map((item: { member_id: string }) => item.member_id),
+        [envelope.action === "cloudflarePatchSeasonSheet" ? "verified_season_ids" : "verified_member_ids"]:
+          payload.items.map((item: { member_id?: string; season_id?: string }) => item.member_id ?? item.season_id),
         acknowledged_at: new Date().toISOString() };
       verified.set(envelope.operation_id, receipt);
     }
     if (loseReply) { loseReply = false; throw new Error("Lost after Google committed"); }
+    if (envelope.action === "cloudflarePatchSeasonSheet" && loseSeasonReply) {
+      loseSeasonReply = false;
+      throw new Error("Lost after the season row was committed");
+    }
     return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: receipt });
   });
   const exportNext = async (id: string) => (await call(environment, "/internal/c2/export-next-member",
@@ -122,18 +155,35 @@ it("exports a multi-member event one verified target at a time and survives a lo
   expect(sheetRows).toHaveLength(1);
   expect(await exportNext("export_run_003")).toMatchObject({ data: {
     status: "BATCH_CONFIRMED", member_id: memberIds[1] } });
-  expect(await exportNext("export_run_004")).toMatchObject({ data: { status: "IDLE" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id='out_export_test_001'").one().status).toBe("PENDING");
+  });
+  const seasonNameIndex = SHEET_SCOPES.SEASON.headers.indexOf("name");
+  seasonRow[seasonNameIndex] = "Manual Google edit";
+  expect(await exportNext("export_run_review_004")).toMatchObject({ error: {
+    code: "SYNC_SEASON_NEEDS_REVIEW" } });
+  seasonRow[seasonNameIndex] = "Export Season";
+  expect(await exportNext("export_run_004")).toMatchObject({ error: { code: "BRIDGE_UNAVAILABLE" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id='out_export_test_001'").one().status).toBe("PENDING");
+  });
+  expect(await exportNext("export_run_004")).toMatchObject({ data: {
+    status: "EVENT_CONFIRMED", roster_version: 2 } });
+  expect(await exportNext("export_run_005")).toMatchObject({ data: { status: "IDLE" } });
   expect(sheetRows).toHaveLength(2);
-  expect(patchCalls).toBe(3);
+  expect(seasonRow[SHEET_SCOPES.SEASON.headers.indexOf("roster_version")]).toBe("2");
+  expect(patchCalls).toBe(5);
   await runInDurableObject(stub, async (_instance: TeamState, context) => {
     expect(context.storage.sql.exec<{ status: string }>(
       "SELECT status FROM sync_outbox WHERE outbox_id='out_export_test_001'").one().status).toBe("CONFIRMED");
     expect(context.storage.sql.exec<{ count: number }>(
       "SELECT COUNT(*) AS count FROM sync_baselines WHERE entity_type='MEMBER'").one().count).toBe(12);
-    context.storage.sql.exec(
-      "UPDATE sync_outbox SET status='PENDING',completed_at=NULL WHERE outbox_id='out_export_test_001'").toArray();
+    expect(context.storage.sql.exec<{ roster_version: number }>(
+      "SELECT CAST(json_extract(baseline_json,'$.roster_version') AS INTEGER) AS roster_version FROM sync_baselines WHERE entity_type='SEASON' AND dependency_group='SYSTEM_VERSION'").one().roster_version).toBe(2);
   });
-  expect(await exportNext("export_run_recover_005")).toMatchObject({ data: {
+  expect(await exportNext("export_run_004")).toMatchObject({ data: {
     status: "EVENT_CONFIRMED", outbox_id: "out_export_test_001" } });
   await runInDurableObject(stub, async (_instance: TeamState, context) => {
     const requestKey = context.storage.sql.exec<{ request_key: string }>(
@@ -144,10 +194,8 @@ it("exports a multi-member event one verified target at a time and survives a lo
       JSON.stringify({ action: "updateMember", entity: { season_id: seasonId, member_id: memberIds[0] } }),
       Date.now() - 1000, new Date().toISOString()).toArray();
   });
-  expect(await exportNext("export_run_004")).toMatchObject({ data: { status: "IDLE" } });
-  expect(await exportNext("export_run_recover_005")).toMatchObject({ data: {
-    status: "EVENT_CONFIRMED", outbox_id: "out_export_test_001" } });
-  expect(patchCalls).toBe(3);
+  expect(await exportNext("export_run_005")).toMatchObject({ data: { status: "IDLE" } });
+  expect(patchCalls).toBe(5);
 });
 
 it("keeps member export disabled in production", async () => {
@@ -155,6 +203,76 @@ it("keeps member export disabled in production", async () => {
   const result = await call(environment, "/internal/c2/export-next-member",
     { request_id: "export_disabled_001", season_id: seasonId });
   expect(result.status).toBe(404);
+});
+
+it("advances captured roster versions in order when another member joins before export", async () => {
+  const environment = testEnv("rolling-roster");
+  const stub = await seed(environment);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id='out_export_test_001'",
+      JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
+        member_ids: [memberIds[0]], roster_version: 1 } })).toArray();
+    const requestKey = context.storage.sql.exec<{ request_key: string }>(
+      "SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
+    context.storage.sql.exec(
+      `INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
+       VALUES ('out_export_rolling_002',?,'MEMBERS_IMPORTED',?,'PENDING',?,?)`, requestKey,
+      JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
+        member_ids: [memberIds[1]], roster_version: 2 } }), Date.now() - 1000,
+      "2026-09-02T12:00:00.000Z").toArray();
+  });
+  let seasonRow = seasonCells();
+  const memberRows: string[][] = [];
+  const seasonVersions: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const envelope = JSON.parse(String(init?.body));
+    const payload = JSON.parse(envelope.payload_json);
+    const season = payload.entity_type === "SEASON" || envelope.action === "cloudflarePatchSeasonSheet";
+    const spreadsheetId = season ? "system_export_test_001" : "spreadsheet_export_test_001";
+    const tabId = season ? "100" : "101";
+    if (envelope.action === "cloudflareReadSheetRecords") return Response.json({
+      ok: true, meta: { request_id: envelope.request_id }, data: {
+        protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+        season_id: seasonId, entity_type: payload.entity_type, binding_version: 1,
+        writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
+        payload_digest: envelope.payload_digest, spreadsheet_id: spreadsheetId,
+        tab_name: season ? "Seasons" : "Members", tab_id: tabId, read_at_ms: Date.now(),
+        headers: [...SHEET_SCOPES[season ? "SEASON" : "MEMBER"].headers], secondary: null,
+        rows: (season ? [seasonRow] : memberRows).map((cells, index) =>
+          ({ row_number: index + 2, cells }))
+      }
+    });
+    const item = payload.items[0];
+    if (season) {
+      seasonRow = item.target;
+      seasonVersions.push(seasonRow[SHEET_SCOPES.SEASON.headers.indexOf("roster_version")]);
+    } else memberRows.push(item.target);
+    return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+      status: "verified", protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+      season_id: seasonId, binding_version: 1, writer_epoch: envelope.writer_epoch,
+      operation_id: envelope.operation_id, payload_digest: envelope.payload_digest,
+      spreadsheet_id: payload.spreadsheet_id, tab_id: payload.tab_id,
+      [season ? "verified_season_ids" : "verified_member_ids"]:
+        [season ? seasonId : item.member_id], acknowledged_at: new Date().toISOString()
+    } });
+  });
+  const next = async (request_id: string) => (await call(environment, "/internal/c2/export-next-member",
+    { request_id, season_id: seasonId })).json() as Promise<any>;
+  expect(await next("rolling_export_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED",
+    member_id: memberIds[0] } });
+  expect(await next("rolling_export_002")).toMatchObject({ data: { status: "EVENT_CONFIRMED",
+    roster_version: 1 } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const rows = context.storage.sql.exec<{ outbox_id: string; status: string }>(
+      "SELECT outbox_id,status FROM sync_outbox WHERE topic='MEMBERS_IMPORTED' ORDER BY rowid").toArray();
+    expect(rows.map((row) => row.status)).toEqual(["CONFIRMED", "PENDING"]);
+  });
+  expect(await next("rolling_export_003")).toMatchObject({ data: { status: "BATCH_CONFIRMED",
+    member_id: memberIds[1] } });
+  expect(await next("rolling_export_004")).toMatchObject({ data: { status: "EVENT_CONFIRMED",
+    roster_version: 2 } });
+  expect(seasonVersions).toEqual(["1", "2"]);
+  expect(memberRows).toHaveLength(2);
 });
 
 it("does not overtake an earlier unsupported season event", async () => {
@@ -173,6 +291,40 @@ it("does not overtake an earlier unsupported season event", async () => {
   const result = await call(environment, "/internal/c2/export-next-member",
     { request_id: "export_ordered_001", season_id: seasonId });
   expect(await result.json()).toMatchObject({ error: { code: "SYNC_OUTBOX_BLOCKED" } });
+});
+
+it("does not partially export a legacy event when a later roster version cannot be reconstructed", async () => {
+  const environment = testEnv("uncaptured-roster");
+  const stub = await seed(environment);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const requestKey = context.storage.sql.exec<{ request_key: string }>(
+      "SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
+    context.storage.sql.exec(
+      `INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
+       VALUES ('out_export_uncaptured_002',?,'MEMBERS_IMPORTED',?,'PENDING',?,?)`, requestKey,
+      JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
+        member_ids: [memberIds[0]] } }), Date.now() - 1000, "2026-09-02T12:00:00.000Z").toArray();
+  });
+  const fetchSpy = vi.spyOn(globalThis, "fetch");
+  const response = await call(environment, "/internal/c2/export-next-member",
+    { request_id: "export_uncaptured_001", season_id: seasonId });
+  expect(await response.json()).toMatchObject({ error: { code: "SYNC_ROSTER_VERSION_UNCAPTURED" } });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+it("rejects a member event without member targets instead of confirming its season", async () => {
+  const environment = testEnv("empty-targets");
+  const stub = await seed(environment);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id='out_export_test_001'",
+      JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
+        member_ids: [], roster_version: 2 } })).toArray();
+  });
+  const fetchSpy = vi.spyOn(globalThis, "fetch");
+  const response = await call(environment, "/internal/c2/export-next-member",
+    { request_id: "export_empty_targets_001", season_id: seasonId });
+  expect(await response.json()).toMatchObject({ error: { code: "SYNC_OUTBOX_INVALID" } });
+  expect(fetchSpy).not.toHaveBeenCalled();
 });
 
 it("a late duplicate receipt cannot regress a newer confirmed baseline", async () => {

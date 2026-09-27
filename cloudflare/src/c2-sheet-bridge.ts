@@ -45,6 +45,35 @@ export interface MemberPatchReceipt {
   spreadsheet_id: string; tab_id: string; verified_member_ids: string[]; acknowledged_at: string;
 }
 
+export interface SeasonPatchItem { season_id: string; expected: string[]; target: string[]; }
+export interface SeasonPatchReceipt extends Omit<MemberPatchReceipt, "verified_member_ids"> {
+  verified_season_ids: string[];
+}
+
+export async function patchGoogleSeason(env: Env, input: {
+  request_id: string; batch_id: string; season_id: string; binding_version: number;
+  spreadsheet_id: string; tab_id: string; items: SeasonPatchItem[];
+}): Promise<SeasonPatchReceipt> {
+  const bridge = await callGoogleBridge(env, {
+    action: "cloudflarePatchSeasonSheet", request_id: input.request_id,
+    operation_id: input.batch_id, season_id: input.season_id,
+    binding_version: input.binding_version,
+    payload: { season_id: input.season_id, batch_id: input.batch_id,
+      spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id, items: input.items }
+  });
+  const receipt = bridge.data;
+  if (receipt.status !== "verified" || receipt.protocol_version !== BRIDGE_PROTOCOL ||
+      receipt.team_id !== env.TEAM_ID || receipt.season_id !== input.season_id ||
+      receipt.binding_version !== input.binding_version ||
+      receipt.writer_epoch !== Number(env.WRITER_EPOCH) ||
+      receipt.operation_id !== input.batch_id || receipt.payload_digest !== bridge.payload_digest ||
+      receipt.spreadsheet_id !== input.spreadsheet_id || receipt.tab_id !== input.tab_id ||
+      !Array.isArray(receipt.verified_season_ids) ||
+      JSON.stringify(receipt.verified_season_ids) !== JSON.stringify(input.items.map((item) => item.season_id)) ||
+      typeof receipt.acknowledged_at !== "string" || !Number.isFinite(Date.parse(receipt.acknowledged_at))) invalid();
+  return receipt as unknown as SeasonPatchReceipt;
+}
+
 export async function patchGoogleMembers(env: Env, input: {
   request_id: string; batch_id: string; season_id: string; binding_version: number;
   spreadsheet_id: string; tab_id: string; items: MemberPatchItem[];
