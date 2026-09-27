@@ -106,10 +106,10 @@ schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、�
 
 专用 `c2test` 已部署 `0.10.0-c2-sheet-inspection`／schema v9。受 C2 测试传输门及 Coach session 双重保护的 `check-sheet-differences` 经签名 Apps Script 桥接读取登记的 `Seasons`、`Members`、`SignupsCurrent`、`Practices`、`SeatPlanState`／`SeatPlanCurrent`，再按稳定 ID 和已确认基线逐依赖组比较。排序不改变业务判断；未知列、缺行、重复／改 ID、跨季行和坏座位结构会停止不安全的比较。Sheet 的角色和座位属于同一依赖组。桥接只读，不自动补建缺少的 Tab。
 
-`CONFLICT`、`REVIEW_REQUIRED`、`REJECTED` 被保存到 `sync_conflicts`，相同现场重读不重复建，完整且未截断的复查后消失的记录标记 `SUPERSEDED`；结构损坏时不清除任何旧诊断。响应最多列出 100 条诊断并报告总数，超限时优先保留冲突／拒绝、再保留需核查项，不能将截断列表当作完整同步计划；`conflict_records` 给出本次创建、过时和当前开放数量。后续审查已让报名／座位行 ID 按 C1 业务 ID 规则校验，并在 Apps Script 与 Worker 两端限制主附表合计 100,000 个单元格、2,000,000 个字符及单格 10,000 字符；超限拒绝整次检查。这些修正已部署到独立测试服务，并通过五类真实只读复验；大量差异下的优先级和异常拒绝路径仍以本地测试为证。该入口虽然不改业务数据，仍会写诊断元数据，因此动作清单标为 `writes=true`，但不会触发其他业务维护任务。自动导入、冲突人工处理和 Google 写回未实现；下一步 C2.4 才能处理有界补丁与确认回执。真实隔离证据见 [C2.3 验收](../tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
+`CONFLICT`、`REVIEW_REQUIRED`、`REJECTED` 被保存到 `sync_conflicts`，相同现场重读不重复建，完整且未截断的复查后消失的记录标记 `SUPERSEDED`；结构损坏时不清除任何旧诊断。响应最多列出 100 条诊断并报告总数，超限时优先保留冲突／拒绝、再保留需核查项，不能将截断列表当作完整同步计划；`conflict_records` 给出本次创建、过时和当前开放数量。后续审查已让报名／座位行 ID 按 C1 业务 ID 规则校验，并在 Apps Script 与 Worker 两端限制主附表合计 100,000 个单元格、2,000,000 个字符及单格 10,000 字符；超限拒绝整次检查。这些修正已部署到独立测试服务，并通过五类真实只读复验；大量差异下的优先级和异常拒绝路径仍以本地测试为证。该入口虽然不改业务数据，仍会写诊断元数据，因此动作清单标为 `writes=true`，但不会触发其他业务维护任务。C2.3 入口本身不导入 Google 修改，也不写回业务行；后续 C2.4 成员切片另提供有界补丁与确认回执。真实隔离证据见 [C2.3 验收](../tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
 
-## C2.4 成员导出本地切片
+## C2.4 成员导出隔离切片
 
 `export-next-member` 只处理已到十分钟期限的 Form 成员导入或 Coach 成员修正 outbox，每次准备一个成员目标；一个 Form 事件含多人时逐个持久确认，全部完成后才确认事件。首次发送前重新读取完整登记的 `Members` Tab 和该成员的全部 B 依赖组；Google 行缺失且无 B 时可新增，已有行必须有完整 B 且没有待导入或人工核查的 Google 改动。批次、前值、目标、版本及摘要先写入 SQLite，Google 私有回执表在写业务行前记 `PREPARED`，逐行记 `PARTIAL`，重读通过后记 `VERIFIED`。响应丢失时沿原批次重试，不重新规划目标；仅严格回执能推进捕获版本的 B。独立成员行写入仍受 Google 人工编辑窗口限制，无法声称具备数据库级条件更新。
 
-当前切片仅通过本地测试，**还未部署到 `c2test` 或任何生产服务**。入口受 C2 测试传输门及 `C2_MEMBER_EXPORT_ENABLED` 控制，生产和原 staging 的配置关闭；没有自动调度、普通页面入口、非成员写回或 Google 修改导入。隔离真机写入验收和余下实体批次完成前不能把 C2.4 标记为通过。见 [本地记录](../tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)。
+当前切片已部署到专用 `c2test`／独立 Google Web App v9，完成两名测试成员的真实写入与同一请求重放验收。入口受 C2 测试传输门及 `C2_MEMBER_EXPORT_ENABLED` 控制，生产和原 staging 的配置关闭；没有自动调度、普通页面入口、非成员写回或 Google 修改导入。真实人工冲突、部分写入与响应丢失仍只由本地故障注入覆盖，余下实体批次完成前不能把 C2.4 标记为通过。见 [隔离验收](../tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)。

@@ -4,6 +4,7 @@ import { identifier, object, requestId } from "../../shared/c1-contract";
 import { sha256Base64Url } from "./crypto";
 import { ApiError } from "./http";
 import { firstRow, parseContract, type SqlRow } from "./c1-support";
+import { C1Service } from "./c1-service";
 import { patchGoogleMembers, readGoogleSheet, SHEET_SCOPES,
   type MemberPatchItem, type MemberPatchReceipt } from "./c2-sheet-bridge";
 
@@ -99,6 +100,19 @@ function targetRows(seasonId: string, memberId: string, member: SqlRow,
 export class C2MemberExportService {
   constructor(private readonly ctx: DurableObjectState, private readonly env: Env) {}
 
+  private remember(identity: Awaited<ReturnType<C1Service["createRequestIdentity"]>>,
+    requestId: string, result: Record<string, unknown>): Record<string, unknown> {
+    return this.ctx.storage.transactionSync(() => {
+      const core = new C1Service(this.ctx, this.env);
+      const prior = core.replayRequest(identity.requestKey, identity.payloadDigest);
+      if (prior) return prior;
+      core.recordRequest(identity, "C2:EXPORT", "exportNextMember", requestId, result,
+        { season_id: result.season_id, status: result.status, batch_id: result.batch_id ?? null },
+        new Date().toISOString());
+      return result;
+    });
+  }
+
   async process(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     const input = parseContract(() => {
       const value = object(raw);
@@ -107,7 +121,21 @@ export class C2MemberExportService {
     if (this.env.ENVIRONMENT === "production" || this.env.C2_MEMBER_EXPORT_ENABLED !== "true") {
       throw new ApiError("MEMBER_EXPORT_DISABLED", "The isolated member export is disabled.", 409);
     }
+    const core = new C1Service(this.ctx, this.env);
+    const identity = await core.createRequestIdentity("C2:EXPORT", "exportNextMember",
+      input.request_id, { season_id: input.season_id });
+    const replay = core.replayRequest(identity.requestKey, identity.payloadDigest);
+    if (replay) return replay;
+    const requestBatchId = `batch_${identity.requestKey.slice(7)}`;
     const sql = this.ctx.storage.sql;
+    const ownBatch = firstRow<StoredBatch>(sql,
+      "SELECT * FROM sync_batches WHERE batch_id=?", requestBatchId);
+    if (ownBatch) {
+      if (String(ownBatch.season_id) !== input.season_id) {
+        throw new ApiError("IDEMPOTENCY_CONFLICT", "The request identifier belongs to another season.", 409);
+      }
+      return this.send(ownBatch, input.request_id, identity);
+    }
     const season = firstRow<SqlRow>(sql, "SELECT binding_version FROM seasons WHERE season_id=?", input.season_id);
     const binding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", input.season_id);
     if (!season || !binding || Number(season.binding_version) !== Number(binding.binding_version) ||
@@ -117,7 +145,7 @@ export class C2MemberExportService {
     const batch = firstRow<StoredBatch>(sql,
       `SELECT * FROM sync_batches WHERE season_id=? AND direction='CLOUDFLARE_TO_GOOGLE'
        AND status IN ('PREPARED','SENT','PARTIAL','FAILED') ORDER BY created_at,batch_id LIMIT 1`, input.season_id);
-    if (batch) return this.send(batch, input.request_id);
+    if (batch) return this.send(batch, input.request_id, identity);
     const event = firstRow<ExportEvent>(sql,
       `SELECT rowid AS sequence,outbox_id,payload_json FROM sync_outbox
        WHERE status='PENDING' AND due_at_ms<=? AND
@@ -126,7 +154,8 @@ export class C2MemberExportService {
            ('pullFormResponses','resolveFormSource')) OR
           (topic='CORE_CHANGED' AND json_extract(payload_json,'$.action')='updateMember'))
        ORDER BY rowid LIMIT 1`, Date.now(), input.season_id);
-    if (!event) return { season_id: input.season_id, status: "IDLE" };
+    if (!event) return this.remember(identity, input.request_id,
+      { season_id: input.season_id, status: "IDLE" });
     const earlier = firstRow<SqlRow>(sql,
       `SELECT outbox_id FROM sync_outbox WHERE status='PENDING' AND rowid<?
        AND json_extract(payload_json,'$.entity.season_id')=? LIMIT 1`, event.sequence, input.season_id);
@@ -140,9 +169,17 @@ export class C2MemberExportService {
       .toArray().map((row) => row.entity_id));
     const nextId = ids.find((id) => !verified.has(id));
     if (!nextId) {
-      sql.exec("UPDATE sync_outbox SET status='CONFIRMED',completed_at=?,last_error='' WHERE outbox_id=? AND status='PENDING'",
-        new Date().toISOString(), event.outbox_id).toArray();
-      return { season_id: input.season_id, status: "EVENT_CONFIRMED", outbox_id: event.outbox_id };
+      const result = { season_id: input.season_id, status: "EVENT_CONFIRMED", outbox_id: event.outbox_id };
+      return this.ctx.storage.transactionSync(() => {
+        const prior = core.replayRequest(identity.requestKey, identity.payloadDigest);
+        if (prior) return prior;
+        const at = new Date().toISOString();
+        sql.exec("UPDATE sync_outbox SET status='CONFIRMED',completed_at=?,last_error='' WHERE outbox_id=? AND status='PENDING'",
+          at, event.outbox_id).toArray();
+        core.recordRequest(identity, "C2:EXPORT", "exportNextMember", input.request_id, result,
+          { season_id: input.season_id, status: result.status, outbox_id: event.outbox_id }, at);
+        return result;
+      });
     }
     const member = firstRow<SqlRow>(sql, "SELECT * FROM members WHERE season_id=? AND member_id=?",
       input.season_id, nextId);
@@ -171,7 +208,7 @@ export class C2MemberExportService {
     if (row.target.some((cell) => cell.startsWith("="))) {
       throw new ApiError("SYNC_MEMBER_INVALID", "A member cell cannot start with a Sheet formula.", 409);
     }
-    const batchId = `batch_${(await sha256Base64Url(`${event.outbox_id}\n${nextId}`)).slice(0, 42)}`;
+    const batchId = requestBatchId;
     const target: StoredTarget = { member_id: nextId, ...row,
       spreadsheet_id: page.spreadsheet_id, tab_id: page.tab_id,
       cloud_version: Number(member.member_version) };
@@ -212,11 +249,22 @@ export class C2MemberExportService {
          VALUES (?,0,'MEMBER',?,'ROW',?,?,?,'PENDING',?)`,
         batchId, nextId, expectedDigest, JSON.stringify(target), targetDigest, at).toArray();
     });
-    return this.send(firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batchId)!, input.request_id);
+    return this.send(firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batchId)!,
+      input.request_id, identity);
   }
 
-  private async send(batch: StoredBatch, requestId: string): Promise<Record<string, unknown>> {
+  private async send(batch: StoredBatch, requestId: string,
+    identity: Awaited<ReturnType<C1Service["createRequestIdentity"]>>): Promise<Record<string, unknown>> {
     const sql = this.ctx.storage.sql;
+    const saved = firstRow<SqlRow>(sql, "SELECT * FROM sync_batch_items WHERE batch_id=? AND item_index=0", batch.batch_id);
+    if (!saved || String(saved.entity_type) !== "MEMBER") {
+      throw new ApiError("SYNC_BATCH_INVALID", "The member batch is incomplete.", 409);
+    }
+    const target = JSON.parse(String(saved.target_json)) as StoredTarget;
+    const result = () => ({ season_id: batch.season_id, status: "BATCH_CONFIRMED",
+      batch_id: batch.batch_id, outbox_id: batch.first_outbox_id,
+      member_id: target.member_id, cloud_version: target.cloud_version });
+    if (batch.status === "CONFIRMED") return this.remember(identity, requestId, result());
     const currentBinding = firstRow<SqlRow>(sql,
       "SELECT binding_version,runtime_spreadsheet_id FROM sync_bindings WHERE season_id=?", batch.season_id);
     const currentSeason = firstRow<SqlRow>(sql,
@@ -226,11 +274,6 @@ export class C2MemberExportService {
         Number(currentSeason.binding_version) !== Number(batch.binding_version)) {
       throw new ApiError("SYNC_BINDING_STALE", "A prepared batch belongs to an old season binding.", 409);
     }
-    const saved = firstRow<SqlRow>(sql, "SELECT * FROM sync_batch_items WHERE batch_id=? AND item_index=0", batch.batch_id);
-    if (!saved || String(saved.entity_type) !== "MEMBER") {
-      throw new ApiError("SYNC_BATCH_INVALID", "The member batch is incomplete.", 409);
-    }
-    const target = JSON.parse(String(saved.target_json)) as StoredTarget;
     if (currentBinding.runtime_spreadsheet_id !== target.spreadsheet_id) {
       throw new ApiError("SYNC_BINDING_STALE", "A prepared batch belongs to another Spreadsheet.", 409);
     }
@@ -244,9 +287,6 @@ export class C2MemberExportService {
         Number(batch.writer_epoch) !== Number(this.env.WRITER_EPOCH)) {
       throw new ApiError("SYNC_BATCH_INVALID", "The prepared member batch or writer epoch changed.", 409);
     }
-    const result = () => ({ season_id: batch.season_id, status: "BATCH_CONFIRMED",
-      batch_id: batch.batch_id, outbox_id: batch.first_outbox_id,
-      member_id: target.member_id, cloud_version: target.cloud_version });
     const alreadyConfirmed = this.ctx.storage.transactionSync(() => {
       const current = firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batch.batch_id);
       if (!current || current.payload_digest !== batch.payload_digest) {
@@ -259,7 +299,7 @@ export class C2MemberExportService {
         new Date().toISOString(), batch.batch_id).toArray();
       return false;
     });
-    if (alreadyConfirmed) return result();
+    if (alreadyConfirmed) return this.remember(identity, requestId, result());
     let receipt: MemberPatchReceipt;
     try {
       receipt = await patchGoogleMembers(this.env, { request_id: requestId,
@@ -326,9 +366,12 @@ export class C2MemberExportService {
       }
       sql.exec("UPDATE sync_bindings SET last_push_at=?,updated_at=? WHERE season_id=? AND binding_version=?",
         at, at, batch.season_id, batch.binding_version).toArray();
+      new C1Service(this.ctx, this.env).recordRequest(identity, "C2:EXPORT", "exportNextMember",
+        requestId, result(), { season_id: batch.season_id, status: "BATCH_CONFIRMED",
+          batch_id: batch.batch_id }, at);
     });
     if (bindingChanged) throw new ApiError("SYNC_BINDING_CHANGED_AFTER_WRITE",
       "Google verified the batch, but the binding changed before Cloudflare confirmed it.", 409);
-    return result();
+    return this.remember(identity, requestId, result());
   }
 }

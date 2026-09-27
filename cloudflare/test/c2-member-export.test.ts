@@ -114,8 +114,11 @@ it("exports a multi-member event one verified target at a time and survives a lo
     expect(context.storage.sql.exec<{ status: string }>(
       "SELECT status FROM sync_batches").one().status).toBe("FAILED");
   });
-  expect(await exportNext("export_run_002")).toMatchObject({ data: {
+  const firstConfirmed = await exportNext("export_run_001");
+  expect(firstConfirmed).toMatchObject({ data: {
     status: "BATCH_CONFIRMED", member_id: memberIds[0] } });
+  expect(sheetRows).toHaveLength(1);
+  expect((await exportNext("export_run_001")).data).toEqual(firstConfirmed.data);
   expect(sheetRows).toHaveLength(1);
   expect(await exportNext("export_run_003")).toMatchObject({ data: {
     status: "BATCH_CONFIRMED", member_id: memberIds[1] } });
@@ -127,7 +130,24 @@ it("exports a multi-member event one verified target at a time and survives a lo
       "SELECT status FROM sync_outbox WHERE outbox_id='out_export_test_001'").one().status).toBe("CONFIRMED");
     expect(context.storage.sql.exec<{ count: number }>(
       "SELECT COUNT(*) AS count FROM sync_baselines WHERE entity_type='MEMBER'").one().count).toBe(12);
+    context.storage.sql.exec(
+      "UPDATE sync_outbox SET status='PENDING',completed_at=NULL WHERE outbox_id='out_export_test_001'").toArray();
   });
+  expect(await exportNext("export_run_recover_005")).toMatchObject({ data: {
+    status: "EVENT_CONFIRMED", outbox_id: "out_export_test_001" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const requestKey = context.storage.sql.exec<{ request_key: string }>(
+      "SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
+    context.storage.sql.exec(
+      `INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
+       VALUES ('out_export_later_003',?,'CORE_CHANGED',?,'PENDING',?,?)`, requestKey,
+      JSON.stringify({ action: "updateMember", entity: { season_id: seasonId, member_id: memberIds[0] } }),
+      Date.now() - 1000, new Date().toISOString()).toArray();
+  });
+  expect(await exportNext("export_run_004")).toMatchObject({ data: { status: "IDLE" } });
+  expect(await exportNext("export_run_recover_005")).toMatchObject({ data: {
+    status: "EVENT_CONFIRMED", outbox_id: "out_export_test_001" } });
+  expect(patchCalls).toBe(3);
 });
 
 it("keeps member export disabled in production", async () => {

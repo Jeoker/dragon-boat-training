@@ -1,7 +1,7 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C2.4 isolated member export slice locally verified; remote write acceptance, other entities and production cutover pending",
+  "status": "C2.4 isolated member export slice verified with two real Google test writes and same-request replay; other entities, fault injection and production cutover pending",
   "contract_version": "2026-09-26.c2.4-member",
   "service_version": "0.11.0-c2-member-export",
   "transport_gate": "C2 routes are absent in production. Local or staging diagnostic routes require C2_TEST_KEY; the Form notification instead verifies a fresh Google bridge HMAC, team and writer epoch before reaching the DO. This gate is independent from the Coach session required by management reads.",
@@ -48,7 +48,7 @@
       "writes": true,
       "request": ["request_id", "season_id"],
       "response": ["season_id", "status", "optional batch_id", "optional outbox_id", "optional member_id", "optional cloud_version"],
-      "notes": "Isolated, feature-gated C2.4 member slice. Takes one due member target from a supported outbox event, inspects the registered Member tab and every B/C/G dependency group, persists a single-target batch, and sends a signed idempotent patch. A strict verified receipt advances only the captured member baseline; a multi-member event stays pending until every target batch is verified. Not enabled in production or the original staging deployment."
+      "notes": "Isolated, feature-gated C2.4 member slice. Takes one due member target from a supported outbox event, inspects the registered Member tab and every B/C/G dependency group, persists a single-target batch, and sends a signed idempotent patch. The request ID also binds a durable response: repeating it cannot export the next member. A strict verified receipt advances only the captured member baseline; a multi-member event stays pending until every target batch is verified. Not enabled in production or the original staging deployment."
     },
     "/internal/c2/pull-form-responses": {
       "method": "POST",
