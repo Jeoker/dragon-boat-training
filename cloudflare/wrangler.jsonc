@@ -10,13 +10,14 @@
   },
   "vars": {
     "ENVIRONMENT": "staging",
-    "SERVICE_VERSION": "0.10.0-c2-sheet-inspection",
+    "SERVICE_VERSION": "0.11.0-c2-member-export",
     "CONTRACT_VERSION": "2026-09-19.c0",
     "BACKEND_INSTANCE": "dragon-boat-training-staging",
     "BACKEND_GENERATION": "cf-c2-staging-4",
     "WRITER_EPOCH": "0",
     "TEAM_ID": "pentasus",
-    "C2_FORM_POLL_ENABLED": "false"
+    "C2_FORM_POLL_ENABLED": "false",
+    "C2_MEMBER_EXPORT_ENABLED": "false"
   },
   "durable_objects": {
     "bindings": [
@@ -38,13 +39,14 @@
       "triggers": { "crons": [] },
       "vars": {
         "ENVIRONMENT": "staging",
-        "SERVICE_VERSION": "0.10.0-c2-sheet-inspection",
+        "SERVICE_VERSION": "0.11.0-c2-member-export",
         "CONTRACT_VERSION": "2026-09-19.c0",
         "BACKEND_INSTANCE": "dragon-boat-training-c2-test",
         "BACKEND_GENERATION": "cf-c2-isolated-1",
         "WRITER_EPOCH": "0",
         "TEAM_ID": "pentasus-c2-test",
-        "C2_FORM_POLL_ENABLED": "false"
+        "C2_FORM_POLL_ENABLED": "false",
+        "C2_MEMBER_EXPORT_ENABLED": "true"
       },
       "durable_objects": {
         "bindings": [
@@ -63,7 +65,8 @@
         "BACKEND_GENERATION": "cf-c0-production-1",
         "WRITER_EPOCH": "0",
         "TEAM_ID": "pentasus",
-        "C2_FORM_POLL_ENABLED": "false"
+        "C2_FORM_POLL_ENABLED": "false",
+        "C2_MEMBER_EXPORT_ENABLED": "false"
       },
       "durable_objects": {
         "bindings": [

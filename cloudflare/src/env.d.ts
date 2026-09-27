@@ -7,4 +7,5 @@ interface Env {
   COACH_SESSION_TTL_SECONDS?: string;
   GOOGLE_BRIDGE_URL?: string;
   GOOGLE_BRIDGE_SECRET?: string;
+  C2_MEMBER_EXPORT_ENABLED?: string;
 }

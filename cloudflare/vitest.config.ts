@@ -14,7 +14,8 @@ export default defineConfig({
           SESSION_SECRET: "local-c1-session-secret",
           COACH_SESSION_TTL_SECONDS: "28800",
           GOOGLE_BRIDGE_URL: "https://script.google.com/macros/s/local-fixture/exec",
-          GOOGLE_BRIDGE_SECRET: "local-test-bridge-secret"
+          GOOGLE_BRIDGE_SECRET: "local-test-bridge-secret",
+          C2_MEMBER_EXPORT_ENABLED: "true"
         }
       }
     })

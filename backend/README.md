@@ -23,6 +23,7 @@
 - `src/Setup.gs`：一次性初始化及新增／重置个人 Coach Code。
 - `src/FormBridge.gs`：C2.2 只读 Form 回答分页桥接，仅纳入完整后端构建；不进入独立 C0 探针。
 - `src/SheetBridge.gs`：C2.3 签名只读 Sheet 桥接，按当前赛季绑定读取登记 Tab 的显示值、稳定行号和数字 Tab ID；缺少或超出界限的 Tab 返回错误，不修复、不写入。只纳入完整后端构建，不进入独立 C0 探针。
+- `src/MemberPatchBridge.gs`：C2.4 隔离成员导出切片的签名写入桥接。检查当前绑定、固定列头与每格前值，在私有 `BridgeExportReceipts` 保存批次状态，只修改目标单元格并写后核验；相同批次重试沿用原负载。已进入完整后端构建，但未部署到生产脚本，且不进入 C0 探针。
 - `src/FormNotify.gs`：C2.2 可安装的 Google Forms 提交触发器及签名 Cloudflare 通知。只在 Cloudflare 拥有写入权的赛季显式安装；现有生产赛季继续使用旧 Spreadsheet 提交触发器，不能并装或把独立 `c2test` 通知地址写入生产项目。当前仅在独立 C2 测试项目安装一个 Form 触发器，并已通过真实 responder 页面提交验收。
 - `src/appsscript.json`：V8 运行时配置。
 - `.clasp.json.example`：测试项目配置示例；真实 Script ID 不提交仓库。
@@ -40,6 +41,8 @@
 正式座位角色使用固定的公开与管理投影入口。公开 `practice` 只返回 Coach／Steerer 的显示姓名；经 Coach session 保护的 seating workspace 才附带角色 `member_id`，供“从正式版重置草稿”恢复内部选择。普通 revision 与冻结快照遵守同一隔离规则。
 
 ## 第一次测试部署
+
+C2.4 隔离成员写入在私有系统 Spreadsheet 使用 `BridgeExportReceipts`，它由初始化建立，已有隔离测试文件首次收到批次时也可按固定列头补建。它不属于队员公开页面或 Form 回答区域；生产尚未部署该写入动作。
 
 1. 使用项目所有者长期控制且已授权的 Google 账号创建独立 Apps Script 测试项目；当前可用个人账号，不要求团队邮箱。可以预先创建测试 Spreadsheet，也可以让初始化函数自动建立默认名为 `Dragon Boat Training - P0 Test System` 的私有文件。
 2. 在 Apps Script 的 Script Properties 中设置：

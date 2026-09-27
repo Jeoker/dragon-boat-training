@@ -38,6 +38,37 @@ export interface SheetPage {
   secondary?: { tab_name: string; tab_id: string; headers: string[]; rows: SheetRow[] };
 }
 
+export interface MemberPatchItem { member_id: string; expected: string[] | null; target: string[]; }
+export interface MemberPatchReceipt {
+  status: "verified"; protocol_version: string; team_id: string; season_id: string;
+  binding_version: number; writer_epoch: number; operation_id: string; payload_digest: string;
+  spreadsheet_id: string; tab_id: string; verified_member_ids: string[]; acknowledged_at: string;
+}
+
+export async function patchGoogleMembers(env: Env, input: {
+  request_id: string; batch_id: string; season_id: string; binding_version: number;
+  spreadsheet_id: string; tab_id: string; items: MemberPatchItem[];
+}): Promise<MemberPatchReceipt> {
+  const bridge = await callGoogleBridge(env, {
+    action: "cloudflarePatchMemberSheet", request_id: input.request_id,
+    operation_id: input.batch_id, season_id: input.season_id,
+    binding_version: input.binding_version,
+    payload: { season_id: input.season_id, batch_id: input.batch_id,
+      spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id, items: input.items }
+  });
+  const receipt = bridge.data;
+  if (receipt.status !== "verified" || receipt.protocol_version !== BRIDGE_PROTOCOL ||
+      receipt.team_id !== env.TEAM_ID || receipt.season_id !== input.season_id ||
+      receipt.binding_version !== input.binding_version ||
+      receipt.writer_epoch !== Number(env.WRITER_EPOCH) ||
+      receipt.operation_id !== input.batch_id || receipt.payload_digest !== bridge.payload_digest ||
+      receipt.spreadsheet_id !== input.spreadsheet_id || receipt.tab_id !== input.tab_id ||
+      !Array.isArray(receipt.verified_member_ids) ||
+      JSON.stringify(receipt.verified_member_ids) !== JSON.stringify(input.items.map((item) => item.member_id)) ||
+      typeof receipt.acknowledged_at !== "string" || !Number.isFinite(Date.parse(receipt.acknowledged_at))) invalid();
+  return receipt as unknown as MemberPatchReceipt;
+}
+
 function invalid(): never {
   throw new ApiError("BRIDGE_INVALID_RESPONSE", "The Sheet bridge returned an invalid inspection.", 502, true);
 }

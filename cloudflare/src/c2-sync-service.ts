@@ -13,6 +13,7 @@ import { C2FormService } from "./c2-form-service";
 import { readGoogleSheet, type SheetScope } from "./c2-sheet-bridge";
 import { analyzeSheetPage, type SheetBaseline } from "./c2-sheet-diff";
 import { persistSheetFindings, prepareSheetFindings } from "./c2-sheet-findings";
+import { C2MemberExportService } from "./c2-member-export";
 
 interface PreparedBaseline extends SyncBaselineSnapshot { baseline_digest: string; }
 
@@ -70,6 +71,7 @@ export class C2SyncService {
     if (path === "/internal/c2/get-sync-overview") return this.getOverview(raw);
     if (path === "/internal/c2/list-form-reviews") return this.listFormReviews(raw);
     if (path === "/internal/c2/check-sheet-differences") return this.checkSheetDifferences(raw);
+    if (path === "/internal/c2/export-next-member") return new C2MemberExportService(this.ctx, this.env).process(raw);
     if (path === "/internal/c2/pull-form-responses") return new C2FormService(this.ctx, this.env).pull(raw);
     if (path === "/internal/c2/form-submit-notification") return this.formSubmitNotification(raw);
     if (path === "/internal/c2/poll-active-forms") return this.pollActiveForms(raw);

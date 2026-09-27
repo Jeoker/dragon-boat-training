@@ -102,6 +102,10 @@ var DRAGON_BOAT_SHEET_HEADERS_ = {
     "updated_by",
     "updated_at"
   ],
+  BridgeExportReceipts: [
+    "batch_id", "payload_digest", "season_id", "binding_version", "writer_epoch",
+    "status", "result_json", "created_at", "updated_at"
+  ],
   AnnualArchiveFiles: [
     "archive_year",
     "spreadsheet_id",

@@ -43,6 +43,28 @@ class FakeRange {
   getSheet() {
     return this.sheet;
   }
+
+  createTextFinder(searchText) {
+    const range = this;
+    let entireCell = false;
+    return {
+      matchEntireCell(value) { entireCell = value; return this; },
+      matchCase() { return this; },
+      findAll() {
+        const matches = [];
+        for (let rowOffset = 0; rowOffset < range.rowCount; rowOffset += 1) {
+          for (let columnOffset = 0; columnOffset < range.columnCount; columnOffset += 1) {
+            const cell = String(range.sheet.rows[range.row - 1 + rowOffset]?.[
+              range.column - 1 + columnOffset] ?? "");
+            if (entireCell ? cell === searchText : cell.includes(searchText)) {
+              matches.push({ getRow: () => range.row + rowOffset });
+            }
+          }
+        }
+        return matches;
+      }
+    };
+  }
 }
 
 class FakeSheet {

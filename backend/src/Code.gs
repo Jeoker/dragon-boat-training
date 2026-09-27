@@ -80,6 +80,9 @@ function dragonBoatRoutes_() {
   if (typeof cloudflareReadSheetRecords_ === "function") {
     add("cloudflareReadSheetRecords", "POST", function (r) { return cloudflareReadSheetRecords_(r); });
   }
+  if (typeof cloudflarePatchMemberSheet_ === "function") {
+    add("cloudflarePatchMemberSheet", "POST", function (r) { return cloudflarePatchMemberSheet_(r); });
+  }
   add("getSeasonManagement", "POST", function (r) { return withDragonBoatScriptLock_(function () { return getSeasonManagement_(r); }); });
   add("createSeason", "POST", function (r) { return createSeason_(r); });
   add("validateSeasonBinding", "POST", function (r) { return validateSeasonBindingAction_(r); });

@@ -189,7 +189,7 @@ C2 的每个切片先通过本地规则与 Workers／DO 测试，再连接独立
 
 C2.3 的检查响应最多保留 100 条，并优先展示严重诊断；`truncated=true` 仍表示还有未展示的变化。C2.4 生成补丁时必须按目标记录重新取得和核验完整 B/C/G、绑定及版本，不得直接把这份有界响应列表当成批次输入；诊断截断也不能作为“其余记录没有冲突”的证明。
 
-截至 2026-09-26，C2.2 和 C2.3 阶段门槛已通过。独立 Form／`c2test` 完成真实通知、补扫、故障恢复和旧成员核查；C2.3 增加登记 Sheet 的签名只读读取、B/C/G 分类及 schema v9 持久诊断。结构损坏时停止业务比较；有界返回最多 100 条，截断时不清除旧诊断。缺少确认基线时不猜测导入，冲突记录只保存现场，不直接改变业务行或 Google。原 staging 仍为 schema v8、轮询关闭，生产 Apps Script、Pages 与写入归属未变；严格远端同时竞态和 Google 配额耗尽仍未实证。证据见 [C2.2](tests/C2-FORM-IMPORT-ACCEPTANCE.md)和 [C2.3](tests/C2-SHEET-DIFF-ACCEPTANCE.md)。下一步执行 C2.4 有限补丁与回执，仍不可预先消费 outbox。
+截至 2026-09-26，C2.2 和 C2.3 阶段门槛已通过。独立 Form／`c2test` 完成真实通知、补扫、故障恢复和旧成员核查；C2.3 增加登记 Sheet 的签名只读读取、B/C/G 分类及 schema v9 持久诊断。结构损坏时停止业务比较；有界返回最多 100 条，截断时不清除旧诊断。缺少确认基线时不猜测导入，冲突记录只保存现场，不直接改变业务行或 Google。原 staging 仍为 schema v8、轮询关闭，生产 Apps Script、Pages 与写入归属未变；严格远端同时竞态和 Google 配额耗尽仍未实证。证据见 [C2.2](tests/C2-FORM-IMPORT-ACCEPTANCE.md)和 [C2.3](tests/C2-SHEET-DIFF-ACCEPTANCE.md)。C2.4 已开始，当前只有成员导出本地切片；尚未部署到真实测试文件，不能预先消费任何远端 outbox，见[本地记录](tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)。
 
 ## C4 写入交接与回退
 
