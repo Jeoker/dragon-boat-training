@@ -47,10 +47,10 @@ test("the C2 manifest matches its executable action registry", async () => {
   }).outputText;
   const executable = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
   assert.equal(contract.contract_version, executable.C2_CONTRACT_VERSION);
-  assert.deepEqual(Object.keys(contract.actions).sort(), Object.keys(executable.C2_ACTIONS).sort());
+  assert.deepEqual(Object.keys(contract.actions).sort(), Object.keys(executable.C2_SYNC_ACTIONS).sort());
   for (const [path, definition] of Object.entries(contract.actions)) {
     assert.deepEqual({ method: definition.method, authentication: definition.authentication, writes: definition.writes },
-      executable.C2_ACTIONS[path], path);
+      executable.C2_SYNC_ACTIONS[path], path);
   }
 });
 

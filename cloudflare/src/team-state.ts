@@ -6,7 +6,7 @@ import {
   C1_ACTIONS, C1_CONTRACT_VERSION, C1_HISTORY_ACTIONS, C1_SCHEDULE_ACTIONS, C1_SEATING_ACTIONS,
   C1_SIGNUP_ACTIONS
 } from "../../shared/c1-actions";
-import { C2_ACTIONS, C2_CONTRACT_VERSION } from "../../shared/c2-actions";
+import { C2_SYNC_ACTIONS, C2_CONTRACT_VERSION } from "../../shared/c2-actions";
 import { C1Service } from "./c1-service";
 import { C1HistoryService } from "./c1-history-service";
 import { C1ScheduleService } from "./c1-schedule-service";
@@ -104,7 +104,7 @@ export class TeamState extends DurableObject<Env> {
         return apiSuccess(await this.readState(), this.env, requestId);
       }
       const c1Action = isC1 ? C1_ACTIONS[url.pathname as keyof typeof C1_ACTIONS] : undefined;
-      const c2Action = isC2 ? C2_ACTIONS[url.pathname as keyof typeof C2_ACTIONS] : undefined;
+      const c2Action = isC2 ? C2_SYNC_ACTIONS[url.pathname as keyof typeof C2_SYNC_ACTIONS] : undefined;
       if (isC1 && !c1Action) throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
       if (isC2 && !c2Action) throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
       if (c1Action && request.method !== c1Action.method) {

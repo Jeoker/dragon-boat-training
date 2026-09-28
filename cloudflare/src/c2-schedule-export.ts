@@ -14,7 +14,7 @@ import { assertBridgePatchBudget, patchGoogleScheduleRows, patchGoogleSeason,
 import { projectSchedulePatch, type ScheduleBaselineRow } from "./c2-schedule-projection";
 
 interface ScheduleEvent extends SqlRow { outbox_id: string; payload_json: string;
-  topic: string; due_at_ms: number; sequence: number; }
+  topic: string; due_at_ms: number; }
 interface TargetRow { entity_type: ScheduleSheetScope; row_id: string;
   snapshot: Record<string, unknown>; }
 interface ParsedEvent { season_version: number; rows: TargetRow[]; }
@@ -23,6 +23,8 @@ interface StoredScheduleTarget { entity_type: ScheduleSheetScope; row_id: string
   spreadsheet_id: string; tab_id: string; }
 interface StoredSeasonTarget { season_id: string; expected: string[]; target: string[];
   season_version: number; spreadsheet_id: string; tab_id: string; }
+interface SchedulePageRows { spreadsheet_id: string; tab_id: string;
+  rows: Map<string, string[]>; }
 
 const scheduleScopes = ["SCHEDULE_TEMPLATE", "TRAINING_WEEK", "PRACTICE"] as const;
 const idField = { SCHEDULE_TEMPLATE: "template_id", TRAINING_WEEK: "week_id",
@@ -179,7 +181,7 @@ export class C2ScheduleExportService {
       input.season_id);
     if (unfinished) return this.send(unfinished, input.request_id, identity);
     const event = firstRow<ScheduleEvent>(sql,
-      `SELECT rowid AS sequence,outbox_id,payload_json,topic,due_at_ms FROM sync_outbox
+      `SELECT outbox_id,payload_json,topic,due_at_ms FROM sync_outbox
        WHERE status='PENDING' AND json_extract(payload_json,'$.entity.season_id')=?
        ORDER BY rowid LIMIT 1`, input.season_id);
     if (!event || Number(event.due_at_ms) > Date.now()) {
@@ -197,6 +199,28 @@ export class C2ScheduleExportService {
     return this.prepareSeason(event, parsed.season_version, binding, input.request_id, batchId, identity);
   }
 
+  private async readScheduleRows(event: ScheduleEvent, binding: SqlRow, requestId: string,
+    scope: ScheduleSheetScope, purpose: string): Promise<SchedulePageRows> {
+    const page = await readGoogleSheet(this.env, { request_id: requestId,
+      operation_id: `inspect_${(await sha256Base64Url(`${event.outbox_id}\n${purpose}\n${scope}`)).slice(0, 35)}`,
+      season_id: String(binding.season_id), entity_type: scope,
+      binding_version: Number(binding.binding_version),
+      runtime_spreadsheet_id: String(binding.runtime_spreadsheet_id) });
+    if (canonicalJson(page.headers) !== canonicalJson(SHEET_SCOPES[scope].headers)) {
+      throw new ApiError("SHEET_STRUCTURE_INVALID", "The schedule tab columns changed.", 409);
+    }
+    const rows = new Map<string, string[]>();
+    for (const source of page.rows) {
+      const cells = source.cells;
+      if (cells[0] !== binding.season_id || !/^[A-Za-z0-9_-]{8,128}$/u.test(cells[1]) ||
+          rows.has(cells[1])) {
+        throw new ApiError("SHEET_STRUCTURE_INVALID", "The schedule tab has an invalid row identity.", 409);
+      }
+      rows.set(cells[1], cells);
+    }
+    return { spreadsheet_id: page.spreadsheet_id, tab_id: page.tab_id, rows };
+  }
+
   private async prepareRow(event: ScheduleEvent, row: TargetRow, binding: SqlRow,
     requestId: string, batchId: string,
     identity: Awaited<ReturnType<C1Service["createRequestIdentity"]>>): Promise<Record<string, unknown>> {
@@ -212,29 +236,13 @@ export class C2ScheduleExportService {
       if (row.snapshot.template_id) await this.assertReference(event, binding, requestId,
         "SCHEDULE_TEMPLATE", String(row.snapshot.template_id));
     }
-    const page = await readGoogleSheet(this.env, { request_id: requestId,
-      operation_id: `inspect_${(await sha256Base64Url(`${event.outbox_id}\n${scope}\n${row.row_id}`)).slice(0, 35)}`,
-      season_id: String(binding.season_id), entity_type: scope,
-      binding_version: Number(binding.binding_version),
-      runtime_spreadsheet_id: String(binding.runtime_spreadsheet_id) });
-    const headers = SHEET_SCOPES[scope].headers;
-    if (canonicalJson(page.headers) !== canonicalJson(headers)) {
-      throw new ApiError("SHEET_STRUCTURE_INVALID", "The schedule tab columns changed.", 409);
-    }
-    const byId = new Map<string, string[]>();
-    for (const source of page.rows) {
-      const cells = source.cells;
-      if (cells[0] !== binding.season_id || !/^[A-Za-z0-9_-]{8,128}$/u.test(cells[1]) ||
-          byId.has(cells[1])) throw new ApiError("SHEET_STRUCTURE_INVALID",
-        "The schedule tab has an alien or duplicate row identity.", 409);
-      byId.set(cells[1], cells);
-    }
+    const page = await this.readScheduleRows(event, binding, requestId, scope, row.row_id);
     const baselines = sql.exec<ScheduleBaselineRow>(
       `SELECT dependency_group,baseline_json,cloud_version FROM sync_baselines
        WHERE season_id=? AND binding_version=? AND entity_type=? AND entity_id=?`,
       binding.season_id, binding.binding_version, scope, row.row_id).toArray();
     const projected = projectSchedulePatch({ entity_type: scope, season_id: String(binding.season_id),
-      row_id: row.row_id, snapshot: row.snapshot, google_cells: byId.get(row.row_id) ?? null, baselines });
+      row_id: row.row_id, snapshot: row.snapshot, google_cells: page.rows.get(row.row_id) ?? null, baselines });
     const stored: StoredScheduleTarget = { entity_type: scope, ...projected,
       spreadsheet_id: page.spreadsheet_id, tab_id: page.tab_id };
     const item: SchedulePatchItem = { row_id: stored.row_id, expected: stored.expected, target: stored.target };
@@ -318,28 +326,11 @@ export class C2ScheduleExportService {
     const groups = [...new Set(definitions.map((field) => field.dependency_group))];
     if (baselines.length !== groups.length) throw new ApiError("SYNC_REFERENCE_MISSING",
       "A training reference has no complete confirmed Google baseline.", 409);
-    const page = await readGoogleSheet(this.env, { request_id: requestId,
-      operation_id: `inspect_${(await sha256Base64Url(`${event.outbox_id}\nREF\n${scope}\n${rowId}`)).slice(0, 35)}`,
-      season_id: String(binding.season_id), entity_type: scope,
-      binding_version: Number(binding.binding_version),
-      runtime_spreadsheet_id: String(binding.runtime_spreadsheet_id) });
-    const headers = SHEET_SCOPES[scope].headers;
-    if (canonicalJson(page.headers) !== canonicalJson(headers)) throw new ApiError("SHEET_STRUCTURE_INVALID",
-      "The referenced schedule tab columns changed.", 409);
-    const seen = new Set<string>();
-    for (const source of page.rows) {
-      if (source.cells[0] !== binding.season_id ||
-          !/^[A-Za-z0-9_-]{8,128}$/u.test(source.cells[1]) || seen.has(source.cells[1])) {
-        throw new ApiError("SHEET_STRUCTURE_INVALID",
-          "The referenced schedule tab has an invalid row identity.", 409);
-      }
-      seen.add(source.cells[1]);
-    }
-    const matches = page.rows.filter((source) => source.cells[1] === rowId &&
-      source.cells[0] === binding.season_id);
-    if (matches.length !== 1) throw new ApiError("SYNC_REFERENCE_MISSING",
-      "A training reference is missing or duplicated in Google.", 409);
-    const observed = cellsRecord(headers, matches[0].cells);
+    const page = await this.readScheduleRows(event, binding, requestId, scope, `REF\n${rowId}`);
+    const cells = page.rows.get(rowId);
+    if (!cells) throw new ApiError("SYNC_REFERENCE_MISSING",
+      "A training reference is missing in Google.", 409);
+    const observed = cellsRecord(SHEET_SCOPES[scope].headers, cells);
     for (const group of groups) {
       const saved = baselines.find((baseline) => baseline.dependency_group === group);
       if (!saved) throw new ApiError("SYNC_REFERENCE_MISSING", "A reference baseline group is missing.", 409);
@@ -463,22 +454,7 @@ export class C2ScheduleExportService {
     for (const scope of scheduleScopes) {
       const targets = parsed.rows.filter((row) => row.entity_type === scope);
       if (!targets.length) continue;
-      const page = await readGoogleSheet(this.env, { request_id: requestId,
-        operation_id: `inspect_${(await sha256Base64Url(`${event.outbox_id}\nFINAL\n${scope}`)).slice(0, 35)}`,
-        season_id: String(binding.season_id), entity_type: scope,
-        binding_version: Number(binding.binding_version),
-        runtime_spreadsheet_id: String(binding.runtime_spreadsheet_id) });
-      if (canonicalJson(page.headers) !== canonicalJson(SHEET_SCOPES[scope].headers)) {
-        throw new ApiError("SHEET_STRUCTURE_INVALID", "A schedule tab changed before event confirmation.", 409);
-      }
-      const observed = new Map<string, string[]>();
-      for (const row of page.rows) {
-        if (row.cells[0] !== binding.season_id ||
-            !/^[A-Za-z0-9_-]{8,128}$/u.test(row.cells[1]) || observed.has(row.cells[1])) {
-          throw new ApiError("SHEET_STRUCTURE_INVALID", "A schedule tab has an invalid row identity.", 409);
-        }
-        observed.set(row.cells[1], row.cells);
-      }
+      const page = await this.readScheduleRows(event, binding, requestId, scope, "FINAL");
       for (const target of targets) {
         const saved = firstRow<SqlRow>(sql,
           `SELECT i.target_json FROM sync_batch_items i JOIN sync_batches b ON b.batch_id=i.batch_id
@@ -491,7 +467,7 @@ export class C2ScheduleExportService {
         try { stored = JSON.parse(String(saved.target_json)) as StoredScheduleTarget; }
         catch { throw new ApiError("SYNC_BATCH_INVALID", "A confirmed schedule target is invalid.", 409); }
         if (stored.entity_type !== scope || stored.row_id !== target.row_id ||
-            canonicalJson(observed.get(target.row_id) ?? null) !== canonicalJson(stored.target)) {
+            canonicalJson(page.rows.get(target.row_id) ?? null) !== canonicalJson(stored.target)) {
           throw new ApiError("SYNC_SCHEDULE_NEEDS_REVIEW",
             "A confirmed schedule row changed in Google before event completion.", 409);
         }

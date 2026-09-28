@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { C2_ACTIONS, C2_CONTRACT_VERSION } from "../../shared/c2-actions";
+import { C2_SYNC_ACTIONS, C2_CONTRACT_VERSION } from "../../shared/c2-actions";
 import { SYNC_FIELD_DEFINITIONS, compareSyncRecord, formResponseSourceId,
   normalizeSyncValue } from "../../shared/c2-sync-rules";
 import { legacyCredentialDigest } from "../src/crypto";
@@ -186,7 +186,7 @@ describe("C2.1 sync foundation", () => {
     expect(denied.status).toBe(403);
     expect(await json(denied)).toMatchObject({ error: { code: "C2_ACCESS_DENIED" },
       meta: { contract_version: C2_CONTRACT_VERSION } });
-    for (const path of Object.keys(C2_ACTIONS)) {
+    for (const path of Object.keys(C2_SYNC_ACTIONS)) {
       const hidden = await call(path, { request_id: "hidden_c2_route_001" },
         { ...env, ENVIRONMENT: "production" } as Env);
       expect(hidden.status, path).toBe(404);

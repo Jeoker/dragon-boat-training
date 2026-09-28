@@ -22,8 +22,8 @@
 - `src/TimeUtils.gs`：赛季时区、日历边界及本地训练时间解析。
 - `src/Setup.gs`：一次性初始化及新增／重置个人 Coach Code。
 - `src/FormBridge.gs`：C2.2 只读 Form 回答分页桥接，仅纳入完整后端构建；不进入独立 C0 探针。
-- `src/SheetBridge.gs`：C2.3 签名只读 Sheet 桥接，按当前赛季绑定读取登记 Tab 的显示值、稳定行号和数字 Tab ID；缺少或超出界限的 Tab 返回错误，不修复、不写入。只纳入完整后端构建，不进入独立 C0 探针。
-- `src/BoundRowPatchBridge.gs`：C2.4 有界行补丁。成员及赛季名单版本写回从独立测试 Web App v10 开始验收；目前独立 Web App v12 已恢复为无故障注入的当前源码构建。成员、赛季和排期三表共用签名、绑定／前值检查、私有 `BridgeExportReceipts` 及重放后目标行复核。赛季补丁不能新建赛季行或改写 Google 的 Form／Spreadsheet 绑定列。排期三表补丁只有本地测试，尚无 Worker 排期导出或真实 Google 验收；报名及座位补丁尚未实现。只进入完整后端构建，不进入 C0 探针；生产未部署。
+- `src/SheetBridge.gs`：C2.3 签名只读 Sheet 桥接，按当前赛季绑定读取登记 Tab 的显示值、稳定行号和数字 Tab ID；本地源码还覆盖排期模板／周次及仅返回 ID 的 Coach 引用读取。缺少或超出界限的 Tab 返回错误，不修复、不写入。只纳入完整后端构建，不进入独立 C0 探针。
+- `src/BoundRowPatchBridge.gs`：C2.4 有界行补丁。成员及赛季名单版本写回已在独立 Google 文件验收；排期三表补丁和 Worker 排期导出器仅通过本地测试。补丁共用签名、绑定／前值检查、私有 `BridgeExportReceipts` 及重放后目标行复核。赛季补丁不能新建赛季行或改写 Google 的 Form／Spreadsheet 绑定列。报名及座位补丁尚未实现。只进入完整后端构建，不进入 C0 探针；生产未部署。
 - `src/FormNotify.gs`：C2.2 可安装的 Google Forms 提交触发器及签名 Cloudflare 通知。只在 Cloudflare 拥有写入权的赛季显式安装；现有生产赛季继续使用旧 Spreadsheet 提交触发器，不能并装或把独立 `c2test` 通知地址写入生产项目。当前仅在独立 C2 测试项目安装一个 Form 触发器，并已通过真实 responder 页面提交验收。
 - `src/appsscript.json`：V8 运行时配置。
 - `.clasp.json.example`：测试项目配置示例；真实 Script ID 不提交仓库。
@@ -70,7 +70,7 @@ C2.4 隔离成员写入在私有系统 Spreadsheet 使用 `BridgeExportReceipts`
 
 共享 secret 不出现在请求正文、源码、`wrangler.jsonc`、日志或验收报告中。C0 只验证签名、时间窗、nonce、操作幂等、归属和 Content Service 重定向；Form／Sheet 分段读写、正式回执表及同步恢复属于 C2。生产 Apps Script 在 C4 写入交接前仍是唯一业务后端，不能因为桥接探针存在就关闭旧逻辑。
 
-C2.2 的完整后端源码注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。C2.3 另注册 `cloudflareReadSheetRecords`，只接受五种固定范围；使用当前绑定的系统或赛季 Spreadsheet，返回原始显示单元格供 Worker 检验表结构与 B/C/G。后续审查增加主附表合计 100,000 个单元格、2,000,000 个字符及单格 10,000 字符的上限，超限拒绝整次检查。独立 C2 测试 Apps Script Web App 当前为 v7，已连接隔离文件并完成五类真实只读检查；此前 v6 还完成一次受控人工改名／恢复。用于改名的临时签名测试路由已从最终部署删除。原 C0 桥接探针仍只验证 C0，正式生产 Apps Script 和 Google 文件未连接新后端。证据见 [C2.2](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)及 [C2.3 验收](../tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
+C2.2 的完整后端源码注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。`cloudflareReadSheetRecords` 在当前本地源码允许八种固定范围：赛季、成员、报名、训练、模板、周次、排座草稿和 Coach ID；最后一种只返回 ID，不返回凭据摘要。其余范围返回显示单元格供 Worker 检验结构与 B/C/G。主附表合计最多 100,000 个单元格、2,000,000 个字符，单格最多 10,000 字符；超限拒绝整次检查。独立 C2 测试 Web App 当前仍是 v12 清洁构建，五类原有 Sheet 范围通过真实只读验收；本地新增的 Coach ID 范围未作真实 Google 验收。正式生产 Apps Script 和 Google 文件未连接新后端。最新部署边界见[当前进度](../CURRENT-STATUS.md)。
 
 本地使用 clasp 时，把 `.clasp.json.example` 复制为 `.clasp.json` 并替换测试 Script ID；`rootDir` 已指向 `src`。真实 `.clasp.json`、Code、会话令牌和 Spreadsheet ID 不提交仓库。
 

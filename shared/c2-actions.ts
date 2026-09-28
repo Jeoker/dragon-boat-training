@@ -12,5 +12,3 @@ export const C2_SYNC_ACTIONS = {
   "/internal/c2/poll-active-forms": { method: "POST", authentication: "transport_only", writes: true },
   "/internal/c2/resolve-form-source": { method: "POST", authentication: "session_token", writes: true }
 } as const;
-
-export const C2_ACTIONS = { ...C2_SYNC_ACTIONS } as const;
