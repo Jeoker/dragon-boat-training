@@ -67,15 +67,16 @@ function eventRosterVersion(sql: SqlStorage, event: ExportEvent, current: number
   return current;
 }
 
-function memberTargetsVerified(sql: SqlStorage, outboxId: string): boolean {
+function memberTargetsVerified(sql: SqlStorage, outboxId: string, bindingVersion: number): boolean {
   const event = firstRow<SqlRow>(sql,
     "SELECT payload_json,status FROM sync_outbox WHERE outbox_id=?", outboxId);
   if (event?.status !== "PENDING") return false;
   const ids = memberIds({ outbox_id: outboxId, payload_json: String(event.payload_json), sequence: 0 });
   const done = new Set(sql.exec<{ entity_id: string }>(
     `SELECT i.entity_id FROM sync_batch_items i JOIN sync_batches b ON b.batch_id=i.batch_id
-     WHERE b.first_outbox_id=? AND b.last_outbox_id=? AND b.status='CONFIRMED'
-       AND i.entity_type='MEMBER' AND i.status='VERIFIED'`, outboxId, outboxId)
+     WHERE b.first_outbox_id=? AND b.last_outbox_id=? AND b.binding_version=?
+       AND b.status='CONFIRMED' AND i.entity_type='MEMBER' AND i.status='VERIFIED'`,
+    outboxId, outboxId, bindingVersion)
     .toArray().map((row) => row.entity_id));
   return ids.every((id) => done.has(id));
 }
@@ -233,8 +234,9 @@ export class C2MemberExportService {
     const ids = memberIds(event);
     const verified = new Set(sql.exec<{ entity_id: string }>(
       `SELECT i.entity_id FROM sync_batch_items i JOIN sync_batches b ON b.batch_id=i.batch_id
-       WHERE b.first_outbox_id=? AND b.last_outbox_id=? AND b.status='CONFIRMED'
-         AND i.entity_type='MEMBER' AND i.status='VERIFIED'`, event.outbox_id, event.outbox_id)
+       WHERE b.first_outbox_id=? AND b.last_outbox_id=? AND b.binding_version=?
+         AND b.status='CONFIRMED' AND i.entity_type='MEMBER' AND i.status='VERIFIED'`,
+      event.outbox_id, event.outbox_id, binding.binding_version)
       .toArray().map((row) => row.entity_id));
     const nextId = ids.find((id) => !verified.has(id));
     if (!nextId) {
@@ -546,7 +548,7 @@ export class C2MemberExportService {
           target.expected[seasonHeaders.indexOf("runtime_spreadsheet_id")]) {
       throw new ApiError("SYNC_BINDING_STALE", "The prepared season batch belongs to an old state.", 409);
     }
-    if (!memberTargetsVerified(sql, String(batch.first_outbox_id))) {
+    if (!memberTargetsVerified(sql, String(batch.first_outbox_id), Number(batch.binding_version))) {
       throw new ApiError("SYNC_BATCH_INVALID", "The event members are not all verified.", 409);
     }
     const item: SeasonPatchItem = { season_id: target.season_id,
@@ -602,7 +604,7 @@ export class C2MemberExportService {
             target.expected[seasonHeaders.indexOf("runtime_spreadsheet_id")] ||
           String(currentBatch.payload_digest) !== receipt.payload_digest ||
           String(currentBatch.first_outbox_id) !== String(batch.first_outbox_id) ||
-          !memberTargetsVerified(sql, String(batch.first_outbox_id))) {
+          !memberTargetsVerified(sql, String(batch.first_outbox_id), Number(batch.binding_version))) {
         bindingChanged = true;
         sql.exec("UPDATE sync_batches SET status='PARTIAL',last_error=?,updated_at=? WHERE batch_id=?",
           "Google verified the season row, but the current binding changed; review before confirming.",

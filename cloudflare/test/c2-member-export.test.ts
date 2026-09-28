@@ -293,6 +293,102 @@ it("does not overtake an earlier unsupported season event", async () => {
   expect(await result.json()).toMatchObject({ error: { code: "SYNC_OUTBOX_BLOCKED" } });
 });
 
+it("does not count a prior binding's verified member rows toward the current export", async () => {
+  const environment = testEnv("old-binding-receipts");
+  const stub = await seed(environment);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec(`INSERT INTO sync_batches(batch_id,season_id,binding_version,writer_epoch,direction,status,
+        payload_digest,first_outbox_id,last_outbox_id,created_at,updated_at,completed_at)
+      VALUES ('batch_old_binding_001',?,1,0,'CLOUDFLARE_TO_GOOGLE','CONFIRMED',
+        'old_digest','out_export_test_001','out_export_test_001',?,?,?)`, seasonId,
+    "2026-09-01T12:00:00.000Z", "2026-09-01T12:00:00.000Z", "2026-09-01T12:00:00.000Z").toArray();
+    for (const [index, memberId] of memberIds.entries()) {
+      sql.exec(`INSERT INTO sync_batch_items(batch_id,item_index,entity_type,entity_id,dependency_group,
+        expected_sheet_digest,target_json,target_digest,status,updated_at)
+        VALUES ('batch_old_binding_001',?,'MEMBER',?,'ROW','old_digest','{}','old_digest','VERIFIED',?)`,
+      index, memberId, "2026-09-01T12:00:00.000Z").toArray();
+    }
+    sql.exec("UPDATE seasons SET binding_version=2 WHERE season_id=?", seasonId).toArray();
+    sql.exec("UPDATE sync_bindings SET binding_version=2 WHERE season_id=?", seasonId).toArray();
+    sql.exec(`INSERT INTO sync_baselines(season_id,binding_version,entity_type,entity_id,dependency_group,
+      baseline_json,baseline_digest,cloud_version,sheet_digest,updated_at)
+      SELECT season_id,2,entity_type,entity_id,dependency_group,baseline_json,baseline_digest,
+        cloud_version,sheet_digest,updated_at FROM sync_baselines WHERE season_id=? AND binding_version=1`,
+    seasonId).toArray();
+    sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id='out_export_test_001'",
+      JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
+        member_ids: memberIds, roster_version: 2 } })).toArray();
+  });
+  const readScopes: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const envelope = JSON.parse(String(init?.body));
+    const payload = JSON.parse(envelope.payload_json);
+    if (envelope.action === "cloudflareReadSheetRecords") {
+      readScopes.push(payload.entity_type);
+      return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+        protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+        season_id: seasonId, entity_type: payload.entity_type, binding_version: 2,
+        writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
+        payload_digest: envelope.payload_digest, spreadsheet_id: "spreadsheet_export_test_001",
+        tab_name: "Members", tab_id: "101", read_at_ms: Date.now(),
+        headers: [...SHEET_SCOPES.MEMBER.headers], secondary: null, rows: []
+      } });
+    }
+    return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+      status: "verified", protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+      season_id: seasonId, binding_version: 2, writer_epoch: envelope.writer_epoch,
+      operation_id: envelope.operation_id, payload_digest: envelope.payload_digest,
+      spreadsheet_id: payload.spreadsheet_id, tab_id: payload.tab_id,
+      verified_member_ids: [payload.items[0].member_id], acknowledged_at: new Date().toISOString()
+    } });
+  });
+  const response = await call(environment, "/internal/c2/export-next-member",
+    { request_id: "export_after_binding_001", season_id: seasonId });
+  expect(await response.json()).toMatchObject({ data: {
+    status: "BATCH_CONFIRMED", member_id: memberIds[0] } });
+  expect(readScopes).toEqual(["MEMBER"]);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const current = context.storage.sql.exec<{ binding_version: number }>(
+      `SELECT b.binding_version FROM sync_batches b JOIN sync_batch_items i ON i.batch_id=b.batch_id
+       WHERE i.entity_type='MEMBER' AND i.entity_id=? AND b.status='CONFIRMED'
+       ORDER BY b.binding_version DESC LIMIT 1`, memberIds[0]).one();
+    expect(current.binding_version).toBe(2);
+    expect(context.storage.sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id='out_export_test_001'").one().status).toBe("PENDING");
+  });
+});
+
+it("stops on an unfinished old-binding batch instead of silently discarding a possible partial write", async () => {
+  const environment = testEnv("old-binding-partial");
+  const stub = await seed(environment);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec(`INSERT INTO sync_batches(batch_id,season_id,binding_version,writer_epoch,direction,status,
+      payload_digest,first_outbox_id,last_outbox_id,created_at,updated_at)
+      VALUES ('batch_old_partial_001',?,1,0,'CLOUDFLARE_TO_GOOGLE','PARTIAL',
+        'old_digest','out_export_test_001','out_export_test_001',?,?)`, seasonId,
+    "2026-09-01T12:00:00.000Z", "2026-09-01T12:00:00.000Z").toArray();
+    sql.exec(`INSERT INTO sync_batch_items(batch_id,item_index,entity_type,entity_id,dependency_group,
+      expected_sheet_digest,target_json,target_digest,status,updated_at)
+      VALUES ('batch_old_partial_001',0,'MEMBER',?,'ROW','old_digest',?,'old_digest','PENDING',?)`,
+    memberIds[0], JSON.stringify({ member_id: memberIds[0] }), "2026-09-01T12:00:00.000Z").toArray();
+    sql.exec("UPDATE seasons SET binding_version=2 WHERE season_id=?", seasonId).toArray();
+    sql.exec("UPDATE sync_bindings SET binding_version=2 WHERE season_id=?", seasonId).toArray();
+  });
+  const fetchSpy = vi.spyOn(globalThis, "fetch");
+  const response = await call(environment, "/internal/c2/export-next-member",
+    { request_id: "export_old_partial_001", season_id: seasonId });
+  expect(await response.json()).toMatchObject({ error: { code: "SYNC_BINDING_STALE" } });
+  expect(fetchSpy).not.toHaveBeenCalled();
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec<{ status: string }>(
+      "SELECT status FROM sync_batches WHERE batch_id='batch_old_partial_001'").one().status).toBe("PARTIAL");
+    expect(context.storage.sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id='out_export_test_001'").one().status).toBe("PENDING");
+  });
+});
+
 it("does not partially export a legacy event when a later roster version cannot be reconstructed", async () => {
   const environment = testEnv("uncaptured-roster");
   const stub = await seed(environment);

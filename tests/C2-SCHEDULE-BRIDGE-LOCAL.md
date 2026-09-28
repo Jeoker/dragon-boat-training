@@ -6,6 +6,6 @@ Google 桥接现在可只读检查登记赛季的 `ScheduleTemplates`、`Trainin
 
 原有 C2.3 比较仍只覆盖 `SEASON`、`MEMBER`、`SIGNUP`、`PRACTICE` 和 `SEAT_PLAN_DRAFT`；新模板／周次读取作用域只是传输能力，不被假称已经拥有 B/C/G 语义比较、基线或 Google 修改导入。`c2-sheet-bridge` 明确区分完整传输作用域与已实现的语义比较作用域，避免新增读取类型意外进入 C2.3 判定。
 
-本地测试覆盖三张表的读取、新增、最小更新、同批重放、错前值冲突、模板批次部分成功后恢复，以及错作用域、跨赛季目标、错 Tab 和缺表拒绝。验证：`npm test` 193／193、`npm run cf:test` 104／104、`npm run cf:check`、`npm run build:backend` 通过。Wrangler 在此 Windows 沙箱仍有日志目录 EPERM 与故障注入 alarm 文本，但测试退出码为 0。
+本地测试覆盖三张表的读取、新增、最小更新、同批重放、错前值冲突、模板批次部分成功后恢复，以及错作用域、跨赛季目标、错 Tab 和缺表拒绝。后续整体审查又补了人工改／删行、重复 ID、错误绑定、公式单元格和过大表的拒绝路径，并在 Worker 端验证三种排期回执的作用域与摘要。最新验证：`npm test` 193／193、`npm run cf:test` 113／113、`npm run cf:check`、`npm run build:backend` 通过。Wrangler 在此 Windows 沙箱仍有日志目录 EPERM 与故障注入 alarm 文本，但测试退出码为 0。详见[整体审查](C2-RECENT-CODE-REVIEW-2026-09-27.md)。
 
 下一步必须给模板和周次增加正式的同步实体、版本基线与迁移，再由 Worker 对前一切片固定的 `SCHEDULE_CHANGED` 源快照做 Google 目标投影、逐依赖顺序准备批次并调用本桥接。桥接的逐表 `VERIFIED` 不等于整条排期事件完成；只有模板、周次、训练的所有相关目标均核验并在 Cloudflare 同一事务推进基线和 outbox 后，才能确认事件。旧无快照事件不能据当前行补写。之后再进行独立 Google 文件的真实部分写入／回执丢失验收；生产写入归属保持 Apps Script／Sheets，切换属于 C4。

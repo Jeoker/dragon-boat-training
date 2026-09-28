@@ -11,12 +11,12 @@ const properties = {
   DRAGON_BOAT_BRIDGE_WRITER_EPOCH: "0"
 };
 
-function signed(action, seasonId, payload, operationId) {
+function signed(action, seasonId, payload, operationId, bindingVersion = 1) {
   const payload_json = JSON.stringify(payload);
   const request = {
     action, request_id: `request_${operationId}`,
     protocol_version: "2026-09-19.bridge.v1", direction: "CLOUDFLARE_TO_GOOGLE",
-    team_id: "pentasus", binding_version: `${seasonId}:1`, writer_epoch: 0,
+    team_id: "pentasus", binding_version: `${seasonId}:${bindingVersion}`, writer_epoch: 0,
     timestamp_ms: Date.now(), nonce: `nonce_${crypto.randomUUID().replaceAll("-", "_")}`,
     operation_id: operationId, payload_json,
     payload_digest: crypto.createHash("sha256").update(payload_json).digest("base64url")
@@ -131,6 +131,42 @@ test("schedule bridge reads and patches three bound tabs with verified resumable
   assert.equal(sheet.rows.filter((row) => row[1] === nextId).length, 1);
   assert.equal(sheet.rows.filter((row) => row[1] === thirdId).length, 1);
   assert.equal(receipts.rows.at(-1)[5], "VERIFIED");
+
+  const editId = "batch_schedule_manual_edit";
+  const targetAfterEdit = [...firstRow];
+  targetAfterEdit[6] = "Proposed Dock";
+  sheet.rows[1][6] = "Manual Dock";
+  assert.equal(post(backend.context, signed(template.action, season.season_id,
+    { ...partialPayload, batch_id: editId,
+      items: [{ template_id: template.id, expected: firstRow, target: targetAfterEdit }] }, editId))
+    .error.code, "SHEET_PATCH_CONFLICT");
+  assert.equal(sheet.rows[1][6], "Manual Dock");
+  sheet.rows[1][6] = firstRow[6];
+  const deleted = sheet.rows.splice(1, 1)[0];
+  const deletedId = "batch_schedule_deleted_row";
+  assert.equal(post(backend.context, signed(template.action, season.season_id,
+    { ...partialPayload, batch_id: deletedId,
+      items: [{ template_id: template.id, expected: firstRow, target: targetAfterEdit }] }, deletedId))
+    .error.code, "SHEET_PATCH_CONFLICT");
+  sheet.rows.splice(1, 0, deleted);
+  sheet.rows.push([...deleted]);
+  const duplicateId = "batch_schedule_duplicate_row";
+  assert.equal(post(backend.context, signed(template.action, season.season_id,
+    { ...partialPayload, batch_id: duplicateId,
+      items: [{ template_id: template.id, expected: firstRow, target: targetAfterEdit }] }, duplicateId))
+    .error.code, "SHEET_PATCH_STRUCTURE");
+  sheet.rows.pop();
+  const staleBindingId = "batch_schedule_stale_binding";
+  assert.equal(post(backend.context, signed(template.action, season.season_id,
+    { ...partialPayload, batch_id: staleBindingId,
+      items: [{ template_id: template.id, expected: firstRow, target: targetAfterEdit }] },
+    staleBindingId, 2)).error.code, "BRIDGE_OWNERSHIP_INVALID");
+  const formulaId = "batch_schedule_formula";
+  const formulaTarget = [...targetAfterEdit]; formulaTarget[6] = "=1+1";
+  assert.equal(post(backend.context, signed(template.action, season.season_id,
+    { ...partialPayload, batch_id: formulaId,
+      items: [{ template_id: template.id, expected: firstRow, target: formulaTarget }] }, formulaId))
+    .error.code, "BRIDGE_PAYLOAD_INVALID");
 
   const wrongScopeId = "batch_schedule_wrong_scope";
   assert.equal(post(backend.context, signed("cloudflarePatchPracticeSheet", season.season_id,
