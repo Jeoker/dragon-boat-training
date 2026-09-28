@@ -82,6 +82,8 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
     { field: "address", dependency_group: "TEMPLATE_LOCATION", kind: "TEXT", google_policy: "REVIEW" },
     { field: "map_url", dependency_group: "TEMPLATE_LOCATION", kind: "OPTIONAL_TEXT", google_policy: "REVIEW" },
     { field: "active", dependency_group: "TEMPLATE_LIFECYCLE", kind: "BOOLEAN", google_policy: "REVIEW" },
+    { field: "created_at", dependency_group: "TEMPLATE_AUDIT", kind: "INSTANT", google_policy: "REJECT" },
+    { field: "updated_at", dependency_group: "TEMPLATE_AUDIT", kind: "INSTANT", google_policy: "REVIEW" },
     ...version(["template_version"])
   ],
   TRAINING_WEEK: [
@@ -93,6 +95,8 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
     { field: "confirmed_by", dependency_group: "WEEK_CONFIRMATION", kind: "OPTIONAL_TEXT", google_policy: "REVIEW" },
     { field: "confirmed_at", dependency_group: "WEEK_CONFIRMATION", kind: "OPTIONAL_INSTANT", google_policy: "REVIEW" },
     { field: "published_at", dependency_group: "WEEK_CONFIRMATION", kind: "OPTIONAL_INSTANT", google_policy: "REVIEW" },
+    { field: "created_at", dependency_group: "WEEK_AUDIT", kind: "INSTANT", google_policy: "REJECT" },
+    { field: "updated_at", dependency_group: "WEEK_AUDIT", kind: "INSTANT", google_policy: "REVIEW" },
     ...version(["week_version"]),
     { field: "confirmed_version", dependency_group: "SYSTEM_VERSION", kind: "OPTIONAL_INTEGER", google_policy: "REJECT" }
   ],
@@ -107,6 +111,8 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
   ],
   PRACTICE: [
     ...identity(["season_id", "week_id", "practice_id"]),
+    { field: "template_id", dependency_group: "PRACTICE_SOURCE", kind: "OPTIONAL_TEXT", google_policy: "REJECT" },
+    { field: "generation_key", dependency_group: "PRACTICE_SOURCE", kind: "OPTIONAL_TEXT", google_policy: "REJECT" },
     { field: "start_at", dependency_group: "PRACTICE_SCHEDULE", kind: "INSTANT", google_policy: "REVIEW" },
     { field: "end_at", dependency_group: "PRACTICE_SCHEDULE", kind: "INSTANT", google_policy: "REVIEW" },
     { field: "signup_cutoff_at", dependency_group: "PRACTICE_SCHEDULE", kind: "INSTANT", google_policy: "REVIEW" },
@@ -114,10 +120,15 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
     { field: "location", dependency_group: "PRACTICE_SCHEDULE", kind: "TEXT", google_policy: "REVIEW" },
     { field: "address", dependency_group: "PRACTICE_SCHEDULE", kind: "TEXT", google_policy: "REVIEW" },
     { field: "map_url", dependency_group: "PRACTICE_SCHEDULE", kind: "OPTIONAL_TEXT", google_policy: "REVIEW" },
-    { field: "cancelled", dependency_group: "PRACTICE_LIFECYCLE", kind: "BOOLEAN", google_policy: "REVIEW" },
+    { field: "cancelled_at", dependency_group: "PRACTICE_LIFECYCLE", kind: "OPTIONAL_INSTANT", google_policy: "REVIEW" },
+    { field: "cancelled_by", dependency_group: "PRACTICE_LIFECYCLE", kind: "OPTIONAL_TEXT", google_policy: "REVIEW" },
+    { field: "schedule_published_at", dependency_group: "PRACTICE_LIFECYCLE", kind: "OPTIONAL_INSTANT", google_policy: "REVIEW" },
+    { field: "schedule_published_by", dependency_group: "PRACTICE_LIFECYCLE", kind: "OPTIONAL_TEXT", google_policy: "REVIEW" },
     { field: "left_capacity", dependency_group: "CAPACITY_RESULT", kind: "INTEGER", google_policy: "REJECT" },
     { field: "right_capacity", dependency_group: "CAPACITY_RESULT", kind: "INTEGER", google_policy: "REJECT" },
-    ...version(["practice_version", "signup_version"])
+    { field: "created_at", dependency_group: "PRACTICE_AUDIT", kind: "INSTANT", google_policy: "REJECT" },
+    { field: "updated_at", dependency_group: "PRACTICE_AUDIT", kind: "INSTANT", google_policy: "REVIEW" },
+    ...version(["practice_version"])
   ],
   SEAT_PLAN_DRAFT: [
     ...identity(["season_id", "practice_id"]),

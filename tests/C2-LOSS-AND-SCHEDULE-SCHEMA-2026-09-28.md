@@ -1,5 +1,7 @@
 # C2.4 回执丢失验收与排期同步基础
 
+后续本地字段对齐与目标投影见[排期投影记录](C2-SCHEDULE-PROJECTION-LOCAL-2026-09-28.md)；下文的字段不一致是本切片当时发现、随后已在本地修正的问题。
+
 日期：2026-09-28。两个工作边界不同：回执丢失在独立 `c2test` Worker／Google 文件真实执行；排期同步实体和 schema v10 只在本地完成，**没有部署到任何远端 Worker**。原 staging、Pages 和生产 Apps Script／Sheets 均未改动，生产写入权未切换。
 
 ## 隔离环境：Google 已写、Worker 未收回执

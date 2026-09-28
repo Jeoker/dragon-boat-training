@@ -32,7 +32,6 @@ function validIdentity(scope: ComparedSheetScope, row: Record<string, string>): 
 
 function googleRecord(scope: ComparedSheetScope, row: Record<string, string>,
   seats: Array<{ side: string; row_number: number; member_id: string }> = []): Record<string, unknown> {
-  if (scope === "PRACTICE") return { ...row, cancelled: !!row.cancelled_at };
   if (scope === "SEAT_PLAN_DRAFT") return { ...row, seats };
   return row;
 }
@@ -208,6 +207,15 @@ export function analyzeSheetPage(input: {
       "Some dependency groups have no confirmed B baseline; those groups were not compared.",
       { google: { missing_groups: missing } }));
     for (const [group, baseline] of groups) {
+      const expectedFields = SYNC_FIELD_DEFINITIONS[scope]
+        .filter((definition) => definition.dependency_group === group)
+        .map((definition) => definition.field).sort();
+      if (!expectedFields.length || canonicalJson(Object.keys(baseline).sort()) !== canonicalJson(expectedFields)) {
+        push(finding(entityId, googleRow.row_number, "BASELINE_MAPPING_STALE", "REVIEW_REQUIRED",
+          "The confirmed B baseline uses an older field mapping; re-establish it from verified Cloudflare and Google rows before export.",
+          { baseline, cloudflare: cloudRow, google: googleRow.record }));
+        continue;
+      }
       if (group === "SYSTEM_VERSION") {
         const edited = Object.entries(baseline).filter(([field, value]) =>
           Object.hasOwn(googleRow.record, field) && String(googleRow.record[field]) !== String(value));

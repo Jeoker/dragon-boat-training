@@ -36,7 +36,8 @@ describe("C2.3 Sheet inspection", () => {
     expect(() => normalizeSyncValue("8", "WEEKDAY")).toThrow("weekday");
     const template = { season_id: seasonId, template_id: "template_sheet_001",
       day_of_week: 3, start_time: "18:00", end_time: "20:00", timezone: "America/New_York",
-      location: "River", address: "Dock 1", map_url: "", active: true, template_version: 1 };
+      location: "River", address: "Dock 1", map_url: "", active: true, template_version: 1,
+      created_at: "2026-07-01T12:00:00.000Z", updated_at: "2026-07-01T12:00:00.000Z" };
     const result = analyzeSheetPage({ season_id: seasonId,
       page: page("SCHEDULE_TEMPLATE", [{ ...template, start_time: "19:00" }]),
       baselines: baselines("SCHEDULE_TEMPLATE", template.template_id, template),
@@ -58,7 +59,8 @@ describe("C2.3 Sheet inspection", () => {
     const week = { season_id: seasonId, week_id: "week_sheet_001",
       week_start_date: "2026-07-06", scheduled_open_at: null, status: "DRAFT",
       week_version: 1, confirmed_version: null, confirmed_by: null,
-      confirmed_at: null, published_at: null };
+      confirmed_at: null, published_at: null,
+      created_at: "2026-07-01T12:00:00.000Z", updated_at: "2026-07-01T12:00:00.000Z" };
     const unchanged = analyzeSheetPage({ season_id: seasonId,
       page: page("TRAINING_WEEK", [week]),
       baselines: baselines("TRAINING_WEEK", week.week_id, week), cloud_rows: [week] });
@@ -76,6 +78,38 @@ describe("C2.3 Sheet inspection", () => {
       baselines: baselines("TRAINING_WEEK", week.week_id, week), cloud_rows: [week] });
     expect(duplicate.status).toBe("STRUCTURE_INVALID");
   });
+
+  it("compares practice rows against the actual Google columns and stops on legacy baselines", () => {
+    const practice = { season_id: seasonId, practice_id: "practice_sheet_mapping_01",
+      week_id: "week_sheet_001", template_id: null, generation_key: null,
+      start_at: "2026-07-08T22:00:00.000Z", end_at: "2026-07-09T00:00:00.000Z",
+      timezone: "America/New_York", location: "River", address: "Dock 1", map_url: "",
+      left_capacity: 10, right_capacity: 10, signup_cutoff_at: "2026-07-08T20:00:00.000Z",
+      practice_version: 1, cancelled_at: null, cancelled_by: null,
+      schedule_published_at: null, schedule_published_by: null,
+      created_at: "2026-07-01T12:00:00.000Z", updated_at: "2026-07-01T12:00:00.000Z" };
+    const baseline = baselines("PRACTICE", practice.practice_id, practice);
+    const unchanged = analyzeSheetPage({ season_id: seasonId, page: page("PRACTICE", [practice]),
+      baselines: baseline, cloud_rows: [practice] });
+    expect(unchanged).toMatchObject({ status: "OK", findings_count: 0 });
+    const edited = analyzeSheetPage({ season_id: seasonId,
+      page: page("PRACTICE", [{ ...practice, cancelled_at: "2026-07-02T12:00:00.000Z" }]),
+      baselines: baseline, cloud_rows: [{ ...practice, location: "New dock" }] });
+    expect(edited.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dependency_group: "PRACTICE_LIFECYCLE", outcome: "REVIEW_REQUIRED" }),
+      expect.objectContaining({ dependency_group: "PRACTICE_SCHEDULE", outcome: "EXPORT" })
+    ]));
+    const legacy = baseline.map((row) => row.dependency_group === "PRACTICE_LIFECYCLE"
+      ? { ...row, baseline: { cancelled: false } } : row.dependency_group === "SYSTEM_VERSION"
+        ? { ...row, baseline: { practice_version: 1, signup_version: 0 } } : row);
+    const stale = analyzeSheetPage({ season_id: seasonId, page: page("PRACTICE", [practice]),
+      baselines: legacy, cloud_rows: [practice] });
+    expect(stale.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dependency_group: "BASELINE_MAPPING_STALE", outcome: "REVIEW_REQUIRED" })
+    ]));
+    expect(stale.findings.some((entry) => entry.outcome === "EXPORT")).toBe(false);
+  });
+
   it("classifies independent member changes without making a business mutation", () => {
     const result = analyzeSheetPage({ season_id: seasonId,
       page: page("MEMBER", [{ ...member, default_preference: "RIGHT" }]),

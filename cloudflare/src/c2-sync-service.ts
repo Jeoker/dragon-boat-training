@@ -503,9 +503,7 @@ export class C2SyncService {
       SCHEDULE_TEMPLATE: "SELECT * FROM schedule_templates WHERE season_id=?",
       TRAINING_WEEK: "SELECT * FROM training_weeks WHERE season_id=?",
       SIGNUP: "SELECT * FROM signups WHERE season_id=?",
-      PRACTICE: `SELECT p.*, v.signup_version FROM practices p
-        JOIN practice_versions v ON v.season_id=p.season_id AND v.practice_id=p.practice_id
-        WHERE p.season_id=?`,
+      PRACTICE: "SELECT * FROM practices WHERE season_id=?",
       SEAT_PLAN_DRAFT: `SELECT s.*, v.seat_plan_version, v.published_revision FROM seat_plan_states s
         JOIN practice_versions v ON v.season_id=s.season_id AND v.practice_id=s.practice_id
         WHERE s.season_id=?`
@@ -513,8 +511,7 @@ export class C2SyncService {
     const loadCloudRows = (): Array<Record<string, unknown>> => {
       const rows: Array<Record<string, unknown>> = sql.exec<SqlRow>(
         queries[input.entity_type as ComparedSheetScope], input.season_id).toArray()
-        .map((row): Record<string, unknown> => input.entity_type === "PRACTICE"
-          ? { ...row, cancelled: row.cancelled_at != null } : input.entity_type === "SCHEDULE_TEMPLATE"
+        .map((row): Record<string, unknown> => input.entity_type === "SCHEDULE_TEMPLATE"
             ? { ...row, active: Number(row.active) === 1 } : { ...row });
       if (input.entity_type === "SEAT_PLAN_DRAFT") {
         const seats = sql.exec<SqlRow>(
