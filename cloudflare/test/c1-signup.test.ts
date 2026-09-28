@@ -134,7 +134,7 @@ describe("C1.3 signup and waitlist migration slice", () => {
         "SELECT payload_json FROM sync_outbox WHERE topic='SIGNUPS_CHANGED' ORDER BY rowid").toArray()
         .map((row) => JSON.parse(row.payload_json).entity);
       expect(events).toHaveLength(5);
-      expect(events.every((event: any) => event.snapshot_schema === 1)).toBe(true);
+      expect(events.every((event: any) => event.snapshot_schema === 2)).toBe(true);
       expect(events.map((event: any) => event.signup_version)).toEqual([1, 2, 3, 4, 5]);
       expect(events.every((event: any) => event.practice_version === 2)).toBe(true);
       expect(events[0].signup_rows).toMatchObject([{ member_id: fixture.members[0],

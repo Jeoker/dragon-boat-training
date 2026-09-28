@@ -1,6 +1,7 @@
 import {
   parseImportSeatingSnapshot, parsePublishSeatPlan, parseSaveSeatPlanDraft, parseSeatingWorkspace,
-  type ImportSeatingSnapshotRequest, type SeatSnapshot, type SeatSide, type SeatingRevisionSnapshot
+  type ImportSeatingSnapshotRequest, type SeatSnapshot, type SeatSide,
+  type SeatingRevisionSnapshot, type SeatingStateSnapshot
 } from "../../shared/c1-seating-contract";
 import { canonicalJson } from "../../shared/c1-rules";
 import { ApiError } from "./http";
@@ -37,6 +38,13 @@ export interface SignupSeatingTransition {
   published_revision: number;
   draft_changed: boolean;
   published_changed: boolean;
+  snapshot: SeatingExportSnapshot;
+}
+
+interface SeatingExportSnapshot {
+  state: SeatingStateSnapshot;
+  draft_seats: SeatSnapshot[] | null;
+  revision: SeatingRevisionSnapshot | null;
 }
 
 function seatKey(side: unknown, rowNumber: unknown): string {
@@ -183,6 +191,34 @@ function storedRevisionSeats(sql: SqlStorage, practice: Record<string, unknown>,
     String(practice.season_id), String(practice.practice_id), revisionNumber).toArray();
   return normalizeSeats(practice, rows.map((row) => ({ side: String(row.side) as SeatSide,
     row_number: Number(row.row_number), member_id: String(row.member_id) })));
+}
+
+function seatingExportSnapshot(sql: SqlStorage, practice: Record<string, unknown>,
+  draftChanged: boolean, publishedChanged: boolean): SeatingExportSnapshot {
+  const seasonId = String(practice.season_id);
+  const practiceId = String(practice.practice_id);
+  const state = stateRow(sql, seasonId, practiceId);
+  let revision: SeatingRevisionSnapshot | null = null;
+  if (publishedChanged) {
+    const row = revisionRow(sql, seasonId, practiceId, state.published_revision);
+    if (!row) throw new ApiError("SEATING_SNAPSHOT_MISSING", "The new published revision is missing.", 500);
+    const names = sql.exec<{ member_id: string; display_name: string }>(
+      `SELECT member_id,display_name FROM seat_plan_revision_names
+       WHERE season_id=? AND practice_id=? AND revision_number=? ORDER BY member_id`,
+      seasonId, practiceId, state.published_revision).toArray();
+    revision = { season_id: seasonId, practice_id: practiceId,
+      revision_number: Number(row.revision_number), revision_id: String(row.revision_id),
+      source: String(row.source), seat_plan_version: Number(row.seat_plan_version),
+      coach_member_id: roleValue(row.coach_member_id), steerer_member_id: roleValue(row.steerer_member_id),
+      seats: occupiedSeats(storedRevisionSeats(sql, practice, state.published_revision)),
+      names, published_by: String(row.published_by), published_at: String(row.published_at),
+      request_id: String(row.request_id) };
+  }
+  return { state: { season_id: seasonId, practice_id: practiceId,
+    seat_plan_version: state.seat_plan_version, published_revision: state.published_revision,
+    coach_member_id: state.coach_member_id, steerer_member_id: state.steerer_member_id,
+    updated_by: String(state.updated_by), updated_at: String(state.state_updated_at) },
+  draft_seats: draftChanged ? storedDraftSeats(sql, practice) : null, revision };
 }
 
 function currentNames(sql: SqlStorage, seasonId: string): Map<string, string> {
@@ -440,20 +476,22 @@ export class C1SeatingService {
     if (publishedChanged) {
       const coachId = roleValue(published!.coach_member_id);
       const steererId = roleValue(published!.steerer_member_id);
-      writeRevision(sql, practice, {
+      const revision = {
         revision_number: nextRevision, revision_id: `seat_revision_${requestKey.slice(-32)}_system`,
         source: `SYSTEM_${action.toUpperCase()}`, seat_plan_version: nextSeatVersion,
         coach_member_id: coachId, steerer_member_id: steererId, seats: publishedAfter!,
         names: participantNames(currentNames(sql, seasonId), coachId, steererId, publishedAfter!),
         published_by: actorId, published_at: at, request_id: requestId
-      });
+      };
+      writeRevision(sql, practice, revision);
     }
     sql.exec(
       "UPDATE practice_versions SET seat_plan_version=?, published_revision=? WHERE season_id=? AND practice_id=?",
       nextSeatVersion, nextRevision, seasonId, practiceId).toArray();
     upsertState(sql, seasonId, practiceId, state.coach_member_id, state.steerer_member_id, actorId, at);
     return { seat_plan_version: nextSeatVersion, published_revision: nextRevision,
-      draft_changed: draftChanged, published_changed: publishedChanged };
+      draft_changed: draftChanged, published_changed: publishedChanged,
+      snapshot: seatingExportSnapshot(sql, practice, draftChanged, publishedChanged) };
   }
 
   private preferenceMismatches(practice: Record<string, unknown>, seats: SeatPlanSeat[]): Record<string, unknown>[] {
@@ -611,7 +649,10 @@ export class C1SeatingService {
         { season_id: input.season_id, practice_id: input.practice_id, change_kind: input.change_kind,
           seat_plan_version: nextVersion }, at);
       this.core.enqueueChange(identity, "SEATING_CHANGED", "saveSeatPlanDraft",
-        { season_id: input.season_id, practice_id: input.practice_id, seat_plan_version: nextVersion }, at);
+        { season_id: input.season_id, practice_id: input.practice_id, seat_plan_version: nextVersion,
+          snapshot_schema: 1, practice_version: Number(current.practice_version),
+          signup_version: Number(current.signup_version),
+          seating_snapshot: seatingExportSnapshot(this.ctx.storage.sql, current, true, false) }, at);
     });
     return this.currentView(response, input.season_id, input.practice_id);
   }
@@ -672,7 +713,10 @@ export class C1SeatingService {
           seat_plan_version: currentState.seat_plan_version, preference_mismatches: currentMismatches }, at);
       this.core.enqueueChange(identity, "SEATING_CHANGED", "publishSeatPlan",
         { season_id: input.season_id, practice_id: input.practice_id,
-          seat_plan_version: currentState.seat_plan_version, published_revision: revisionNumber }, at);
+          seat_plan_version: currentState.seat_plan_version, published_revision: revisionNumber,
+          snapshot_schema: 1, practice_version: Number(current.practice_version),
+          signup_version: Number(current.signup_version),
+          seating_snapshot: seatingExportSnapshot(this.ctx.storage.sql, current, false, true) }, at);
     });
     return this.currentView(response, input.season_id, input.practice_id);
   }

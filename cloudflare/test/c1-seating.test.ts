@@ -136,6 +136,41 @@ async function publish(fixture: Fixture, label: string, acknowledge = false, ove
 }
 
 describe("C1.4 seating migration slice", () => {
+  it("captures manual draft and published revision before a later seat edit", async () => {
+    const fixture = await setup("manual-snapshot", 1, 1, 3);
+    await signup(fixture, 0, "LEFT");
+    await ok((await saveDraft(fixture, "manual_snapshot_first", [
+      { row_number: 1, side: "LEFT", member_id: fixture.members[0] }
+    ], fixture.members[1], fixture.members[1])).response);
+    await ok((await publish(fixture, "manual_snapshot_first")).response);
+    await ok((await saveDraft(fixture, "manual_snapshot_later", [],
+      fixture.members[1], fixture.members[1])).response);
+    await runInDurableObject(fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID),
+      async (_instance: TeamState, context) => {
+        const events = context.storage.sql.exec<{ payload_json: string }>(
+          "SELECT payload_json FROM sync_outbox WHERE topic='SEATING_CHANGED' ORDER BY rowid").toArray()
+          .map((row) => JSON.parse(row.payload_json).entity);
+        expect(events).toHaveLength(3);
+        expect(events.every((event: any) => event.snapshot_schema === 1 &&
+          event.practice_version === 2 && event.signup_version === 1)).toBe(true);
+        expect(events[0].seating_snapshot).toMatchObject({
+          state: { seat_plan_version: 1, published_revision: 0,
+            coach_member_id: fixture.members[1], steerer_member_id: fixture.members[1] },
+          draft_seats: [{ side: "LEFT", row_number: 1, member_id: fixture.members[0] },
+            { side: "RIGHT", row_number: 1, member_id: "" }], revision: null
+        });
+        expect(events[1].seating_snapshot).toMatchObject({
+          state: { seat_plan_version: 1, published_revision: 1 }, draft_seats: null,
+          revision: { revision_number: 1, source: "MANUAL", seats: [
+            { side: "LEFT", row_number: 1, member_id: fixture.members[0] }],
+            names: [{ member_id: fixture.members[0], display_name: "Member 1" },
+              { member_id: fixture.members[1], display_name: "Member 2" }] }
+        });
+        expect(events[2].seating_snapshot.state.seat_plan_version).toBe(2);
+        expect(events[2].seating_snapshot.draft_seats.every((seat: any) => !seat.member_id)).toBe(true);
+      });
+  });
+
   it("upgrades schema v4 in place and exposes private empty seating plus a public unpublished plan", async () => {
     const fixture = await setup("schema");
     const stub = fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID);
@@ -246,6 +281,35 @@ describe("C1.4 seating migration slice", () => {
     expect(view.seat_plan.rows[0].left.member_id).toBe(fixture.members[2]);
     const managed = await workspace(fixture, "system_after");
     expect(managed.draft.seats.find((seat: any) => seat.side === "LEFT").member_id).toBe(fixture.members[2]);
+    const readSignupSnapshot = async () => runInDurableObject(
+      fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID),
+      async (_instance: TeamState, context) => JSON.parse(context.storage.sql.exec<{ payload_json: string }>(
+        "SELECT payload_json FROM sync_outbox WHERE topic='SIGNUPS_CHANGED' AND json_extract(payload_json,'$.action')='cancelSignup'").one().payload_json).entity);
+    const captured = await readSignupSnapshot();
+    expect(captured.snapshot_schema).toBe(2);
+    expect(captured.signup_rows).toMatchObject([
+      { member_id: fixture.members[0], status: "CANCELLED" },
+      { member_id: fixture.members[2], status: "CONFIRMED" }
+    ]);
+    expect(captured).toMatchObject({ draft_changed: true, published_changed: true,
+      seat_plan_version: 2, published_revision: 2,
+      seating_snapshot: { state: { seat_plan_version: 2, published_revision: 2 },
+        revision: { revision_number: 2, source: "SYSTEM_CANCELSIGNUP" } } });
+    expect(captured.seating_snapshot.draft_seats).toEqual([
+      { side: "LEFT", row_number: 1, member_id: fixture.members[2] },
+      { side: "RIGHT", row_number: 1, member_id: fixture.members[1] }
+    ]);
+    expect(captured.seating_snapshot.revision.seats).toEqual(
+      captured.seating_snapshot.draft_seats);
+    expect(captured.seating_snapshot.revision.names).toEqual([
+      { member_id: fixture.members[1], display_name: "Member 2" },
+      { member_id: fixture.members[2], display_name: "Member 3" }
+    ]);
+    await ok((await saveDraft(fixture, "system_later", [
+      { row_number: 1, side: "RIGHT", member_id: fixture.members[1] }
+    ])).response);
+    expect((await readSignupSnapshot()).seating_snapshot).toEqual(captured.seating_snapshot);
+    expect((await workspace(fixture, "system_latest")).seat_plan_version).toBe(3);
     await runInDurableObject(fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID),
       async (_instance: TeamState, context) => {
         const revisions = context.storage.sql.exec<any>(
@@ -280,6 +344,39 @@ describe("C1.4 seating migration slice", () => {
     expect(managed.unseated_member_ids).toContain(fixture.members[3]);
     expect(managed.draft.seats.find((seat: any) => seat.side === "LEFT" && seat.row_number === 1).member_id)
       .toBe(fixture.members[1]);
+  });
+
+  it("captures only the seating side changed by a signup transition", async () => {
+    const draftOnly = await setup("snapshot-draft-only", 1, 1, 2);
+    await signup(draftOnly, 0, "LEFT");
+    await ok((await saveDraft(draftOnly, "snapshot_draft", [
+      { row_number: 1, side: "LEFT", member_id: draftOnly.members[0] }
+    ])).response);
+    await signup(draftOnly, 0, "LEFT", "cancel-signup");
+    const event = async (fixture: Fixture) => runInDurableObject(
+      fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID),
+      async (_instance: TeamState, context) => JSON.parse(context.storage.sql.exec<{ payload_json: string }>(
+        "SELECT payload_json FROM sync_outbox WHERE topic='SIGNUPS_CHANGED' AND json_extract(payload_json,'$.action')='cancelSignup'").one().payload_json).entity);
+    const draftEvent = await event(draftOnly);
+    expect(draftEvent).toMatchObject({ draft_changed: true, published_changed: false,
+      seating_snapshot: { state: { seat_plan_version: 2, published_revision: 0 }, revision: null } });
+    expect(draftEvent.seating_snapshot.draft_seats).toEqual([
+      { side: "LEFT", row_number: 1, member_id: "" },
+      { side: "RIGHT", row_number: 1, member_id: "" }
+    ]);
+
+    const publishedOnly = await setup("snapshot-published-only", 1, 1, 2);
+    await signup(publishedOnly, 0, "LEFT");
+    await ok((await saveDraft(publishedOnly, "snapshot_published", [
+      { row_number: 1, side: "LEFT", member_id: publishedOnly.members[0] }
+    ])).response);
+    await ok((await publish(publishedOnly, "snapshot_published")).response);
+    await ok((await saveDraft(publishedOnly, "snapshot_diverged", [])).response);
+    await signup(publishedOnly, 0, "LEFT", "cancel-signup");
+    const publishedEvent = await event(publishedOnly);
+    expect(publishedEvent).toMatchObject({ draft_changed: false, published_changed: true,
+      seating_snapshot: { state: { seat_plan_version: 2, published_revision: 2 },
+        draft_seats: null, revision: { revision_number: 2, seats: [], names: [] } } });
   });
 
   it("removes an incompatible old seat on a preference change without auto-placing the member", async () => {
