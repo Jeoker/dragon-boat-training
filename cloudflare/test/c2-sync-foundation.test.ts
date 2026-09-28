@@ -2,7 +2,8 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { C2_ACTIONS, C2_CONTRACT_VERSION } from "../../shared/c2-actions";
-import { compareSyncRecord, formResponseSourceId, normalizeSyncValue } from "../../shared/c2-sync-rules";
+import { SYNC_FIELD_DEFINITIONS, compareSyncRecord, formResponseSourceId,
+  normalizeSyncValue } from "../../shared/c2-sync-rules";
 import { legacyCredentialDigest } from "../src/crypto";
 import { applySchema, APPLICATION_SCHEMA_VERSION } from "../src/schema";
 import { TeamState } from "../src/team-state";
@@ -446,6 +447,112 @@ describe("C2.1 sync foundation", () => {
 describe("C2.3 protected Sheet difference inspection", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("imports real template/week baselines and reads their Google tabs without business writes", async () => {
+    const testEnv = teamEnv("schedule-sheet-inspection");
+    await seed(testEnv, "schedule_inspection_001");
+    expect((await call("/internal/c2/import-sync-foundation", foundation(
+      "c2_schedule_inspect_binding_001", "c2_schedule_inspect_snapshot_001"), testEnv)).status).toBe(200);
+    const seasonId = "season_c2_open_2026";
+    const at = "2026-09-21T13:00:00.000Z";
+    const template = { season_id: seasonId, template_id: "template_c2_sched_001",
+      day_of_week: 3, start_time: "18:00", end_time: "20:00", timezone: "America/New_York",
+      location: "River", address: "Dock 1", map_url: "", active: true,
+      template_version: 1, created_at: at, updated_at: at };
+    const week = { season_id: seasonId, week_id: "week_c2_sched_001",
+      week_start_date: "2026-09-21", scheduled_open_at: null, status: "DRAFT",
+      week_version: 1, confirmed_version: null, confirmed_by: null,
+      confirmed_at: null, published_at: null, created_at: at, updated_at: at };
+    const stub = testEnv.TEAM_STATE.getByName(testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(`INSERT INTO schedule_templates VALUES (
+        ?, ?, 3, '18:00', '20:00', 'America/New_York', 'River', 'Dock 1', '', 1, 1, ?, ?)`,
+      seasonId, template.template_id, at, at).toArray();
+      context.storage.sql.exec(`INSERT INTO training_weeks VALUES (
+        ?, ?, '2026-09-21', NULL, 'DRAFT', 1, NULL, NULL, NULL, NULL, ?, ?)`,
+      seasonId, week.week_id, at, at).toArray();
+    });
+    const baselineRows = ([scope, record, id]: ["SCHEDULE_TEMPLATE" | "TRAINING_WEEK",
+      Record<string, unknown>, string]) => {
+      const groups = new Map<string, Record<string, unknown>>();
+      for (const field of SYNC_FIELD_DEFINITIONS[scope]) {
+        const group = groups.get(field.dependency_group) ?? {};
+        group[field.field] = normalizeSyncValue(record[field.field], field.kind, field.allowed_values);
+        groups.set(field.dependency_group, group);
+      }
+      return [...groups].map(([dependency_group, baseline]) => ({
+        season_id: seasonId, binding_version: 1, entity_type: scope,
+        entity_id: id, dependency_group, baseline, cloud_version: 1,
+        sheet_digest: "sha256_v1:schedule_fixture_001", updated_at: at
+      }));
+    };
+    const rows = [
+      ...baselineRows(["SCHEDULE_TEMPLATE", template, template.template_id]),
+      ...baselineRows(["TRAINING_WEEK", week, week.week_id])
+    ];
+    const imported = await call("/internal/c2/import-sync-foundation", {
+      request_id: "c2_schedule_baselines_001", source_snapshot_id: "c2_schedule_baselines_snapshot_001",
+      bindings: [], source_imports: [], baselines: rows
+    }, testEnv);
+    expect(imported.status).toBe(200);
+    const invalid = structuredClone(rows.find((row) => row.entity_type === "TRAINING_WEEK" &&
+      row.dependency_group === "IDENTITY")!);
+    invalid.baseline.week_start_date = "2026-09-28";
+    expect(await json(await call("/internal/c2/import-sync-foundation", {
+      request_id: "c2_schedule_identity_bad_001", source_snapshot_id: "c2_schedule_identity_bad_snapshot_001",
+      bindings: [], source_imports: [], baselines: [invalid]
+    }, testEnv))).toMatchObject({ error: { code: "SYNC_MAPPING_INVALID" } });
+    const unknown = { ...rows[0], entity_id: "template_missing_001" };
+    expect(await json(await call("/internal/c2/import-sync-foundation", {
+      request_id: "c2_schedule_reference_bad_001", source_snapshot_id: "c2_schedule_reference_bad_snapshot_001",
+      bindings: [], source_imports: [], baselines: [unknown]
+    }, testEnv))).toMatchObject({ error: { code: "IMPORT_REFERENCE_MISSING" } });
+    const login = await call("/internal/c1/coach-login", {
+      request_id: "c2_schedule_read_login_001", coach_code: "local-test-coach-code"
+    }, testEnv, "C1");
+    const token = (await json(login)).data.result.session_token;
+    const google = { SCHEDULE_TEMPLATE: { ...template }, TRAINING_WEEK: { ...week } };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const envelope = JSON.parse(String(init?.body));
+      const payload = JSON.parse(envelope.payload_json);
+      const scope = payload.entity_type as "SCHEDULE_TEMPLATE" | "TRAINING_WEEK";
+      const record: Record<string, unknown> = google[scope];
+      const headers = SHEET_SCOPES[scope].headers;
+      return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+        protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+        season_id: seasonId, entity_type: scope, binding_version: 1,
+        writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
+        payload_digest: envelope.payload_digest,
+        spreadsheet_id: "spreadsheet_c2_fixture_001", tab_name: SHEET_SCOPES[scope].tab,
+        tab_id: scope === "SCHEDULE_TEMPLATE" ? "102" : "103", read_at_ms: Date.now(),
+        headers, rows: [{ row_number: 2, cells: headers.map((header) => String(record[header] ?? "")) }],
+        secondary: null
+      } });
+    });
+    const inspect = async (scope: "SCHEDULE_TEMPLATE" | "TRAINING_WEEK", id: string) =>
+      json(await call("/internal/c2/check-sheet-differences", {
+        request_id: id, session_token: token, season_id: seasonId, entity_type: scope
+      }, testEnv));
+    expect(await inspect("SCHEDULE_TEMPLATE", "c2_template_same_001"))
+      .toMatchObject({ data: { status: "OK", rows_read: 1, findings_count: 0 } });
+    expect(await inspect("TRAINING_WEEK", "c2_week_same_001"))
+      .toMatchObject({ data: { status: "OK", rows_read: 1, findings_count: 0 } });
+    google.SCHEDULE_TEMPLATE.start_time = "19:00";
+    expect(await inspect("SCHEDULE_TEMPLATE", "c2_template_edited_001"))
+      .toMatchObject({ data: { findings: [expect.objectContaining({
+        dependency_group: "TEMPLATE_SCHEDULE", outcome: "REVIEW_REQUIRED" })] } });
+    google.TRAINING_WEEK.status = "SCHEDULED";
+    expect(await inspect("TRAINING_WEEK", "c2_week_edited_001"))
+      .toMatchObject({ data: { findings: [expect.objectContaining({
+        dependency_group: "WEEK_LIFECYCLE", outcome: "REVIEW_REQUIRED" })] } });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      expect(context.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM sync_batches").one().count).toBe(0);
+      expect(context.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM sync_conflicts WHERE status='OPEN' AND entity_type IN ('SCHEDULE_TEMPLATE','TRAINING_WEEK')")
+        .one().count).toBe(2);
+    });
+  });
+
   it("reads a scoped tab and classifies without mutating the roster or outbox", async () => {
     const testEnv = teamEnv("sheet-read-only");
     await seed(testEnv, "sheet_read_only_001");
@@ -617,7 +724,7 @@ describe("C2.2 Form source import", () => {
       context.storage.sql.exec("UPDATE app_meta SET value='7' WHERE key='schema_version'").toArray();
       applySchema(context.storage);
       expect(context.storage.sql.exec<{ value: string }>(
-        "SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe("9");
+        "SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe(String(APPLICATION_SCHEMA_VERSION));
       expect(context.storage.sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM sync_bindings").one().count).toBe(1);
       expect(context.storage.sql.exec<{ count: number }>(
@@ -627,7 +734,7 @@ describe("C2.2 Form source import", () => {
     });
   });
 
-  it("upgrades a populated v8 conflict to v9 without losing its evidence", async () => {
+  it("upgrades a populated v8 conflict through the current schema without losing its evidence", async () => {
     const testEnv = teamEnv("sheet-schema-upgrade");
     await seed(testEnv, "sheet_schema_001");
     expect((await call("/internal/c2/import-sync-foundation", foundation(
@@ -650,7 +757,83 @@ describe("C2.2 Form source import", () => {
       expect(row).toMatchObject({ status: "OPEN", google_json: '{"display_name_override":"old"}',
         finding_outcome: "CONFLICT", fingerprint: "" });
       expect(context.storage.sql.exec<{ value: string }>(
-        "SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe("9");
+        "SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe(String(APPLICATION_SCHEMA_VERSION));
+    });
+  });
+
+  it("widens populated v9 sync entity constraints without losing rows, receipts or indexes", async () => {
+    const testEnv = teamEnv("schedule-schema-upgrade");
+    await seed(testEnv, "schedule_schema_001");
+    expect((await call("/internal/c2/import-sync-foundation", foundation(
+      "c2_schedule_schema_001", "c2_schedule_schema_snapshot_001"), testEnv)).status).toBe(200);
+    const stub = testEnv.TEAM_STATE.getByName(testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const sql = context.storage.sql;
+      const at = "2026-09-21T13:00:00.000Z";
+      sql.exec(`INSERT INTO sync_conflicts (
+        conflict_id, season_id, binding_version, entity_type, entity_id, dependency_group,
+        baseline_json, cloud_json, google_json, cloud_version, google_digest, status,
+        created_at, finding_outcome, reason, fingerprint
+      ) VALUES ('conflict_schedule_upgrade', 'season_c2_open_2026', 1, 'MEMBER',
+        'member_c2_alice_01', 'MEMBER_NAME', '{}', '{}', '{}', 1, 'sha256_v1:old',
+        'OPEN', ?, 'REVIEW_REQUIRED', 'Retain this finding', 'sha256_v1:finding')`, at).toArray();
+      sql.exec(`INSERT INTO sync_batches (
+        batch_id, season_id, binding_version, writer_epoch, direction, status,
+        payload_digest, first_outbox_id, last_outbox_id, created_at, updated_at
+      ) VALUES ('batch_schedule_upgrade', 'season_c2_open_2026', 1, 0,
+        'CLOUDFLARE_TO_GOOGLE', 'CONFIRMED', 'sha256_v1:batch', NULL, NULL, ?, ?)`, at, at).toArray();
+      sql.exec(`INSERT INTO sync_batch_items (
+        batch_id, item_index, entity_type, entity_id, dependency_group,
+        expected_sheet_digest, target_json, target_digest, status, receipt_json, updated_at
+      ) VALUES ('batch_schedule_upgrade', 0, 'MEMBER', 'member_c2_alice_01', 'ROW',
+        'sha256_v1:expected', '{}', 'sha256_v1:target', 'VERIFIED', '{"status":"verified"}', ?)`, at).toArray();
+      const tables = ["sync_baselines", "sync_conflicts", "sync_batch_items"];
+      const prior = Object.fromEntries(tables.map((table) => [table,
+        sql.exec(`SELECT * FROM ${table}`).toArray()]));
+      // Reconstruct the historical v9 CHECK clauses on this populated fixture.
+      for (const table of tables) {
+        const ddl = sql.exec<{ sql: string }>(
+          "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", table).one().sql;
+        const historical = ddl.replace(table, `${table}_v9`)
+          .replace("'SCHEDULE_TEMPLATE', 'TRAINING_WEEK', ", "");
+        expect(historical).not.toBe(ddl);
+        sql.exec(historical).toArray();
+        sql.exec(`INSERT INTO ${table}_v9 SELECT * FROM ${table}`).toArray();
+        sql.exec(`DROP TABLE ${table}`).toArray();
+        sql.exec(`ALTER TABLE ${table}_v9 RENAME TO ${table}`).toArray();
+      }
+      sql.exec(`CREATE INDEX sync_baselines_entity_idx
+        ON sync_baselines(season_id, entity_type, entity_id, dependency_group)`).toArray();
+      sql.exec(`CREATE INDEX sync_conflicts_open_idx
+        ON sync_conflicts(season_id, status, created_at, conflict_id)`).toArray();
+      expect(() => sql.exec(`INSERT INTO sync_baselines VALUES (
+        'season_c2_open_2026', 1, 'SCHEDULE_TEMPLATE', 'template_old_01', 'IDENTITY',
+        '{}', 'sha256_v1:x', 1, 'sha256_v1:x', ?)`, at).toArray()).toThrow();
+      sql.exec("UPDATE app_meta SET value='9' WHERE key='schema_version'").toArray();
+      applySchema(context.storage);
+      expect(sql.exec<{ value: string }>(
+        "SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe("10");
+      for (const table of tables) expect(sql.exec(`SELECT * FROM ${table}`).toArray()).toEqual(prior[table]);
+      expect(sql.exec("PRAGMA foreign_key_check").toArray()).toEqual([]);
+      for (const index of ["sync_baselines_entity_idx", "sync_conflicts_open_idx"]) {
+        expect(sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='index' AND name=?",
+          index).toArray()).toHaveLength(1);
+      }
+      sql.exec(`INSERT INTO sync_baselines VALUES (
+        'season_c2_open_2026', 1, 'SCHEDULE_TEMPLATE', 'template_new_01', 'IDENTITY',
+        '{}', 'sha256_v1:new', 1, 'sha256_v1:new', ?)`, at).toArray();
+      sql.exec(`INSERT INTO sync_conflicts (
+        conflict_id, season_id, binding_version, entity_type, entity_id, dependency_group,
+        baseline_json, cloud_json, google_json, cloud_version, google_digest, status, created_at
+      ) VALUES ('conflict_week_new', 'season_c2_open_2026', 1, 'TRAINING_WEEK',
+        'week_new_001', 'WEEK_SCHEDULE', '{}', '{}', '{}', 1, 'sha256_v1:new', 'OPEN', ?)`, at).toArray();
+      sql.exec(`INSERT INTO sync_batch_items (
+        batch_id, item_index, entity_type, entity_id, dependency_group,
+        expected_sheet_digest, target_json, target_digest, status, updated_at
+      ) VALUES ('batch_schedule_upgrade', 1, 'TRAINING_WEEK', 'week_new_001', 'ROW',
+        'sha256_v1:expected', '{}', 'sha256_v1:target', 'PENDING', ?)`, at).toArray();
+      applySchema(context.storage);
+      expect(sql.exec("PRAGMA foreign_key_check").toArray()).toEqual([]);
     });
   });
 

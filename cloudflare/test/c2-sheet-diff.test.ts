@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SYNC_FIELD_DEFINITIONS } from "../../shared/c2-sync-rules";
+import { SYNC_FIELD_DEFINITIONS, normalizeSyncValue } from "../../shared/c2-sync-rules";
 import { analyzeSheetPage, type SheetBaseline } from "../src/c2-sheet-diff";
 import { prepareSheetFindings } from "../src/c2-sheet-findings";
 import { SHEET_SCOPES, type SheetPage, type ComparedSheetScope } from "../src/c2-sheet-bridge";
@@ -16,7 +16,8 @@ function baselines(scope: ComparedSheetScope, entityId: string, values: Record<s
   const groups = new Map<string, Record<string, unknown>>();
   for (const definition of SYNC_FIELD_DEFINITIONS[scope]) {
     const group = groups.get(definition.dependency_group) ?? {};
-    group[definition.field] = values[definition.field];
+    group[definition.field] = normalizeSyncValue(values[definition.field],
+      definition.kind, definition.allowed_values);
     groups.set(definition.dependency_group, group);
   }
   return [...groups].map(([dependency_group, baseline]) => ({ entity_id: entityId, dependency_group, baseline }));
@@ -31,6 +32,50 @@ function page(scope: ComparedSheetScope, records: Record<string, unknown>[],
 }
 
 describe("C2.3 Sheet inspection", () => {
+  it("classifies template location exports and requires review of Google schedule edits", () => {
+    expect(() => normalizeSyncValue("8", "WEEKDAY")).toThrow("weekday");
+    const template = { season_id: seasonId, template_id: "template_sheet_001",
+      day_of_week: 3, start_time: "18:00", end_time: "20:00", timezone: "America/New_York",
+      location: "River", address: "Dock 1", map_url: "", active: true, template_version: 1 };
+    const result = analyzeSheetPage({ season_id: seasonId,
+      page: page("SCHEDULE_TEMPLATE", [{ ...template, start_time: "19:00" }]),
+      baselines: baselines("SCHEDULE_TEMPLATE", template.template_id, template),
+      cloud_rows: [{ ...template, location: "New dock", template_version: 2 }] });
+    expect(result.status).toBe("OK");
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dependency_group: "TEMPLATE_SCHEDULE", outcome: "REVIEW_REQUIRED" }),
+      expect.objectContaining({ dependency_group: "TEMPLATE_LOCATION", outcome: "EXPORT" })
+    ]));
+    const corrupted = analyzeSheetPage({ season_id: seasonId,
+      page: page("SCHEDULE_TEMPLATE", [{ ...template, template_version: 9 }]),
+      baselines: baselines("SCHEDULE_TEMPLATE", template.template_id, template),
+      cloud_rows: [template] });
+    expect(corrupted.findings).toContainEqual(expect.objectContaining({
+      dependency_group: "SYSTEM_VERSION", outcome: "REJECTED" }));
+  });
+
+  it("normalizes empty week timestamps and treats edited confirmation versions as protected", () => {
+    const week = { season_id: seasonId, week_id: "week_sheet_001",
+      week_start_date: "2026-07-06", scheduled_open_at: null, status: "DRAFT",
+      week_version: 1, confirmed_version: null, confirmed_by: null,
+      confirmed_at: null, published_at: null };
+    const unchanged = analyzeSheetPage({ season_id: seasonId,
+      page: page("TRAINING_WEEK", [week]),
+      baselines: baselines("TRAINING_WEEK", week.week_id, week), cloud_rows: [week] });
+    expect(unchanged).toMatchObject({ status: "OK", findings_count: 0 });
+    const edited = analyzeSheetPage({ season_id: seasonId,
+      page: page("TRAINING_WEEK", [{ ...week,
+        scheduled_open_at: "2026-07-05T12:00:00.000Z", confirmed_version: 3 }]),
+      baselines: baselines("TRAINING_WEEK", week.week_id, week), cloud_rows: [week] });
+    expect(edited.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dependency_group: "WEEK_SCHEDULE", outcome: "REVIEW_REQUIRED" }),
+      expect.objectContaining({ dependency_group: "SYSTEM_VERSION", outcome: "REJECTED" })
+    ]));
+    const duplicate = analyzeSheetPage({ season_id: seasonId,
+      page: page("TRAINING_WEEK", [week, week]),
+      baselines: baselines("TRAINING_WEEK", week.week_id, week), cloud_rows: [week] });
+    expect(duplicate.status).toBe("STRUCTURE_INVALID");
+  });
   it("classifies independent member changes without making a business mutation", () => {
     const result = analyzeSheetPage({ season_id: seasonId,
       page: page("MEMBER", [{ ...member, default_preference: "RIGHT" }]),

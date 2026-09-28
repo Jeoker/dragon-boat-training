@@ -15,6 +15,8 @@ export interface SheetFinding extends SyncGroupDecision {
 function identity(scope: ComparedSheetScope, row: Record<string, string>): string {
   if (scope === "SEASON") return row.season_id || "";
   if (scope === "MEMBER") return row.member_id || "";
+  if (scope === "SCHEDULE_TEMPLATE") return row.template_id || "";
+  if (scope === "TRAINING_WEEK") return row.week_id || "";
   if (scope === "SIGNUP") return row.practice_id && row.member_id ? `${row.practice_id}:${row.member_id}` : "";
   return row.practice_id || "";
 }

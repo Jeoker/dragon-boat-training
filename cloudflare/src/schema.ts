@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 9;
+export const APPLICATION_SCHEMA_VERSION = 10;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -449,6 +449,82 @@ function applyC2SheetInspectionSchema(sql: SqlStorage): void {
     "ALTER TABLE sync_conflicts ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''").toArray();
 }
 
+// SQLite cannot widen a CHECK constraint in place. Rebuild only the three sync tables
+// that constrain entity_type, inside applySchema's transaction, preserving every row.
+function applyC2ScheduleEntitySchema(sql: SqlStorage): void {
+  const entities = "'SEASON', 'MEMBER', 'SCHEDULE_TEMPLATE', 'TRAINING_WEEK', 'SIGNUP', 'PRACTICE', 'SEAT_PLAN_DRAFT', 'HISTORY'";
+  sql.exec(`
+    CREATE TABLE sync_baselines_v10 (
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      entity_type TEXT NOT NULL CHECK (entity_type IN (${entities})),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      baseline_json TEXT NOT NULL CHECK (json_valid(baseline_json)), baseline_digest TEXT NOT NULL,
+      cloud_version INTEGER NOT NULL CHECK (cloud_version >= 0), sheet_digest TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, binding_version, entity_type, entity_id, dependency_group),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    INSERT INTO sync_baselines_v10 (
+      season_id, binding_version, entity_type, entity_id, dependency_group,
+      baseline_json, baseline_digest, cloud_version, sheet_digest, updated_at
+    ) SELECT season_id, binding_version, entity_type, entity_id, dependency_group,
+      baseline_json, baseline_digest, cloud_version, sheet_digest, updated_at FROM sync_baselines;
+    DROP TABLE sync_baselines;
+    ALTER TABLE sync_baselines_v10 RENAME TO sync_baselines;
+    CREATE INDEX sync_baselines_entity_idx
+      ON sync_baselines(season_id, entity_type, entity_id, dependency_group);
+
+    CREATE TABLE sync_conflicts_v10 (
+      conflict_id TEXT PRIMARY KEY, season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      entity_type TEXT NOT NULL CHECK (entity_type IN (${entities})),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      baseline_json TEXT NOT NULL CHECK (json_valid(baseline_json)),
+      cloud_json TEXT NOT NULL CHECK (json_valid(cloud_json)),
+      google_json TEXT NOT NULL CHECK (json_valid(google_json)),
+      cloud_version INTEGER NOT NULL CHECK (cloud_version >= 0), google_digest TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('OPEN', 'RESOLVED', 'SUPERSEDED')),
+      created_at TEXT NOT NULL, resolved_at TEXT,
+      resolution_json TEXT CHECK (resolution_json IS NULL OR json_valid(resolution_json)),
+      finding_outcome TEXT NOT NULL DEFAULT 'CONFLICT'
+        CHECK (finding_outcome IN ('CONFLICT', 'REVIEW_REQUIRED', 'REJECTED')),
+      reason TEXT NOT NULL DEFAULT '', row_number INTEGER, fingerprint TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    INSERT INTO sync_conflicts_v10 (
+      conflict_id, season_id, binding_version, entity_type, entity_id, dependency_group,
+      baseline_json, cloud_json, google_json, cloud_version, google_digest, status,
+      created_at, resolved_at, resolution_json, finding_outcome, reason, row_number, fingerprint
+    ) SELECT conflict_id, season_id, binding_version, entity_type, entity_id, dependency_group,
+      baseline_json, cloud_json, google_json, cloud_version, google_digest, status,
+      created_at, resolved_at, resolution_json, finding_outcome, reason, row_number, fingerprint
+      FROM sync_conflicts;
+    DROP TABLE sync_conflicts;
+    ALTER TABLE sync_conflicts_v10 RENAME TO sync_conflicts;
+    CREATE INDEX sync_conflicts_open_idx
+      ON sync_conflicts(season_id, status, created_at, conflict_id);
+
+    CREATE TABLE sync_batch_items_v10 (
+      batch_id TEXT NOT NULL, item_index INTEGER NOT NULL CHECK (item_index >= 0),
+      entity_type TEXT NOT NULL CHECK (entity_type IN (${entities})),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      expected_sheet_digest TEXT NOT NULL,
+      target_json TEXT NOT NULL CHECK (json_valid(target_json)), target_digest TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPLIED', 'VERIFIED', 'FAILED', 'SUPERSEDED')),
+      receipt_json TEXT CHECK (receipt_json IS NULL OR json_valid(receipt_json)), updated_at TEXT NOT NULL,
+      PRIMARY KEY (batch_id, item_index),
+      FOREIGN KEY (batch_id) REFERENCES sync_batches(batch_id)
+    );
+    INSERT INTO sync_batch_items_v10 (
+      batch_id, item_index, entity_type, entity_id, dependency_group,
+      expected_sheet_digest, target_json, target_digest, status, receipt_json, updated_at
+    ) SELECT batch_id, item_index, entity_type, entity_id, dependency_group,
+      expected_sheet_digest, target_json, target_digest, status, receipt_json, updated_at
+      FROM sync_batch_items;
+    DROP TABLE sync_batch_items;
+    ALTER TABLE sync_batch_items_v10 RENAME TO sync_batch_items;
+  `).toArray();
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -468,6 +544,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 7) applyC2SyncFoundationSchema(sql);
     if (currentVersion < 8) applyC2FormImportSchema(sql);
     if (currentVersion < 9) applyC2SheetInspectionSchema(sql);
+    if (currentVersion < 10) applyC2ScheduleEntitySchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

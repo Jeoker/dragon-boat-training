@@ -1,9 +1,11 @@
 import { canonicalJson } from "./c1-rules";
 
-export type SyncEntityType = "SEASON" | "MEMBER" | "SIGNUP" | "PRACTICE" | "SEAT_PLAN_DRAFT" | "HISTORY";
+export type SyncEntityType = "SEASON" | "MEMBER" | "SCHEDULE_TEMPLATE" | "TRAINING_WEEK" |
+  "SIGNUP" | "PRACTICE" | "SEAT_PLAN_DRAFT" | "HISTORY";
 export type GoogleChangePolicy = "AUTO" | "VALIDATE" | "REVIEW" | "REJECT";
-export type SyncValueKind = "TEXT" | "OPTIONAL_TEXT" | "INTEGER" | "BOOLEAN" | "DATE" | "TIME" |
-  "INSTANT" | "PREFERENCE" | "STATUS" | "JSON";
+export type SyncValueKind = "TEXT" | "OPTIONAL_TEXT" | "INTEGER" | "OPTIONAL_INTEGER" | "WEEKDAY" |
+  "BOOLEAN" | "DATE" | "TIME" | "INSTANT" | "OPTIONAL_INSTANT" |
+  "PREFERENCE" | "STATUS" | "JSON";
 
 export interface SyncFieldDefinition {
   field: string;
@@ -70,6 +72,30 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
       allowed_values: ["ACTIVE", "INACTIVE"] },
     ...version(["member_version"])
   ],
+  SCHEDULE_TEMPLATE: [
+    ...identity(["season_id", "template_id"]),
+    { field: "day_of_week", dependency_group: "TEMPLATE_SCHEDULE", kind: "WEEKDAY", google_policy: "REVIEW" },
+    { field: "start_time", dependency_group: "TEMPLATE_SCHEDULE", kind: "TIME", google_policy: "REVIEW" },
+    { field: "end_time", dependency_group: "TEMPLATE_SCHEDULE", kind: "TIME", google_policy: "REVIEW" },
+    { field: "timezone", dependency_group: "TEMPLATE_SCHEDULE", kind: "TEXT", google_policy: "REVIEW" },
+    { field: "location", dependency_group: "TEMPLATE_LOCATION", kind: "TEXT", google_policy: "REVIEW" },
+    { field: "address", dependency_group: "TEMPLATE_LOCATION", kind: "TEXT", google_policy: "REVIEW" },
+    { field: "map_url", dependency_group: "TEMPLATE_LOCATION", kind: "OPTIONAL_TEXT", google_policy: "REVIEW" },
+    { field: "active", dependency_group: "TEMPLATE_LIFECYCLE", kind: "BOOLEAN", google_policy: "REVIEW" },
+    ...version(["template_version"])
+  ],
+  TRAINING_WEEK: [
+    ...identity(["season_id", "week_id"]),
+    { field: "week_start_date", dependency_group: "IDENTITY", kind: "DATE", google_policy: "REJECT" },
+    { field: "scheduled_open_at", dependency_group: "WEEK_SCHEDULE", kind: "OPTIONAL_INSTANT", google_policy: "REVIEW" },
+    { field: "status", dependency_group: "WEEK_LIFECYCLE", kind: "STATUS", google_policy: "REVIEW",
+      allowed_values: ["DRAFT", "SCHEDULED", "OPENED"] },
+    { field: "confirmed_by", dependency_group: "WEEK_CONFIRMATION", kind: "OPTIONAL_TEXT", google_policy: "REVIEW" },
+    { field: "confirmed_at", dependency_group: "WEEK_CONFIRMATION", kind: "OPTIONAL_INSTANT", google_policy: "REVIEW" },
+    { field: "published_at", dependency_group: "WEEK_CONFIRMATION", kind: "OPTIONAL_INSTANT", google_policy: "REVIEW" },
+    ...version(["week_version"]),
+    { field: "confirmed_version", dependency_group: "SYSTEM_VERSION", kind: "OPTIONAL_INTEGER", google_policy: "REJECT" }
+  ],
   SIGNUP: [
     ...identity(["season_id", "practice_id", "member_id"]),
     { field: "preference", dependency_group: "SIGNUP_STATE", kind: "PREFERENCE", google_policy: "VALIDATE" },
@@ -110,6 +136,15 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
 
 export function normalizeSyncValue(value: unknown, kind: SyncValueKind,
   allowedValues?: readonly string[]): unknown {
+  if (kind === "OPTIONAL_INTEGER" || kind === "OPTIONAL_INSTANT") {
+    if (value === null || value === undefined || value === "") return "";
+    return normalizeSyncValue(value, kind === "OPTIONAL_INTEGER" ? "INTEGER" : "INSTANT", allowedValues);
+  }
+  if (kind === "WEEKDAY") {
+    const day = normalizeSyncValue(value, "INTEGER");
+    if (typeof day !== "number" || day < 1 || day > 7) throw new Error("Expected a weekday from 1 to 7.");
+    return day;
+  }
   if (kind === "TEXT" || kind === "OPTIONAL_TEXT") {
     if ((value === null || value === undefined || value === "") && kind === "OPTIONAL_TEXT") return "";
     if (typeof value !== "string") throw new Error("Expected text.");

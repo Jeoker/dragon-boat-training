@@ -79,7 +79,8 @@ export interface ResolveFormSourceRequest extends SessionRequest {
   source_version: number;
 }
 
-const ENTITY_TYPES = ["SEASON", "MEMBER", "SIGNUP", "PRACTICE", "SEAT_PLAN_DRAFT", "HISTORY"] as const;
+const ENTITY_TYPES = ["SEASON", "MEMBER", "SCHEDULE_TEMPLATE", "TRAINING_WEEK",
+  "SIGNUP", "PRACTICE", "SEAT_PLAN_DRAFT", "HISTORY"] as const;
 
 function nullableTimestamp(input: Input, field: string): string | null {
   if (input[field] === null || input[field] === undefined || input[field] === "") return null;
@@ -221,7 +222,8 @@ export function parseSyncOverview(value: unknown): SyncOverviewRequest {
 export function parseCheckSheetDifferences(value: unknown): CheckSheetDifferencesRequest {
   const input = object(value);
   return { ...sessionRequest(input), season_id: identifier(input, "season_id"),
-    entity_type: enumeration(input, "entity_type", ["SEASON", "MEMBER", "SIGNUP", "PRACTICE",
+    entity_type: enumeration(input, "entity_type", ["SEASON", "MEMBER", "SCHEDULE_TEMPLATE",
+      "TRAINING_WEEK", "SIGNUP", "PRACTICE",
       "SEAT_PLAN_DRAFT"] as const) };
 }
 

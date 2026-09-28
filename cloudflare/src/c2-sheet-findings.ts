@@ -30,9 +30,12 @@ function cloudVersion(scope: SheetScope, finding: SheetFinding,
     return signupVersions.get(String(row?.practice_id ?? "")) ?? 0;
   }
   const row = cloudRows.find((candidate) => (scope === "MEMBER" ? candidate.member_id :
-    scope === "SEASON" ? candidate.season_id : candidate.practice_id) === finding.entity_id);
+    scope === "SEASON" ? candidate.season_id :
+      scope === "SCHEDULE_TEMPLATE" ? candidate.template_id :
+        scope === "TRAINING_WEEK" ? candidate.week_id : candidate.practice_id) === finding.entity_id);
   const field = scope === "SEASON" ? "season_version" : scope === "MEMBER" ? "member_version" :
-    scope === "PRACTICE" ? "practice_version" : "seat_plan_version";
+    scope === "SCHEDULE_TEMPLATE" ? "template_version" : scope === "TRAINING_WEEK" ? "week_version" :
+      scope === "PRACTICE" ? "practice_version" : "seat_plan_version";
   const version = Number(row?.[field] ?? 0);
   return Number.isSafeInteger(version) && version >= 0 ? version : 0;
 }

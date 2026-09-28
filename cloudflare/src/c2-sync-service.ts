@@ -218,6 +218,16 @@ export class C2SyncService {
       "SELECT 1 AS present FROM members WHERE season_id=? AND member_id=?", baseline.season_id, baseline.entity_id)) {
       throw new ApiError("IMPORT_REFERENCE_MISSING", "A member baseline references an unknown member.", 409);
     }
+    if (baseline.entity_type === "SCHEDULE_TEMPLATE" && !firstRow<SqlRow>(this.ctx.storage.sql,
+      "SELECT 1 AS present FROM schedule_templates WHERE season_id=? AND template_id=?",
+      baseline.season_id, baseline.entity_id)) {
+      throw new ApiError("IMPORT_REFERENCE_MISSING", "A template baseline references an unknown template.", 409);
+    }
+    if (baseline.entity_type === "TRAINING_WEEK" && !firstRow<SqlRow>(this.ctx.storage.sql,
+      "SELECT 1 AS present FROM training_weeks WHERE season_id=? AND week_id=?",
+      baseline.season_id, baseline.entity_id)) {
+      throw new ApiError("IMPORT_REFERENCE_MISSING", "A week baseline references an unknown week.", 409);
+    }
     if (["PRACTICE", "SEAT_PLAN_DRAFT", "HISTORY"].includes(baseline.entity_type) &&
         !firstRow<SqlRow>(this.ctx.storage.sql,
           "SELECT 1 AS present FROM practices WHERE season_id=? AND practice_id=?", baseline.season_id, baseline.entity_id)) {
@@ -238,6 +248,14 @@ export class C2SyncService {
         const member = firstRow<SqlRow>(this.ctx.storage.sql,
           "SELECT source_key FROM members WHERE season_id=? AND member_id=?", baseline.season_id, baseline.entity_id)!;
         expected = { season_id: baseline.season_id, member_id: baseline.entity_id, source_key: member.source_key };
+      } else if (baseline.entity_type === "SCHEDULE_TEMPLATE") {
+        expected = { season_id: baseline.season_id, template_id: baseline.entity_id };
+      } else if (baseline.entity_type === "TRAINING_WEEK") {
+        const week = firstRow<SqlRow>(this.ctx.storage.sql,
+          "SELECT week_start_date FROM training_weeks WHERE season_id=? AND week_id=?",
+          baseline.season_id, baseline.entity_id)!;
+        expected = { season_id: baseline.season_id, week_id: baseline.entity_id,
+          week_start_date: week.week_start_date };
       } else if (baseline.entity_type === "SIGNUP") {
         const [practiceId, memberId] = baseline.entity_id.split(":");
         expected = { season_id: baseline.season_id, practice_id: practiceId, member_id: memberId };
@@ -482,6 +500,8 @@ export class C2SyncService {
     const queries: Record<ComparedSheetScope, string> = {
       SEASON: "SELECT * FROM seasons WHERE season_id=?",
       MEMBER: "SELECT * FROM members WHERE season_id=?",
+      SCHEDULE_TEMPLATE: "SELECT * FROM schedule_templates WHERE season_id=?",
+      TRAINING_WEEK: "SELECT * FROM training_weeks WHERE season_id=?",
       SIGNUP: "SELECT * FROM signups WHERE season_id=?",
       PRACTICE: `SELECT p.*, v.signup_version FROM practices p
         JOIN practice_versions v ON v.season_id=p.season_id AND v.practice_id=p.practice_id
@@ -494,7 +514,8 @@ export class C2SyncService {
       const rows: Array<Record<string, unknown>> = sql.exec<SqlRow>(
         queries[input.entity_type as ComparedSheetScope], input.season_id).toArray()
         .map((row): Record<string, unknown> => input.entity_type === "PRACTICE"
-          ? { ...row, cancelled: row.cancelled_at != null } : { ...row });
+          ? { ...row, cancelled: row.cancelled_at != null } : input.entity_type === "SCHEDULE_TEMPLATE"
+            ? { ...row, active: Number(row.active) === 1 } : { ...row });
       if (input.entity_type === "SEAT_PLAN_DRAFT") {
         const seats = sql.exec<SqlRow>(
           `SELECT practice_id, side, row_number, COALESCE(member_id, '') AS member_id
@@ -513,6 +534,8 @@ export class C2SyncService {
       }
       const key = (row: Record<string, unknown>) => input.entity_type === "MEMBER"
         ? String(row.member_id) : input.entity_type === "SEASON" ? String(row.season_id) :
+          input.entity_type === "SCHEDULE_TEMPLATE" ? String(row.template_id) :
+          input.entity_type === "TRAINING_WEEK" ? String(row.week_id) :
           input.entity_type === "SIGNUP" ? `${row.practice_id}:${row.member_id}` : String(row.practice_id);
       return rows.sort((left, right) => key(left).localeCompare(key(right)));
     };
