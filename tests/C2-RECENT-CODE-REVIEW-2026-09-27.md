@@ -9,9 +9,9 @@
 **进入下一阶段前须保留的设计门槛：**
 
 1. `SCHEDULE_TEMPLATE` 和 `TRAINING_WEEK` 目前只是签名桥接作用域，不在同步实体、SQLite 基线／批次约束和 B/C/G 规则中。应先做有迁移测试的 schema 扩展，再实现 Worker 排期事件导出；不能把桥接 `VERIFIED` 当成整条跨表事件完成。
-2. 旧绑定下未完成的 `PREPARED`／`SENT`／`PARTIAL`／`FAILED` 批次在绑定版本前进后会安全停止，但目前缺少经 Google 核验的迁移／清障操作。设计该流程时不得直接删除旧批次或推断 Google 未写入；新绑定也不能沿用旧绑定的确认回执。
+2. 两条受控导入路径现在都拒绝在 `PREPARED`／`SENT`／`PARTIAL`／`FAILED` 导出批次未完成时提升赛季绑定版本，避免新制造旧绑定残留；批次确认后可继续提升。**已经存在**的旧绑定残留仍须建立经 Google 核验的迁移／清障操作。不得直接删除旧批次或推断 Google 未写入；新绑定也不能沿用旧绑定的确认回执。直接修改 SQLite、恢复旧快照或远端极窄竞态不由导入路径的停止条件覆盖。
 3. Apps Script 单次签名 payload 上限为 10,000 字符，桥接每表最多四行只是另一项上限。现有成员、赛季和排期补丁共用 9,500 字符的本地发送前检查；未来多行 Worker 导出仍须按实际 JSON 长度拆批。模板布尔值、空值、版本及时间需明确投影为 Google `getDisplayValues()` 可稳定比较的字符串。
 4. Google Sheets 人工编辑不会被 Apps Script 的 Script Lock 锁住。B/C/G 写前检查、桥接逐格前值保护和写后核验能发现许多冲突，但不是数据库级 CAS。部分写入、回执丢失、人工同时改行及配额耗尽仍需独立 Google 测试文件验收。
 5. **已清理共享传输债务**：成员与赛季行原先各自实现的批次摘要核验、状态领取、失败／部分写入记录和回执确认已抽到 `c2-export-batch.ts`；三类排期、成员和赛季的补丁回执及发送前 payload 预算使用同一套检查。成员／赛季仍各自负责身份、业务基线和目标行投影。`SUPERSEDED` 批次与不再待处理的 outbox 不会因旧请求重试而再次发送；Google 返回后若事件状态改变，批次停在 `PARTIAL`，不推进基线。新增排期导出应复用这一骨架，不能重新复制发送状态机。
 
-本地验证：`npm test` 193／193，`npm run cf:test` 118／118，`npm run cf:check`、`npm run build`（Astro 71 文件零诊断）、`npm run build:backend`、`npm run build:bridge-probe`、`npm run cf:dry-run` 和 `git diff --check` 均通过。Wrangler 的日志目录 EPERM 与故障注入 alarm 文本仍会打印，但相关命令退出码为 0；这些本地结果不证明远端并发、Google 配额或生产行为。Cloudflare Vitest 不允许在同一 isolate 内跨 Durable Object I/O 上下文模拟一条真实请求的中途外部变更，因此回执期间状态变化仍须在隔离远端故障验收中补测；本地测试覆盖了发送前状态已改变的拒绝路径。
+本地验证：`npm test` 193／193，`npm run cf:test` 119／119，`npm run cf:check`、`npm run build`（Astro 71 文件零诊断）、`npm run build:backend`、`npm run build:bridge-probe`、`npm run cf:dry-run` 和 `git diff --check` 均通过。Wrangler 的日志目录 EPERM 与故障注入 alarm 文本仍会打印，但相关命令退出码为 0；这些本地结果不证明远端并发、Google 配额或生产行为。Cloudflare Vitest 不允许在同一 isolate 内跨 Durable Object I/O 上下文模拟一条真实请求的中途外部变更，因此回执期间状态变化仍须在隔离远端故障验收中补测；本地测试覆盖了发送前状态已改变的拒绝路径。

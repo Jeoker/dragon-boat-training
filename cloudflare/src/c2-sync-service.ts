@@ -14,6 +14,7 @@ import { readGoogleSheet, type ComparedSheetScope } from "./c2-sheet-bridge";
 import { analyzeSheetPage, type SheetBaseline } from "./c2-sheet-diff";
 import { persistSheetFindings, prepareSheetFindings } from "./c2-sheet-findings";
 import { C2MemberExportService } from "./c2-member-export";
+import { assertNoUnfinishedExportBeforeRebinding } from "./sync-binding-guard";
 
 interface PreparedBaseline extends SyncBaselineSnapshot { baseline_digest: string; }
 
@@ -165,6 +166,8 @@ export class C2SyncService {
     }
     const existing = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM sync_bindings WHERE season_id=?", binding.season_id);
     if (!existing) return;
+    assertNoUnfinishedExportBeforeRebinding(this.ctx.storage.sql, binding.season_id,
+      Number(existing.binding_version), binding.binding_version);
     if (binding.binding_version < Number(existing.binding_version)) {
       throw new ApiError("IMPORT_VERSION_REGRESSION", "The sync binding snapshot is older than stored state.", 409);
     }
@@ -345,6 +348,12 @@ export class C2SyncService {
       baselines: input.baselines.length, source_imports: input.source_imports.length
     } };
     this.ctx.storage.transactionSync(() => {
+      for (const row of input.bindings) {
+        const current = firstRow<SqlRow>(this.ctx.storage.sql,
+          "SELECT binding_version FROM sync_bindings WHERE season_id=?", row.season_id);
+        if (current) assertNoUnfinishedExportBeforeRebinding(this.ctx.storage.sql, row.season_id,
+          Number(current.binding_version), row.binding_version);
+      }
       for (const row of input.bindings) this.ctx.storage.sql.exec(
         `INSERT INTO sync_bindings(season_id, binding_version, form_id, runtime_spreadsheet_id,
            response_sheet_id, response_sheet_name, field_mapping_json, schema_fingerprint,

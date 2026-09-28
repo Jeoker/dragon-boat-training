@@ -10,6 +10,7 @@ import {
   legacyCredentialDigest, sha256Base64Url
 } from "./crypto";
 import { firstRow, isRecord, operationReceipt, parseContract, type SqlRow } from "./c1-support";
+import { assertNoUnfinishedExportBeforeRebinding } from "./sync-binding-guard";
 
 export interface AuthenticatedCoach {
   coach_id: string;
@@ -300,6 +301,10 @@ export class C1Service {
 
   private upsertSeason(row: SeasonSnapshot): void {
     this.assertImportVersion("seasons", [row.season_id], "season_version", row.season_version, row);
+    const current = firstRow<SqlRow>(this.ctx.storage.sql,
+      "SELECT binding_version FROM seasons WHERE season_id=?", row.season_id);
+    if (current) assertNoUnfinishedExportBeforeRebinding(this.ctx.storage.sql, row.season_id,
+      Number(current.binding_version), row.binding_version);
     this.ctx.storage.sql.exec(
       `INSERT INTO seasons VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(season_id) DO UPDATE SET name=excluded.name, start_date=excluded.start_date,

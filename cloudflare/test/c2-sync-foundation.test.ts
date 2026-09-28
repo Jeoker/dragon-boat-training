@@ -268,6 +268,50 @@ describe("C2.1 sync foundation", () => {
       .toMatchObject({ error: { code: "SYNC_BINDING_NOT_FOUND" } });
   });
 
+  it("blocks both binding import paths while a prior export is unfinished", async () => {
+    const testEnv = teamEnv("unfinished-binding-export");
+    await seed(testEnv, "unfinished_binding_export");
+    expect((await call("/internal/c2/import-sync-foundation", foundation(
+      "foundation_unfinished_001", "snapshot_unfinished_001"), testEnv)).status).toBe(200);
+    const stub = testEnv.TEAM_STATE.getByName(testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(`INSERT INTO sync_batches(batch_id,season_id,binding_version,writer_epoch,
+        direction,status,payload_digest,created_at,updated_at)
+        VALUES ('batch_unfinished_rebind_001','season_c2_open_2026',1,0,
+          'CLOUDFLARE_TO_GOOGLE','PARTIAL','old_digest',?,?)`,
+      "2026-09-21T13:30:00.000Z", "2026-09-21T13:30:00.000Z").toArray();
+    });
+    const core = await coreSnapshot("core_rebind_blocked_001");
+    core.seasons[0].binding_version = 2;
+    core.seasons[0].season_version = 3;
+    expect(await json(await call("/internal/c1/import-core", core, testEnv, "C1")))
+      .toMatchObject({ error: { code: "IMPORT_CONFLICT" } });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      expect(context.storage.sql.exec<{ binding_version: number }>(
+        "SELECT binding_version FROM seasons WHERE season_id='season_c2_open_2026'").one().binding_version)
+        .toBe(1);
+      // Simulate an already advanced core snapshot to check the second import boundary independently.
+      context.storage.sql.exec("UPDATE seasons SET binding_version=2 WHERE season_id='season_c2_open_2026'").toArray();
+    });
+    const next = foundation("foundation_rebind_blocked_002", "snapshot_rebind_blocked_002");
+    next.bindings[0].binding_version = 2;
+    next.bindings[0].updated_at = "2026-09-22T13:00:00.000Z";
+    next.baselines = [];
+    next.source_imports = [];
+    expect(await json(await call("/internal/c2/import-sync-foundation", next, testEnv)))
+      .toMatchObject({ error: { code: "IMPORT_CONFLICT" } });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      expect(context.storage.sql.exec<{ binding_version: number }>(
+        "SELECT binding_version FROM sync_bindings WHERE season_id='season_c2_open_2026'").one().binding_version)
+        .toBe(1);
+      context.storage.sql.exec(
+        "UPDATE sync_batches SET status='CONFIRMED' WHERE batch_id='batch_unfinished_rebind_001'").toArray();
+      context.storage.sql.exec("UPDATE seasons SET binding_version=1 WHERE season_id='season_c2_open_2026'").toArray();
+    });
+    expect((await call("/internal/c1/import-core", core, testEnv, "C1")).status).toBe(200);
+    expect((await call("/internal/c2/import-sync-foundation", next, testEnv)).status).toBe(200);
+  });
+
   it("updates same-version operational binding metadata without changing its mapping", async () => {
     const testEnv = teamEnv("binding-metadata");
     await seed(testEnv, "binding_metadata_001");
