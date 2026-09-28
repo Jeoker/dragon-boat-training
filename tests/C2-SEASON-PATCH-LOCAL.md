@@ -12,4 +12,6 @@ Cloudflare 调用方在每个新名单事件中保存当时的 `roster_version`�
 
 升级同一个独立 Web App 和 `c2test` Worker 后，真实 Google Form 提交虚构的第十名队员；Cloudflare 事件捕获 `roster_version=10`，十分钟后进入导出。在独立 Google `Seasons!B2` 人工改名的情况下，[真实验收脚本](live-c2-season-export-acceptance.mjs)先确认成员行写入并经重复请求保持十行，再确认赛季阶段返回 `409 SYNC_SEASON_NEEDS_REVIEW`，不覆盖人工名称。恢复原名后，以**同一个被拒绝的请求 ID**重试，赛季名单版本从 0 写到 10；重复请求不新增目标。最终 Cloudflare 名单未变、测试 Coach 已退出，受保护备份显示十个事件、十一批次均确认，五类 Sheet 检查为 `OK`／零差异，Google `Members` 十行。验收命令分别使用 `--phase=conflict`、`--phase=recover`，仅允许固定 `c2test` 主机及显式 `--write-test-data`。
 
-Google `season_version=1` 而 Cloudflare `season_version=2`：当前切片只同步成员变化捕获的 `roster_version`，不是赛季整行双向同步。真实部分写入和响应丢失的同批恢复仍只有本地故障注入，报名、训练和座位的关联批次仍未实现，因此 C2.4 未通过。`createSeason` 事件在绑定前创建，Google 赛季行由既有管理流程建立；这些边界须在后续切片中单独处理。
+Google `season_version=1` 而 Cloudflare `season_version=2`：当前切片只同步成员变化捕获的 `roster_version`，不是赛季整行双向同步。报名、训练和座位的关联批次仍未实现，因此 C2.4 未通过。`createSeason` 事件在绑定前创建，Google 赛季行由既有管理流程建立；这些边界须在后续切片中单独处理。
+
+本记录上述版本和计数是该次验收快照；后续代码审查及隔离验收已把名单版本推进到 11，并在独立 Google 桥接实测两行 `PARTIAL` 同批恢复和回执重放。真实 Worker 请求在 Google 写后、Cloudflare 回执落库前丢失响应仍只有本地故障注入证据。以[最近代码审查与验收](C2-RECENT-CODE-REVIEW-2026-09-27.md)和[当前状态](../CURRENT-STATUS.md)判断现状。
