@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SYNC_FIELD_DEFINITIONS } from "../../shared/c2-sync-rules";
 import { analyzeSheetPage, type SheetBaseline } from "../src/c2-sheet-diff";
 import { prepareSheetFindings } from "../src/c2-sheet-findings";
-import { SHEET_SCOPES, type SheetPage, type SheetScope } from "../src/c2-sheet-bridge";
+import { SHEET_SCOPES, type SheetPage, type ComparedSheetScope } from "../src/c2-sheet-bridge";
 
 const seasonId = "season_sheet_test_2026";
 const memberId = "member_sheet_alice_01";
@@ -12,7 +12,7 @@ const member = {
   default_preference: "LEFT", member_version: 1
 };
 
-function baselines(scope: SheetScope, entityId: string, values: Record<string, unknown>): SheetBaseline[] {
+function baselines(scope: ComparedSheetScope, entityId: string, values: Record<string, unknown>): SheetBaseline[] {
   const groups = new Map<string, Record<string, unknown>>();
   for (const definition of SYNC_FIELD_DEFINITIONS[scope]) {
     const group = groups.get(definition.dependency_group) ?? {};
@@ -22,8 +22,8 @@ function baselines(scope: SheetScope, entityId: string, values: Record<string, u
   return [...groups].map(([dependency_group, baseline]) => ({ entity_id: entityId, dependency_group, baseline }));
 }
 
-function page(scope: SheetScope, records: Record<string, unknown>[],
-  headers: string[] = [...SHEET_SCOPES[scope].headers]): SheetPage {
+function page(scope: ComparedSheetScope, records: Record<string, unknown>[],
+  headers: string[] = [...SHEET_SCOPES[scope].headers]): SheetPage<ComparedSheetScope> {
   return { entity_type: scope, spreadsheet_id: "spreadsheet_sheet_test_01",
     tab_name: SHEET_SCOPES[scope].tab, tab_id: "123", read_at_ms: Date.now(), headers,
     rows: records.map((record, index) => ({ row_number: index + 2,

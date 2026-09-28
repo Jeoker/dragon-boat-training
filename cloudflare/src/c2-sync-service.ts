@@ -10,7 +10,7 @@ import { C1Service } from "./c1-service";
 import { firstRow, operationReceipt, parseContract, type SqlRow } from "./c1-support";
 import { APPLICATION_SCHEMA_VERSION } from "./schema";
 import { C2FormService } from "./c2-form-service";
-import { readGoogleSheet, type SheetScope } from "./c2-sheet-bridge";
+import { readGoogleSheet, type ComparedSheetScope } from "./c2-sheet-bridge";
 import { analyzeSheetPage, type SheetBaseline } from "./c2-sheet-diff";
 import { persistSheetFindings, prepareSheetFindings } from "./c2-sheet-findings";
 import { C2MemberExportService } from "./c2-member-export";
@@ -451,7 +451,7 @@ export class C2SyncService {
     const page = await readGoogleSheet(this.env, {
       request_id: input.request_id,
       operation_id: `c2_sheet_${(await sha256Base64Url(`${input.request_id}\n${input.season_id}\n${input.entity_type}`)).slice(0, 32)}`,
-      season_id: input.season_id, entity_type: input.entity_type as SheetScope,
+      season_id: input.season_id, entity_type: input.entity_type as ComparedSheetScope,
       binding_version: bindingVersion, runtime_spreadsheet_id: String(binding.runtime_spreadsheet_id)
     });
     this.core.assertSessionCurrent(coach);
@@ -470,7 +470,7 @@ export class C2SyncService {
       })).sort((left, right) => left.entity_id.localeCompare(right.entity_id) ||
         left.dependency_group.localeCompare(right.dependency_group));
     const baselines = loadBaselines();
-    const queries: Record<SheetScope, string> = {
+    const queries: Record<ComparedSheetScope, string> = {
       SEASON: "SELECT * FROM seasons WHERE season_id=?",
       MEMBER: "SELECT * FROM members WHERE season_id=?",
       SIGNUP: "SELECT * FROM signups WHERE season_id=?",
@@ -483,7 +483,7 @@ export class C2SyncService {
     };
     const loadCloudRows = (): Array<Record<string, unknown>> => {
       const rows: Array<Record<string, unknown>> = sql.exec<SqlRow>(
-        queries[input.entity_type as SheetScope], input.season_id).toArray()
+        queries[input.entity_type as ComparedSheetScope], input.season_id).toArray()
         .map((row): Record<string, unknown> => input.entity_type === "PRACTICE"
           ? { ...row, cancelled: row.cancelled_at != null } : { ...row });
       if (input.entity_type === "SEAT_PLAN_DRAFT") {
@@ -519,7 +519,7 @@ export class C2SyncService {
         input.season_id).toArray().map((row) => [row.practice_id, Number(row.signup_version)]) : []);
     const signupVersions = loadSignupVersions();
     const prepared = await prepareSheetFindings({ season_id: input.season_id,
-      binding_version: bindingVersion, entity_type: input.entity_type as SheetScope,
+      binding_version: bindingVersion, entity_type: input.entity_type as ComparedSheetScope,
       findings: comparison.findings, cloud_rows: cloudRows, signup_versions: signupVersions });
     this.core.assertSessionCurrent(coach);
     const persistence = this.ctx.storage.transactionSync(() => {
@@ -537,7 +537,7 @@ export class C2SyncService {
         throw new ApiError("SHEET_INSPECTION_STALE", "The Cloudflare data changed during inspection.", 409, true);
       }
       return persistSheetFindings(sql, { season_id: input.season_id, binding_version: bindingVersion,
-        entity_type: input.entity_type as SheetScope, status: comparison.status,
+        entity_type: input.entity_type as ComparedSheetScope, status: comparison.status,
         truncated: comparison.truncated, findings: prepared });
     });
     return { season_id: input.season_id, binding_version: bindingVersion,

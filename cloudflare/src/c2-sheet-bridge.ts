@@ -1,6 +1,7 @@
 import { BRIDGE_PROTOCOL, callGoogleBridge } from "./bridge";
 import { ApiError } from "./http";
 import { isRecord } from "./c1-support";
+import type { SyncEntityType } from "../../shared/c2-sync-rules";
 
 export const SHEET_SCOPES = {
   SEASON: { tab: "Seasons", headers: ["season_id", "name", "start_date", "end_date", "timezone",
@@ -11,6 +12,12 @@ export const SHEET_SCOPES = {
   MEMBER: { tab: "Members", headers: ["season_id", "member_id", "source_key", "source_row_number",
     "source_display_name", "display_name_override", "status", "default_preference", "member_version",
     "created_at", "updated_at"] },
+  SCHEDULE_TEMPLATE: { tab: "ScheduleTemplates", headers: ["season_id", "template_id", "day_of_week",
+    "start_time", "end_time", "timezone", "location", "address", "map_url", "active",
+    "template_version", "created_at", "updated_at"] },
+  TRAINING_WEEK: { tab: "TrainingWeeks", headers: ["season_id", "week_id", "week_start_date",
+    "scheduled_open_at", "status", "week_version", "confirmed_version", "confirmed_by",
+    "confirmed_at", "published_at", "created_at", "updated_at"] },
   SIGNUP: { tab: "SignupsCurrent", headers: ["season_id", "practice_id", "member_id", "preference",
     "status", "queue_at", "queue_sequence", "updated_at", "last_request_id"] },
   PRACTICE: { tab: "Practices", headers: ["season_id", "practice_id", "week_id", "template_id",
@@ -26,9 +33,10 @@ export const SEAT_CELL_HEADERS = ["season_id", "practice_id", "row_number", "sid
   "seat_plan_version", "updated_by", "updated_at"] as const;
 
 export type SheetScope = keyof typeof SHEET_SCOPES;
+export type ComparedSheetScope = Extract<SheetScope, SyncEntityType>;
 export interface SheetRow { row_number: number; cells: string[]; }
-export interface SheetPage {
-  entity_type: SheetScope;
+export interface SheetPage<S extends SheetScope = SheetScope> {
+  entity_type: S;
   spreadsheet_id: string;
   tab_name: string;
   tab_id: string;
@@ -48,6 +56,47 @@ export interface MemberPatchReceipt {
 export interface SeasonPatchItem { season_id: string; expected: string[]; target: string[]; }
 export interface SeasonPatchReceipt extends Omit<MemberPatchReceipt, "verified_member_ids"> {
   verified_season_ids: string[];
+}
+
+export type ScheduleSheetScope = "SCHEDULE_TEMPLATE" | "TRAINING_WEEK" | "PRACTICE";
+export interface SchedulePatchItem { row_id: string; expected: string[] | null; target: string[]; }
+export interface SchedulePatchReceipt extends Omit<MemberPatchReceipt, "verified_member_ids"> {
+  entity_type: ScheduleSheetScope; verified_row_ids: string[];
+}
+
+const SCHEDULE_PATCH_ACTIONS = {
+  SCHEDULE_TEMPLATE: "cloudflarePatchScheduleTemplateSheet",
+  TRAINING_WEEK: "cloudflarePatchTrainingWeekSheet",
+  PRACTICE: "cloudflarePatchPracticeSheet"
+} as const;
+
+export async function patchGoogleScheduleRows(env: Env, input: {
+  request_id: string; batch_id: string; season_id: string; binding_version: number;
+  entity_type: ScheduleSheetScope; spreadsheet_id: string; tab_id: string; items: SchedulePatchItem[];
+}): Promise<SchedulePatchReceipt> {
+  const bridge = await callGoogleBridge(env, {
+    action: SCHEDULE_PATCH_ACTIONS[input.entity_type], request_id: input.request_id,
+    operation_id: input.batch_id, season_id: input.season_id,
+    binding_version: input.binding_version,
+    payload: { season_id: input.season_id, batch_id: input.batch_id, entity_type: input.entity_type,
+      spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id,
+      items: input.items.map((item) => ({
+        [input.entity_type === "SCHEDULE_TEMPLATE" ? "template_id" :
+          input.entity_type === "TRAINING_WEEK" ? "week_id" : "practice_id"]: item.row_id,
+        expected: item.expected, target: item.target
+      })) }
+  });
+  const receipt = bridge.data;
+  if (receipt.status !== "verified" || receipt.protocol_version !== BRIDGE_PROTOCOL ||
+      receipt.team_id !== env.TEAM_ID || receipt.season_id !== input.season_id ||
+      receipt.binding_version !== input.binding_version ||
+      receipt.writer_epoch !== Number(env.WRITER_EPOCH) ||
+      receipt.operation_id !== input.batch_id || receipt.payload_digest !== bridge.payload_digest ||
+      receipt.spreadsheet_id !== input.spreadsheet_id || receipt.tab_id !== input.tab_id ||
+      receipt.entity_type !== input.entity_type || !Array.isArray(receipt.verified_row_ids) ||
+      JSON.stringify(receipt.verified_row_ids) !== JSON.stringify(input.items.map((item) => item.row_id)) ||
+      typeof receipt.acknowledged_at !== "string" || !Number.isFinite(Date.parse(receipt.acknowledged_at))) invalid();
+  return receipt as unknown as SchedulePatchReceipt;
 }
 
 export async function patchGoogleSeason(env: Env, input: {
@@ -125,10 +174,10 @@ function parseRows(headers: string[], raw: unknown, maximum: number,
   return rows;
 }
 
-export async function readGoogleSheet(env: Env, input: {
-  request_id: string; operation_id: string; season_id: string; entity_type: SheetScope;
+export async function readGoogleSheet<S extends SheetScope>(env: Env, input: {
+  request_id: string; operation_id: string; season_id: string; entity_type: S;
   binding_version: number; runtime_spreadsheet_id: string;
-}): Promise<SheetPage> {
+}): Promise<SheetPage<S>> {
   const bridge = await callGoogleBridge(env, {
     action: "cloudflareReadSheetRecords", request_id: input.request_id,
     operation_id: input.operation_id, season_id: input.season_id,

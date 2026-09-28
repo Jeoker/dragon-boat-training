@@ -6,6 +6,7 @@ function cloudflareReadSheetRecords_(request) {
   var entityType = requireRequestString_(input, "entity_type", 1, 40);
   var tabNames = {
     SEASON: "Seasons", MEMBER: "Members", SIGNUP: "SignupsCurrent", PRACTICE: "Practices",
+    SCHEDULE_TEMPLATE: "ScheduleTemplates", TRAINING_WEEK: "TrainingWeeks",
     SEAT_PLAN_DRAFT: "SeatPlanState"
   };
   if (!Object.prototype.hasOwnProperty.call(tabNames, entityType)) {

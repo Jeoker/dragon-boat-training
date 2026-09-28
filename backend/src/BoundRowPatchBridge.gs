@@ -1,4 +1,4 @@
-// One bounded, resumable patch protocol for runtime members and the system season row.
+// One bounded, resumable patch protocol for bound runtime rows and the system season row.
 // Existing season rows are never created by this bridge.
 function cloudflarePatchMemberSheet_(request) {
   return cloudflarePatchBoundRows_(request, "MEMBER");
@@ -8,17 +8,36 @@ function cloudflarePatchSeasonSheet_(request) {
   return cloudflarePatchBoundRows_(request, "SEASON");
 }
 
+function cloudflarePatchScheduleTemplateSheet_(request) {
+  return cloudflarePatchBoundRows_(request, "SCHEDULE_TEMPLATE");
+}
+
+function cloudflarePatchTrainingWeekSheet_(request) {
+  return cloudflarePatchBoundRows_(request, "TRAINING_WEEK");
+}
+
+function cloudflarePatchPracticeSheet_(request) {
+  return cloudflarePatchBoundRows_(request, "PRACTICE");
+}
+
 function cloudflarePatchBoundRows_(request, scope) {
   var verified = verifyBridgeEnvelope_(request, null);
   var input = verified.payload;
   var seasonId = requireRequestString_(input, "season_id", 8, 128);
   var batchId = requireRequestString_(input, "batch_id", 8, 128);
   var seasonScope = scope === "SEASON";
-  var idKey = seasonScope ? "season_id" : "member_id";
-  var tabName = seasonScope ? "Seasons" : "Members";
-  var headers = seasonScope ? DRAGON_BOAT_SHEET_HEADERS_.Seasons : DRAGON_BOAT_RUNTIME_SHEET_HEADERS_.Members;
+  var scheduleScopes = {
+    SCHEDULE_TEMPLATE: { idKey: "template_id", tabName: "ScheduleTemplates" },
+    TRAINING_WEEK: { idKey: "week_id", tabName: "TrainingWeeks" },
+    PRACTICE: { idKey: "practice_id", tabName: "Practices" }
+  };
+  var scheduleScope = scheduleScopes[scope] || null;
+  var idKey = seasonScope ? "season_id" : scheduleScope ? scheduleScope.idKey : "member_id";
+  var tabName = seasonScope ? "Seasons" : scheduleScope ? scheduleScope.tabName : "Members";
+  var headers = seasonScope ? DRAGON_BOAT_SHEET_HEADERS_.Seasons : DRAGON_BOAT_RUNTIME_SHEET_HEADERS_[tabName];
   var identityColumn = seasonScope ? 0 : 1;
   if (!/^[A-Za-z0-9_-]+$/.test(batchId) || batchId !== verified.operation_id ||
+      (scheduleScope && input.entity_type !== scope) ||
       !Array.isArray(input.items) || input.items.length < 1 ||
       input.items.length > (seasonScope ? 1 : 4)) {
     throw dragonBoatRequestError_("BRIDGE_PAYLOAD_INVALID", "The row patch batch is invalid.");
@@ -31,11 +50,15 @@ function cloudflarePatchBoundRows_(request, scope) {
   }
   var spreadsheet = seasonScope ? getSystemSpreadsheet_() : getSeasonSpreadsheet_(season);
   var tab = spreadsheet.getSheetByName(tabName);
+  var rowCount = tab ? tab.getLastRow() : 0;
   if (!tab || spreadsheet.getId() !== input.spreadsheet_id ||
       String(tab.getSheetId()) !== input.tab_id || tab.getLastColumn() !== headers.length ||
-      tab.getLastRow() < 1 || tab.getLastRow() > 5001 ||
+      rowCount < 1 || rowCount > 5001 ||
       JSON.stringify(tab.getRange(1, 1, 1, headers.length).getDisplayValues()[0]) !== JSON.stringify(headers)) {
     throw dragonBoatRequestError_("SHEET_PATCH_STRUCTURE", "The registered patch tab changed.");
+  }
+  if (rowCount * headers.length > 100000) {
+    throw dragonBoatRequestError_("SHEET_SCAN_LIMIT", "The patch tab exceeds the bounded scan size.");
   }
   var seen = Object.create(null);
   var seasonMutable = {
@@ -108,6 +131,15 @@ function cloudflarePatchBoundRows_(request, scope) {
     }
     var rows = tab.getLastRow() > 1 ?
       tab.getRange(2, 1, tab.getLastRow() - 1, headers.length).getDisplayValues() : [];
+    var inspectedCharacters = 0;
+    rows.forEach(function (cells) {
+      cells.forEach(function (cell) {
+        inspectedCharacters += cell.length;
+        if (cell.length > 10000 || inspectedCharacters > 2000000) {
+          throw dragonBoatRequestError_("SHEET_SCAN_LIMIT", "The patch tab exceeds the bounded content size.");
+        }
+      });
+    });
     var positions = Object.create(null);
     rows.forEach(function (cells, index) {
       if ((!seasonScope && cells[0] !== seasonId) ||
@@ -136,7 +168,7 @@ function cloudflarePatchBoundRows_(request, scope) {
           throw dragonBoatRequestError_("SHEET_PATCH_CONFLICT", "A new row already has different data.");
         }
         if (!current) {
-          if (tab.getLastRow() >= 5001) {
+          if (tab.getLastRow() >= 5001 || (tab.getLastRow() + 1) * headers.length > 100000) {
             throw dragonBoatRequestError_("SHEET_SCAN_LIMIT", "The patch tab is full.");
           }
           rowNumber = tab.getLastRow() + 1;
@@ -173,7 +205,8 @@ function cloudflarePatchBoundRows_(request, scope) {
       spreadsheet_id: spreadsheet.getId(), tab_id: String(tab.getSheetId()),
       acknowledged_at: new Date().toISOString()
     };
-    result[seasonScope ? "verified_season_ids" : "verified_member_ids"] = verifiedIds;
+    result[seasonScope ? "verified_season_ids" : scheduleScope ? "verified_row_ids" : "verified_member_ids"] = verifiedIds;
+    if (scheduleScope) result.entity_type = scope;
     receipts.getRange(receiptRow, 6, 1, 3).setValues([[
       "VERIFIED", JSON.stringify(result), result.acknowledged_at
     ]]);

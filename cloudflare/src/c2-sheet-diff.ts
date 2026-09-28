@@ -1,6 +1,6 @@
 import { canonicalJson } from "../../shared/c1-rules";
 import { SYNC_FIELD_DEFINITIONS, compareSyncGroup, type SyncGroupDecision } from "../../shared/c2-sync-rules";
-import { SEAT_CELL_HEADERS, SHEET_SCOPES, type SheetPage, type SheetScope } from "./c2-sheet-bridge";
+import { SEAT_CELL_HEADERS, SHEET_SCOPES, type SheetPage, type ComparedSheetScope } from "./c2-sheet-bridge";
 
 export interface SheetBaseline {
   entity_id: string;
@@ -12,7 +12,7 @@ export interface SheetFinding extends SyncGroupDecision {
   row_number: number | null;
 }
 
-function identity(scope: SheetScope, row: Record<string, string>): string {
+function identity(scope: ComparedSheetScope, row: Record<string, string>): string {
   if (scope === "SEASON") return row.season_id || "";
   if (scope === "MEMBER") return row.member_id || "";
   if (scope === "SIGNUP") return row.practice_id && row.member_id ? `${row.practice_id}:${row.member_id}` : "";
@@ -23,12 +23,12 @@ function stableId(value: string): boolean {
   return /^[A-Za-z0-9_-]{8,128}$/u.test(value);
 }
 
-function validIdentity(scope: SheetScope, row: Record<string, string>): boolean {
+function validIdentity(scope: ComparedSheetScope, row: Record<string, string>): boolean {
   if (scope === "SIGNUP") return stableId(row.practice_id) && stableId(row.member_id);
   return stableId(identity(scope, row));
 }
 
-function googleRecord(scope: SheetScope, row: Record<string, string>,
+function googleRecord(scope: ComparedSheetScope, row: Record<string, string>,
   seats: Array<{ side: string; row_number: number; member_id: string }> = []): Record<string, unknown> {
   if (scope === "PRACTICE") return { ...row, cancelled: !!row.cancelled_at };
   if (scope === "SEAT_PLAN_DRAFT") return { ...row, seats };
@@ -45,7 +45,7 @@ function finding(entityId: string, rowNumber: number | null, group: string,
 }
 
 export function analyzeSheetPage(input: {
-  season_id: string; page: SheetPage; baselines: SheetBaseline[];
+  season_id: string; page: SheetPage<ComparedSheetScope>; baselines: SheetBaseline[];
   cloud_rows: Array<Record<string, unknown>>; max_findings?: number;
   expected_binding?: { form_id: string; runtime_spreadsheet_id: string;
     response_sheet_id: string; binding_version: number };

@@ -6,7 +6,9 @@ export const BRIDGE_DIRECTION = "CLOUDFLARE_TO_GOOGLE";
 
 interface BridgeEnvelope {
   action: "cloudflareBridgeProbe" | "cloudflareReadFormResponses" | "cloudflareReadSheetRecords" |
-    "cloudflarePatchMemberSheet" | "cloudflarePatchSeasonSheet";
+    "cloudflarePatchMemberSheet" | "cloudflarePatchSeasonSheet" |
+    "cloudflarePatchScheduleTemplateSheet" | "cloudflarePatchTrainingWeekSheet" |
+    "cloudflarePatchPracticeSheet";
   request_id: string;
   protocol_version: string;
   direction: string;
@@ -78,7 +80,9 @@ export async function createBridgeEnvelope(input: {
 
 export async function callGoogleBridge(env: Env, input: {
   action: "cloudflareReadFormResponses" | "cloudflareReadSheetRecords" |
-    "cloudflarePatchMemberSheet" | "cloudflarePatchSeasonSheet";
+    "cloudflarePatchMemberSheet" | "cloudflarePatchSeasonSheet" |
+    "cloudflarePatchScheduleTemplateSheet" | "cloudflarePatchTrainingWeekSheet" |
+    "cloudflarePatchPracticeSheet";
   request_id: string;
   operation_id: string;
   season_id: string;
