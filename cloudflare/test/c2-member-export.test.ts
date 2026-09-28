@@ -205,6 +205,82 @@ it("keeps member export disabled in production", async () => {
   expect(result.status).toBe(404);
 });
 
+it("does not resend a superseded batch through its original request ID", async () => {
+  const environment = testEnv("superseded-request");
+  const stub = await seed(environment);
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const envelope = JSON.parse(String(init?.body));
+    const payload = JSON.parse(envelope.payload_json);
+    if (envelope.action === "cloudflareReadSheetRecords") {
+      return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+        protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+        season_id: seasonId, entity_type: "MEMBER", binding_version: 1,
+        writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
+        payload_digest: envelope.payload_digest,
+        spreadsheet_id: "spreadsheet_export_test_001", tab_name: "Members", tab_id: "101",
+        read_at_ms: Date.now(), headers: [...SHEET_SCOPES.MEMBER.headers], secondary: null, rows: []
+      } });
+    }
+    expect(payload.items).toHaveLength(1);
+    throw new Error("The bridge became unavailable after preparation");
+  });
+  const input = { request_id: "export_superseded_001", season_id: seasonId };
+  expect(await (await call(environment, "/internal/c2/export-next-member", input)).json())
+    .toMatchObject({ error: { code: "BRIDGE_UNAVAILABLE" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("UPDATE sync_batches SET status='SUPERSEDED' WHERE status='FAILED'").toArray();
+  });
+  fetchSpy.mockClear();
+  expect(await (await call(environment, "/internal/c2/export-next-member", input)).json())
+    .toMatchObject({ error: { code: "SYNC_BATCH_INVALID" } });
+  expect(fetchSpy).not.toHaveBeenCalled();
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec<{ status: string; attempt_count: number }>(
+      "SELECT status,attempt_count FROM sync_batches").one()).toMatchObject({
+      status: "SUPERSEDED", attempt_count: 1
+    });
+  });
+});
+
+it("does not resend a prepared member patch after its outbox event stops pending", async () => {
+  const environment = testEnv("outbox-stopped-before-retry");
+  const stub = await seed(environment);
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const envelope = JSON.parse(String(init?.body));
+    const payload = JSON.parse(envelope.payload_json);
+    if (envelope.action === "cloudflareReadSheetRecords") {
+      return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+        protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+        season_id: seasonId, entity_type: "MEMBER", binding_version: 1,
+        writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
+        payload_digest: envelope.payload_digest,
+        spreadsheet_id: "spreadsheet_export_test_001", tab_name: "Members", tab_id: "101",
+        read_at_ms: Date.now(), headers: [...SHEET_SCOPES.MEMBER.headers], secondary: null, rows: []
+      } });
+    }
+    expect(payload.items).toHaveLength(1);
+    throw new Error("The bridge became unavailable after preparation");
+  });
+  const input = { request_id: "export_outbox_changed_001", season_id: seasonId };
+  expect(await (await call(environment, "/internal/c2/export-next-member", input)).json())
+    .toMatchObject({ error: { code: "BRIDGE_UNAVAILABLE" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("UPDATE sync_outbox SET status='FAILED' WHERE outbox_id='out_export_test_001'").toArray();
+  });
+  fetchSpy.mockClear();
+  expect(await (await call(environment, "/internal/c2/export-next-member", input)).json())
+    .toMatchObject({ error: { code: "SYNC_EXPORT_STALE" } });
+  expect(fetchSpy).not.toHaveBeenCalled();
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec<{ status: string }>("SELECT status FROM sync_batches").one().status)
+      .toBe("FAILED");
+    expect(context.storage.sql.exec<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM sync_baselines WHERE entity_type='MEMBER'").one().count).toBe(0);
+    expect(context.storage.sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id='out_export_test_001'").one().status).toBe("FAILED");
+  });
+});
+
 it("advances captured roster versions in order when another member joins before export", async () => {
   const environment = testEnv("rolling-roster");
   const stub = await seed(environment);

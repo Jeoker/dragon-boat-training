@@ -5,13 +5,14 @@ import { sha256Base64Url } from "./crypto";
 import { ApiError } from "./http";
 import { firstRow, parseContract, type SqlRow } from "./c1-support";
 import { C1Service } from "./c1-service";
-import { patchGoogleMembers, patchGoogleSeason, readGoogleSheet, SHEET_SCOPES,
+import { assertSentBatch, beginExportSend, confirmExportReceipt, recordExportFailure,
+  recordExportPartial, verifyStoredPatch, type ExportBatch } from "./c2-export-batch";
+import { assertBridgePatchBudget, patchGoogleMembers, patchGoogleSeason, readGoogleSheet, SHEET_SCOPES,
   type MemberPatchItem, type MemberPatchReceipt, type SeasonPatchItem,
   type SeasonPatchReceipt } from "./c2-sheet-bridge";
 
 interface ExportEvent extends SqlRow { outbox_id: string; payload_json: string; sequence: number; }
-interface StoredBatch extends SqlRow { batch_id: string; season_id: string; binding_version: number;
-  writer_epoch: number; status: string; payload_digest: string; first_outbox_id: string; }
+type StoredBatch = ExportBatch;
 interface StoredTarget { member_id: string; expected: string[] | null; target: string[];
   spreadsheet_id: string; tab_id: string; cloud_version: number; }
 interface StoredSeasonTarget { season_id: string; expected: string[]; target: string[];
@@ -67,17 +68,21 @@ function eventRosterVersion(sql: SqlStorage, event: ExportEvent, current: number
   return current;
 }
 
-function memberTargetsVerified(sql: SqlStorage, outboxId: string, bindingVersion: number): boolean {
-  const event = firstRow<SqlRow>(sql,
-    "SELECT payload_json,status FROM sync_outbox WHERE outbox_id=?", outboxId);
-  if (event?.status !== "PENDING") return false;
-  const ids = memberIds({ outbox_id: outboxId, payload_json: String(event.payload_json), sequence: 0 });
-  const done = new Set(sql.exec<{ entity_id: string }>(
+function verifiedMemberIds(sql: SqlStorage, outboxId: string, bindingVersion: number): Set<string> {
+  return new Set(sql.exec<{ entity_id: string }>(
     `SELECT i.entity_id FROM sync_batch_items i JOIN sync_batches b ON b.batch_id=i.batch_id
      WHERE b.first_outbox_id=? AND b.last_outbox_id=? AND b.binding_version=?
        AND b.status='CONFIRMED' AND i.entity_type='MEMBER' AND i.status='VERIFIED'`,
     outboxId, outboxId, bindingVersion)
     .toArray().map((row) => row.entity_id));
+}
+
+function memberTargetsVerified(sql: SqlStorage, outboxId: string, bindingVersion: number): boolean {
+  const event = firstRow<SqlRow>(sql,
+    "SELECT payload_json,status FROM sync_outbox WHERE outbox_id=?", outboxId);
+  if (event?.status !== "PENDING") return false;
+  const ids = memberIds({ outbox_id: outboxId, payload_json: String(event.payload_json), sequence: 0 });
+  const done = verifiedMemberIds(sql, outboxId, bindingVersion);
   return ids.every((id) => done.has(id));
 }
 
@@ -232,12 +237,7 @@ export class C2MemberExportService {
       throw new ApiError("SYNC_ROSTER_VERSION_REGRESSION", "The confirmed roster version is ahead of this event.", 409);
     }
     const ids = memberIds(event);
-    const verified = new Set(sql.exec<{ entity_id: string }>(
-      `SELECT i.entity_id FROM sync_batch_items i JOIN sync_batches b ON b.batch_id=i.batch_id
-       WHERE b.first_outbox_id=? AND b.last_outbox_id=? AND b.binding_version=?
-         AND b.status='CONFIRMED' AND i.entity_type='MEMBER' AND i.status='VERIFIED'`,
-      event.outbox_id, event.outbox_id, binding.binding_version)
-      .toArray().map((row) => row.entity_id));
+    const verified = verifiedMemberIds(sql, event.outbox_id, Number(binding.binding_version));
     const nextId = ids.find((id) => !verified.has(id));
     if (!nextId) {
       return this.prepareSeason(event, binding, input.request_id, requestBatchId, identity);
@@ -279,15 +279,15 @@ export class C2MemberExportService {
     const payloadDigest = await sha256Base64Url(JSON.stringify(payload));
     const expectedDigest = `sha256_v1:${await sha256Base64Url(canonicalJson(row.expected))}`;
     const targetDigest = `sha256_v1:${await sha256Base64Url(canonicalJson(row.target))}`;
-    if (JSON.stringify(payload).length > 9500) {
-      throw new ApiError("SYNC_BATCH_TOO_LARGE", "The member row exceeds the bridge batch limit.", 409);
-    }
+    assertBridgePatchBudget(payload);
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
       const current = firstRow<SqlRow>(sql, "SELECT binding_version,export_paused,runtime_spreadsheet_id FROM sync_bindings WHERE season_id=?",
         input.season_id);
       const currentMember = firstRow<SqlRow>(sql, "SELECT member_version FROM members WHERE season_id=? AND member_id=?",
         input.season_id, nextId);
+      const currentEvent = firstRow<SqlRow>(sql, "SELECT status FROM sync_outbox WHERE outbox_id=?", event.outbox_id);
+      const alreadyVerified = verifiedMemberIds(sql, event.outbox_id, version).has(nextId);
       const competing = firstRow<SqlRow>(sql,
         `SELECT batch_id FROM sync_batches WHERE season_id=? AND direction='CLOUDFLARE_TO_GOOGLE'
          AND status IN ('PREPARED','SENT','PARTIAL','FAILED') LIMIT 1`, input.season_id);
@@ -295,7 +295,8 @@ export class C2MemberExportService {
         "SELECT batch_id FROM sync_batches WHERE batch_id=?", batchId);
       if (!current || Number(current.binding_version) !== version || Number(current.export_paused) !== 0 ||
           current.runtime_spreadsheet_id !== page.spreadsheet_id ||
-          Number(currentMember?.member_version) !== target.cloud_version || competing || alreadyPrepared) {
+          Number(currentMember?.member_version) !== target.cloud_version ||
+          currentEvent?.status !== "PENDING" || alreadyVerified || competing || alreadyPrepared) {
         throw new ApiError("SYNC_EXPORT_STALE", "The member export changed during inspection.", 409, true);
       }
       sql.exec(
@@ -369,9 +370,7 @@ export class C2MemberExportService {
     const payload = { season_id: stored.season_id, batch_id: batchId,
       spreadsheet_id: stored.spreadsheet_id, tab_id: stored.tab_id,
       items: [{ season_id: stored.season_id, expected, target }] };
-    if (JSON.stringify(payload).length > 9500) {
-      throw new ApiError("SYNC_BATCH_TOO_LARGE", "The season row exceeds the bridge batch limit.", 409);
-    }
+    assertBridgePatchBudget(payload);
     const payloadDigest = await sha256Base64Url(JSON.stringify(payload));
     const expectedDigest = `sha256_v1:${await sha256Base64Url(canonicalJson(expected))}`;
     const targetDigest = `sha256_v1:${await sha256Base64Url(canonicalJson(target))}`;
@@ -441,28 +440,17 @@ export class C2MemberExportService {
     if (currentBinding.runtime_spreadsheet_id !== target.spreadsheet_id) {
       throw new ApiError("SYNC_BINDING_STALE", "A prepared batch belongs to another Spreadsheet.", 409);
     }
+    if (firstRow<SqlRow>(sql, "SELECT status FROM sync_outbox WHERE outbox_id=?", batch.first_outbox_id)
+      ?.status !== "PENDING") {
+      throw new ApiError("SYNC_EXPORT_STALE", "The prepared batch no longer has a pending event.", 409);
+    }
     const item: MemberPatchItem = { member_id: target.member_id,
       expected: target.expected, target: target.target };
     const payload = { season_id: String(batch.season_id), batch_id: batch.batch_id,
       spreadsheet_id: target.spreadsheet_id, tab_id: target.tab_id, items: [item] };
-    if (await sha256Base64Url(JSON.stringify(payload)) !== String(batch.payload_digest) ||
-        `sha256_v1:${await sha256Base64Url(canonicalJson(target.expected))}` !== String(saved.expected_sheet_digest) ||
-        `sha256_v1:${await sha256Base64Url(canonicalJson(target.target))}` !== String(saved.target_digest) ||
-        Number(batch.writer_epoch) !== Number(this.env.WRITER_EPOCH)) {
-      throw new ApiError("SYNC_BATCH_INVALID", "The prepared member batch or writer epoch changed.", 409);
-    }
-    const alreadyConfirmed = this.ctx.storage.transactionSync(() => {
-      const current = firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batch.batch_id);
-      if (!current || current.payload_digest !== batch.payload_digest) {
-        throw new ApiError("SYNC_BATCH_INVALID", "The prepared batch changed before sending.", 409);
-      }
-      if (current.status === "CONFIRMED") return true;
-      sql.exec(
-        `UPDATE sync_batches SET status='SENT',attempt_count=attempt_count+1,updated_at=?
-         WHERE batch_id=? AND status IN ('PREPARED','SENT','PARTIAL','FAILED')`,
-        new Date().toISOString(), batch.batch_id).toArray();
-      return false;
-    });
+    await verifyStoredPatch(batch, saved, payload, target.expected, target.target,
+      Number(this.env.WRITER_EPOCH));
+    const alreadyConfirmed = beginExportSend(this.ctx, batch);
     if (alreadyConfirmed) return this.remember(identity, requestId, result());
     let receipt: MemberPatchReceipt;
     try {
@@ -471,9 +459,7 @@ export class C2MemberExportService {
         binding_version: Number(batch.binding_version), spreadsheet_id: target.spreadsheet_id,
         tab_id: target.tab_id, items: [item] });
     } catch (error) {
-      sql.exec("UPDATE sync_batches SET status='FAILED',last_error=?,updated_at=? WHERE batch_id=? AND status='SENT'",
-        error instanceof Error ? error.message.slice(0, 400) : "Unknown bridge error.",
-        new Date().toISOString(), batch.batch_id).toArray();
+      recordExportFailure(sql, batch.batch_id, error);
       throw error;
     }
     const capturedBaselines = await Promise.all(groups.map(async (group) => {
@@ -481,21 +467,23 @@ export class C2MemberExportService {
       const digest = `sha256_v1:${await sha256Base64Url(canonicalJson(baseline))}`;
       return { group, baseline, digest };
     }));
-    let bindingChanged = false;
+    let exportStateChanged = false;
     this.ctx.storage.transactionSync(() => {
       const binding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", batch.season_id);
       const currentSeason = firstRow<SqlRow>(sql, "SELECT binding_version FROM seasons WHERE season_id=?", batch.season_id);
       const currentBatch = firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batch.batch_id);
+      const currentEvent = firstRow<SqlRow>(sql, "SELECT status FROM sync_outbox WHERE outbox_id=?", batch.first_outbox_id);
       if (currentBatch?.status === "CONFIRMED") return;
+      assertSentBatch(currentBatch);
       if (!binding || !currentSeason || !currentBatch ||
           Number(binding.binding_version) !== Number(batch.binding_version) ||
           Number(currentSeason.binding_version) !== Number(batch.binding_version) ||
           String(binding.runtime_spreadsheet_id) !== target.spreadsheet_id ||
-          String(currentBatch.payload_digest) !== receipt.payload_digest) {
-        bindingChanged = true;
-        sql.exec("UPDATE sync_batches SET status='PARTIAL',last_error=?,updated_at=? WHERE batch_id=?",
-          "Google verified the batch, but its current binding changed; review before confirming.",
-          new Date().toISOString(), batch.batch_id).toArray();
+          String(currentBatch.payload_digest) !== receipt.payload_digest ||
+          currentEvent?.status !== "PENDING") {
+        exportStateChanged = true;
+        recordExportPartial(sql, batch.batch_id,
+          "Google verified the batch, but its binding or event changed; review before confirming.");
         return;
       }
       const at = new Date().toISOString();
@@ -510,18 +498,13 @@ export class C2MemberExportService {
           batch.season_id, batch.binding_version, target.member_id, group,
           canonicalJson(baseline), digest, target.cloud_version, digest, at).toArray();
       }
-      sql.exec("UPDATE sync_batch_items SET status='VERIFIED',receipt_json=?,updated_at=? WHERE batch_id=? AND item_index=0",
-        JSON.stringify(receipt), at, batch.batch_id).toArray();
-      sql.exec("UPDATE sync_batches SET status='CONFIRMED',last_error='',updated_at=?,completed_at=? WHERE batch_id=?",
-        at, at, batch.batch_id).toArray();
-      sql.exec("UPDATE sync_bindings SET last_push_at=?,updated_at=? WHERE season_id=? AND binding_version=?",
-        at, at, batch.season_id, batch.binding_version).toArray();
+      confirmExportReceipt(sql, batch, receipt, at, "BATCH");
       new C1Service(this.ctx, this.env).recordRequest(identity, "C2:EXPORT", "exportNextMember",
         requestId, result(), { season_id: batch.season_id, status: "BATCH_CONFIRMED",
           batch_id: batch.batch_id }, at);
     });
-    if (bindingChanged) throw new ApiError("SYNC_BINDING_CHANGED_AFTER_WRITE",
-      "Google verified the batch, but the binding changed before Cloudflare confirmed it.", 409);
+    if (exportStateChanged) throw new ApiError("SYNC_BINDING_CHANGED_AFTER_WRITE",
+      "Google verified the batch, but its binding or event changed before confirmation.", 409);
     return this.remember(identity, requestId, result());
   }
 
@@ -555,24 +538,9 @@ export class C2MemberExportService {
       expected: target.expected, target: target.target };
     const payload = { season_id: String(batch.season_id), batch_id: batch.batch_id,
       spreadsheet_id: target.spreadsheet_id, tab_id: target.tab_id, items: [item] };
-    if (await sha256Base64Url(JSON.stringify(payload)) !== String(batch.payload_digest) ||
-        `sha256_v1:${await sha256Base64Url(canonicalJson(target.expected))}` !== String(saved.expected_sheet_digest) ||
-        `sha256_v1:${await sha256Base64Url(canonicalJson(target.target))}` !== String(saved.target_digest) ||
-        Number(batch.writer_epoch) !== Number(this.env.WRITER_EPOCH)) {
-      throw new ApiError("SYNC_BATCH_INVALID", "The prepared season batch or writer epoch changed.", 409);
-    }
-    const alreadyConfirmed = this.ctx.storage.transactionSync(() => {
-      const current = firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batch.batch_id);
-      if (!current || current.payload_digest !== batch.payload_digest) {
-        throw new ApiError("SYNC_BATCH_INVALID", "The prepared season batch changed before sending.", 409);
-      }
-      if (current.status === "CONFIRMED") return true;
-      sql.exec(
-        `UPDATE sync_batches SET status='SENT',attempt_count=attempt_count+1,updated_at=?
-         WHERE batch_id=? AND status IN ('PREPARED','SENT','PARTIAL','FAILED')`,
-        new Date().toISOString(), batch.batch_id).toArray();
-      return false;
-    });
+    await verifyStoredPatch(batch, saved, payload, target.expected, target.target,
+      Number(this.env.WRITER_EPOCH));
+    const alreadyConfirmed = beginExportSend(this.ctx, batch);
     if (alreadyConfirmed) return this.remember(identity, requestId, result());
     let receipt: SeasonPatchReceipt;
     try {
@@ -581,21 +549,21 @@ export class C2MemberExportService {
         binding_version: Number(batch.binding_version), spreadsheet_id: target.spreadsheet_id,
         tab_id: target.tab_id, items: [item] });
     } catch (error) {
-      sql.exec("UPDATE sync_batches SET status='FAILED',last_error=?,updated_at=? WHERE batch_id=? AND status='SENT'",
-        error instanceof Error ? error.message.slice(0, 400) : "Unknown bridge error.",
-        new Date().toISOString(), batch.batch_id).toArray();
+      recordExportFailure(sql, batch.batch_id, error);
       throw error;
     }
     const baseline = seasonGroup(Object.fromEntries(seasonHeaders.map((header, index) =>
       [header, target.target[index]])), "SYSTEM_VERSION");
     const digest = `sha256_v1:${await sha256Base64Url(canonicalJson(baseline))}`;
-    let bindingChanged = false;
+    let exportStateChanged = false;
     this.ctx.storage.transactionSync(() => {
       const currentBinding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", batch.season_id);
       const currentSeason = firstRow<SqlRow>(sql,
         "SELECT binding_version,roster_version FROM seasons WHERE season_id=?", batch.season_id);
       const currentBatch = firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batch.batch_id);
+      const currentEvent = firstRow<SqlRow>(sql, "SELECT status FROM sync_outbox WHERE outbox_id=?", batch.first_outbox_id);
       if (currentBatch?.status === "CONFIRMED") return;
+      assertSentBatch(currentBatch);
       if (!currentBinding || !currentSeason || !currentBatch ||
           Number(currentBinding.binding_version) !== Number(batch.binding_version) ||
           Number(currentSeason.binding_version) !== Number(batch.binding_version) ||
@@ -604,11 +572,11 @@ export class C2MemberExportService {
             target.expected[seasonHeaders.indexOf("runtime_spreadsheet_id")] ||
           String(currentBatch.payload_digest) !== receipt.payload_digest ||
           String(currentBatch.first_outbox_id) !== String(batch.first_outbox_id) ||
+          currentEvent?.status !== "PENDING" ||
           !memberTargetsVerified(sql, String(batch.first_outbox_id), Number(batch.binding_version))) {
-        bindingChanged = true;
-        sql.exec("UPDATE sync_batches SET status='PARTIAL',last_error=?,updated_at=? WHERE batch_id=?",
-          "Google verified the season row, but the current binding changed; review before confirming.",
-          new Date().toISOString(), batch.batch_id).toArray();
+        exportStateChanged = true;
+        recordExportPartial(sql, batch.batch_id,
+          "Google verified the season row, but its binding or event changed; review before confirming.");
         return;
       }
       const currentBaseline = firstRow<SqlRow>(sql,
@@ -629,20 +597,13 @@ export class C2MemberExportService {
            cloud_version=excluded.cloud_version,sheet_digest=excluded.sheet_digest,updated_at=excluded.updated_at`,
         batch.season_id, batch.binding_version, batch.season_id,
         canonicalJson(baseline), digest, target.season_version, digest, at).toArray();
-      sql.exec("UPDATE sync_batch_items SET status='VERIFIED',receipt_json=?,updated_at=? WHERE batch_id=? AND item_index=0",
-        JSON.stringify(receipt), at, batch.batch_id).toArray();
-      sql.exec("UPDATE sync_batches SET status='CONFIRMED',last_error='',updated_at=?,completed_at=? WHERE batch_id=?",
-        at, at, batch.batch_id).toArray();
-      sql.exec("UPDATE sync_outbox SET status='CONFIRMED',completed_at=?,last_error='' WHERE outbox_id=? AND status='PENDING'",
-        at, batch.first_outbox_id).toArray();
-      sql.exec("UPDATE sync_bindings SET last_push_at=?,updated_at=? WHERE season_id=? AND binding_version=?",
-        at, at, batch.season_id, batch.binding_version).toArray();
+      confirmExportReceipt(sql, batch, receipt, at, "EVENT");
       new C1Service(this.ctx, this.env).recordRequest(identity, "C2:EXPORT", "exportNextMember",
         requestId, result(), { season_id: batch.season_id, status: "EVENT_CONFIRMED",
           batch_id: batch.batch_id }, at);
     });
-    if (bindingChanged) throw new ApiError("SYNC_BINDING_CHANGED_AFTER_WRITE",
-      "Google verified the season row, but the binding changed before Cloudflare confirmed it.", 409);
+    if (exportStateChanged) throw new ApiError("SYNC_BINDING_CHANGED_AFTER_WRITE",
+      "Google verified the season row, but its binding or event changed before confirmation.", 409);
     return this.remember(identity, requestId, result());
   }
 }

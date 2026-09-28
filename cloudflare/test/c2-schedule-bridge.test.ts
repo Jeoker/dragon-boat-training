@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BRIDGE_PROTOCOL } from "../src/bridge";
-import { patchGoogleScheduleRows, SHEET_SCOPES, type ScheduleSheetScope } from "../src/c2-sheet-bridge";
+import { patchGoogleMembers, patchGoogleScheduleRows, patchGoogleSeason, SHEET_SCOPES,
+  type ScheduleSheetScope } from "../src/c2-sheet-bridge";
 
 const seasonId = "season_bridge_test_001";
 const batchId = "batch_schedule_bridge_test_001";
@@ -76,4 +77,53 @@ describe("C2.4 schedule bridge receipt validation", () => {
       })).rejects.toMatchObject({ code: "BRIDGE_INVALID_RESPONSE" });
     }
   );
+
+  it("rejects an oversized schedule patch before contacting Google", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const target = SHEET_SCOPES.PRACTICE.headers.map((header) =>
+      header === "location" ? "x".repeat(9_500) : "");
+    await expect(patchGoogleScheduleRows(environment, {
+      request_id: "request_schedule_oversized_001", batch_id: batchId,
+      season_id: seasonId, binding_version: 1, entity_type: "PRACTICE",
+      spreadsheet_id: spreadsheetId, tab_id: tabId,
+      items: [{ row_id: "practice_oversized_001", expected: null, target }]
+    })).rejects.toMatchObject({ code: "SYNC_BATCH_TOO_LARGE" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("C2.4 shared Sheet patch receipt validation", () => {
+  it.each([
+    { scope: "MEMBER", action: "cloudflarePatchMemberSheet", id: "member_receipt_test_001",
+      key: "member_id", verifiedKey: "verified_member_ids" },
+    { scope: "SEASON", action: "cloudflarePatchSeasonSheet", id: seasonId,
+      key: "season_id", verifiedKey: "verified_season_ids" }
+  ] as const)("checks $scope row IDs and signed digest", async ({ scope, action, id, key, verifiedKey }) => {
+    const target = SHEET_SCOPES[scope].headers.map((header) => header === key ? id : "");
+    const input = { request_id: `request_${scope.toLowerCase()}_receipt_001`, batch_id: batchId,
+      season_id: seasonId, binding_version: 1, spreadsheet_id: spreadsheetId, tab_id: tabId,
+      items: [{ [key]: id, expected: scope === "SEASON" ? target : null, target }] };
+    const { items: _items, ...base } = input;
+    const patch = () => scope === "MEMBER" ?
+      patchGoogleMembers(environment, { ...base, items: [{ member_id: id, expected: null, target }] }) :
+      patchGoogleSeason(environment, { ...base, items: [{ season_id: id, expected: target, target }] });
+    let wrong = false;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const envelope = JSON.parse(String(init?.body));
+      expect(envelope.action).toBe(action);
+      const payload = JSON.parse(envelope.payload_json);
+      expect(payload.items).toEqual(input.items);
+      return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+        status: "verified", protocol_version: BRIDGE_PROTOCOL, team_id: environment.TEAM_ID,
+        season_id: seasonId, binding_version: 1, writer_epoch: 0,
+        operation_id: batchId, payload_digest: wrong ? "bad_digest" : envelope.payload_digest,
+        spreadsheet_id: spreadsheetId, tab_id: tabId,
+        [verifiedKey]: [wrong ? "wrong_id" : id], acknowledged_at: new Date().toISOString()
+      } });
+    });
+    expect(await patch()).toMatchObject({ [verifiedKey]: [id] });
+    wrong = true;
+    await expect(patch()).rejects.toMatchObject({ code: "BRIDGE_INVALID_RESPONSE" });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
 });

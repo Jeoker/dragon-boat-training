@@ -70,21 +70,30 @@ const SCHEDULE_PATCH_ACTIONS = {
   PRACTICE: "cloudflarePatchPracticeSheet"
 } as const;
 
-export async function patchGoogleScheduleRows(env: Env, input: {
+interface BoundPatchInput {
   request_id: string; batch_id: string; season_id: string; binding_version: number;
-  entity_type: ScheduleSheetScope; spreadsheet_id: string; tab_id: string; items: SchedulePatchItem[];
-}): Promise<SchedulePatchReceipt> {
+  spreadsheet_id: string; tab_id: string;
+}
+
+type BoundPatchAction = typeof SCHEDULE_PATCH_ACTIONS[ScheduleSheetScope] |
+  "cloudflarePatchSeasonSheet" | "cloudflarePatchMemberSheet";
+
+// Apps Script accepts at most 10,000 UTF-16 characters in payload_json.
+export const BRIDGE_PATCH_PAYLOAD_BUDGET = 9_500;
+
+export function assertBridgePatchBudget(payload: Record<string, unknown>): void {
+  if (JSON.stringify(payload).length > BRIDGE_PATCH_PAYLOAD_BUDGET) {
+    throw new ApiError("SYNC_BATCH_TOO_LARGE", "The patch exceeds the bridge payload limit.", 409);
+  }
+}
+
+async function patchBoundRows<R>(env: Env, input: BoundPatchInput, action: BoundPatchAction,
+  payload: Record<string, unknown>, verifiedKey: string, expectedIds: string[],
+  entityType?: ScheduleSheetScope): Promise<R> {
+  assertBridgePatchBudget(payload);
   const bridge = await callGoogleBridge(env, {
-    action: SCHEDULE_PATCH_ACTIONS[input.entity_type], request_id: input.request_id,
-    operation_id: input.batch_id, season_id: input.season_id,
-    binding_version: input.binding_version,
-    payload: { season_id: input.season_id, batch_id: input.batch_id, entity_type: input.entity_type,
-      spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id,
-      items: input.items.map((item) => ({
-        [input.entity_type === "SCHEDULE_TEMPLATE" ? "template_id" :
-          input.entity_type === "TRAINING_WEEK" ? "week_id" : "practice_id"]: item.row_id,
-        expected: item.expected, target: item.target
-      })) }
+    action, request_id: input.request_id, operation_id: input.batch_id,
+    season_id: input.season_id, binding_version: input.binding_version, payload
   });
   const receipt = bridge.data;
   if (receipt.status !== "verified" || receipt.protocol_version !== BRIDGE_PROTOCOL ||
@@ -93,58 +102,46 @@ export async function patchGoogleScheduleRows(env: Env, input: {
       receipt.writer_epoch !== Number(env.WRITER_EPOCH) ||
       receipt.operation_id !== input.batch_id || receipt.payload_digest !== bridge.payload_digest ||
       receipt.spreadsheet_id !== input.spreadsheet_id || receipt.tab_id !== input.tab_id ||
-      receipt.entity_type !== input.entity_type || !Array.isArray(receipt.verified_row_ids) ||
-      JSON.stringify(receipt.verified_row_ids) !== JSON.stringify(input.items.map((item) => item.row_id)) ||
-      typeof receipt.acknowledged_at !== "string" || !Number.isFinite(Date.parse(receipt.acknowledged_at))) invalid();
-  return receipt as unknown as SchedulePatchReceipt;
+      entityType !== undefined && receipt.entity_type !== entityType ||
+      !Array.isArray(receipt[verifiedKey]) ||
+      JSON.stringify(receipt[verifiedKey]) !== JSON.stringify(expectedIds) ||
+      typeof receipt.acknowledged_at !== "string" ||
+      !Number.isFinite(Date.parse(receipt.acknowledged_at))) invalid();
+  return receipt as unknown as R;
+}
+
+export async function patchGoogleScheduleRows(env: Env, input: {
+  request_id: string; batch_id: string; season_id: string; binding_version: number;
+  entity_type: ScheduleSheetScope; spreadsheet_id: string; tab_id: string; items: SchedulePatchItem[];
+}): Promise<SchedulePatchReceipt> {
+  return patchBoundRows<SchedulePatchReceipt>(env, input, SCHEDULE_PATCH_ACTIONS[input.entity_type],
+    { season_id: input.season_id, batch_id: input.batch_id, entity_type: input.entity_type,
+      spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id,
+      items: input.items.map((item) => ({
+        [input.entity_type === "SCHEDULE_TEMPLATE" ? "template_id" :
+          input.entity_type === "TRAINING_WEEK" ? "week_id" : "practice_id"]: item.row_id,
+        expected: item.expected, target: item.target
+      })) }, "verified_row_ids", input.items.map((item) => item.row_id), input.entity_type);
 }
 
 export async function patchGoogleSeason(env: Env, input: {
   request_id: string; batch_id: string; season_id: string; binding_version: number;
   spreadsheet_id: string; tab_id: string; items: SeasonPatchItem[];
 }): Promise<SeasonPatchReceipt> {
-  const bridge = await callGoogleBridge(env, {
-    action: "cloudflarePatchSeasonSheet", request_id: input.request_id,
-    operation_id: input.batch_id, season_id: input.season_id,
-    binding_version: input.binding_version,
-    payload: { season_id: input.season_id, batch_id: input.batch_id,
-      spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id, items: input.items }
-  });
-  const receipt = bridge.data;
-  if (receipt.status !== "verified" || receipt.protocol_version !== BRIDGE_PROTOCOL ||
-      receipt.team_id !== env.TEAM_ID || receipt.season_id !== input.season_id ||
-      receipt.binding_version !== input.binding_version ||
-      receipt.writer_epoch !== Number(env.WRITER_EPOCH) ||
-      receipt.operation_id !== input.batch_id || receipt.payload_digest !== bridge.payload_digest ||
-      receipt.spreadsheet_id !== input.spreadsheet_id || receipt.tab_id !== input.tab_id ||
-      !Array.isArray(receipt.verified_season_ids) ||
-      JSON.stringify(receipt.verified_season_ids) !== JSON.stringify(input.items.map((item) => item.season_id)) ||
-      typeof receipt.acknowledged_at !== "string" || !Number.isFinite(Date.parse(receipt.acknowledged_at))) invalid();
-  return receipt as unknown as SeasonPatchReceipt;
+  return patchBoundRows<SeasonPatchReceipt>(env, input, "cloudflarePatchSeasonSheet",
+    { season_id: input.season_id, batch_id: input.batch_id,
+      spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id, items: input.items },
+    "verified_season_ids", input.items.map((item) => item.season_id));
 }
 
 export async function patchGoogleMembers(env: Env, input: {
   request_id: string; batch_id: string; season_id: string; binding_version: number;
   spreadsheet_id: string; tab_id: string; items: MemberPatchItem[];
 }): Promise<MemberPatchReceipt> {
-  const bridge = await callGoogleBridge(env, {
-    action: "cloudflarePatchMemberSheet", request_id: input.request_id,
-    operation_id: input.batch_id, season_id: input.season_id,
-    binding_version: input.binding_version,
-    payload: { season_id: input.season_id, batch_id: input.batch_id,
-      spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id, items: input.items }
-  });
-  const receipt = bridge.data;
-  if (receipt.status !== "verified" || receipt.protocol_version !== BRIDGE_PROTOCOL ||
-      receipt.team_id !== env.TEAM_ID || receipt.season_id !== input.season_id ||
-      receipt.binding_version !== input.binding_version ||
-      receipt.writer_epoch !== Number(env.WRITER_EPOCH) ||
-      receipt.operation_id !== input.batch_id || receipt.payload_digest !== bridge.payload_digest ||
-      receipt.spreadsheet_id !== input.spreadsheet_id || receipt.tab_id !== input.tab_id ||
-      !Array.isArray(receipt.verified_member_ids) ||
-      JSON.stringify(receipt.verified_member_ids) !== JSON.stringify(input.items.map((item) => item.member_id)) ||
-      typeof receipt.acknowledged_at !== "string" || !Number.isFinite(Date.parse(receipt.acknowledged_at))) invalid();
-  return receipt as unknown as MemberPatchReceipt;
+  return patchBoundRows<MemberPatchReceipt>(env, input, "cloudflarePatchMemberSheet",
+    { season_id: input.season_id, batch_id: input.batch_id,
+      spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id, items: input.items },
+    "verified_member_ids", input.items.map((item) => item.member_id));
 }
 
 function invalid(): never {
