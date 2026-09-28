@@ -3,6 +3,7 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { localDateTimeToIso } from "../../shared/c1-rules";
 import { legacyCredentialDigest } from "../src/crypto";
+import { SHEET_SCOPES } from "../src/c2-sheet-bridge";
 import { applySchema, APPLICATION_SCHEMA_VERSION } from "../src/schema";
 import { TeamState } from "../src/team-state";
 import worker from "../src/index";
@@ -148,6 +149,94 @@ describe("C1.2 schedule migration slice", () => {
     });
   });
 
+  it("captures each schedule outbox event before later edits, cancellations, and template replacement", async () => {
+    const fixture = await setupWeek("schedule-event-snapshot");
+    const opened = await ok(await call("/internal/c1/confirm-training-week", {
+      request_id: "confirm_snapshot_001", session_token: fixture.token, season_id: fixture.seasonId,
+      week_id: fixture.week.week_id, week_version: fixture.week.week_version
+    }, "POST", fixture.testEnv));
+    const added = await ok(await call("/internal/c1/create-practice", {
+      request_id: "create_snapshot_001", session_token: fixture.token, season_id: fixture.seasonId,
+      week_id: fixture.week.week_id, week_version: opened.result.week.week_version,
+      practice_date: "2027-05-07", start_time: "07:00", end_time: "09:00",
+      location: "Original Extra Dock", address: "3 River Road", map_url: ""
+    }, "POST", fixture.testEnv));
+    const practiceId = added.result.practice.practice_id;
+    const published = await ok(await call("/internal/c1/publish-additional-practice", {
+      request_id: "publish_snapshot_001", session_token: fixture.token, season_id: fixture.seasonId,
+      week_id: fixture.week.week_id, week_version: added.result.week.week_version,
+      practice_id: practiceId, practice_version: added.result.practice.practice_version
+    }, "POST", fixture.testEnv));
+    expect(published.result.practice.schedule_published_at).toBeTruthy();
+    const updatePreview = await ok(await call("/internal/c1/preview-practice-change", {
+      request_id: "preview_snapshot_update_001", session_token: fixture.token, season_id: fixture.seasonId,
+      practice_id: practiceId, change: "UPDATE", practice_date: "2027-05-07",
+      start_time: "08:00", end_time: "10:00", timezone: "America/New_York",
+      location: "Moved Extra Dock", address: "4 River Road", map_url: ""
+    }, "POST", fixture.testEnv));
+    await ok(await call("/internal/c1/update-practice", {
+      request_id: "update_snapshot_001", session_token: fixture.token, season_id: fixture.seasonId,
+      week_id: fixture.week.week_id, practice_id: practiceId, week_version: updatePreview.week_version,
+      practice_version: updatePreview.practice_version, signup_version: updatePreview.signup_version,
+      preview_token: updatePreview.preview_token, practice_date: "2027-05-07", start_time: "08:00",
+      end_time: "10:00", timezone: "America/New_York", location: "Moved Extra Dock",
+      address: "4 River Road", map_url: ""
+    }, "POST", fixture.testEnv));
+    const cancelPreview = await ok(await call("/internal/c1/preview-practice-change", {
+      request_id: "preview_snapshot_cancel_001", session_token: fixture.token,
+      season_id: fixture.seasonId, practice_id: practiceId, change: "CANCEL"
+    }, "POST", fixture.testEnv));
+    await ok(await call("/internal/c1/cancel-practice", {
+      request_id: "cancel_snapshot_001", session_token: fixture.token, season_id: fixture.seasonId,
+      week_id: fixture.week.week_id, practice_id: practiceId,
+      week_version: cancelPreview.week_version, practice_version: cancelPreview.practice_version,
+      signup_version: cancelPreview.signup_version, preview_token: cancelPreview.preview_token
+    }, "POST", fixture.testEnv));
+    await ok(await call("/internal/c1/update-schedule-templates", {
+      request_id: "replace_snapshot_templates_001", session_token: fixture.token,
+      season_id: fixture.seasonId, season_version: 5, templates: [templates[0]]
+    }, "POST", fixture.testEnv));
+
+    const stub = fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const events = context.storage.sql.exec<{ payload_json: string }>(
+        "SELECT payload_json FROM sync_outbox WHERE topic='SCHEDULE_CHANGED' ORDER BY rowid"
+      ).toArray().map((row) => JSON.parse(row.payload_json));
+      expect(events.map((event: any) => event.action)).toEqual([
+        "updateScheduleTemplates", "prepareTrainingWeek", "confirmTrainingWeek", "createPractice",
+        "publishAdditionalPractice", "updatePractice", "cancelPractice", "updateScheduleTemplates"
+      ]);
+      expect(events.every((event: any) => event.entity.snapshot_schema === 1)).toBe(true);
+      expect(events[0].entity.season_version).toBe(5);
+      expect(events[0].entity.templates).toHaveLength(2);
+      expect(events[0].entity.templates.every((row: any) => row.active === true && row.template_version === 1)).toBe(true);
+      expect(events[1].entity.week.status).toBe("DRAFT");
+      expect(events[1].entity.practices).toHaveLength(2);
+      expect(Object.keys(events[1].entity.practices[0])).toEqual([...SHEET_SCOPES.PRACTICE.headers]);
+      expect(events[1].entity.practices.every((row: any) => row.practice_version === 1 &&
+        row.schedule_published_at === null)).toBe(true);
+      expect(events[2].entity.week.status).toBe("OPENED");
+      expect(events[2].entity.practices).toHaveLength(2);
+      expect(events[2].entity.practices.every((row: any) => row.practice_version === 2 &&
+        row.schedule_published_at !== null)).toBe(true);
+      expect(events[3].entity.practices[0].location).toBe("Original Extra Dock");
+      expect(events[3].entity.practices[0].schedule_published_at).toBeNull();
+      expect(events[4].entity.practices[0].schedule_published_at).toBeTruthy();
+      expect(events[4].entity.practices[0].practice_version).toBe(2);
+      expect(events[5].entity.practices[0].location).toBe("Moved Extra Dock");
+      expect(events[5].entity.practices[0].cancelled_at).toBeNull();
+      expect(events[6].entity.practices[0].cancelled_at).toBeTruthy();
+      expect(events[6].entity.practices[0].practice_version).toBe(4);
+      expect(events[7].entity.season_version).toBe(6);
+      expect(events[7].entity.templates.filter((row: any) => row.active === false)).toHaveLength(2);
+      expect(events[7].entity.templates.filter((row: any) => row.active === true)).toHaveLength(1);
+      expect(events[0].entity.templates.every((row: any) => row.active === true)).toBe(true);
+      expect(context.storage.sql.exec<{ location: string; cancelled_at: string }>(
+        "SELECT location, cancelled_at FROM practices WHERE season_id=? AND practice_id=?",
+        fixture.seasonId, practiceId).one().cancelled_at).toBeTruthy();
+    });
+  });
+
   it("replays completed writes before mutable season defaults can change their request identity", async () => {
     const fixture = await setupWeek("state-independent-replay");
     const createPayload = {
@@ -233,6 +322,16 @@ describe("C1.2 schedule migration slice", () => {
     expect(visible.practices).toHaveLength(2);
     await runDurableObjectAlarm(stub);
     await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const scheduleEvents = context.storage.sql.exec<{ payload_json: string }>(
+        "SELECT payload_json FROM sync_outbox WHERE topic='SCHEDULE_CHANGED' ORDER BY rowid"
+      ).toArray().map((row) => JSON.parse(row.payload_json));
+      const confirmation = scheduleEvents.find((event: any) => event.action === "confirmTrainingWeek").entity;
+      const opening = scheduleEvents.find((event: any) => event.action === "publishTrainingWeek").entity;
+      expect(confirmation.week.status).toBe("SCHEDULED");
+      expect(confirmation.practices).toEqual([]);
+      expect(opening.week.status).toBe("OPENED");
+      expect(opening.practices).toHaveLength(2);
+      expect(opening.practices.every((row: any) => row.schedule_published_at !== null)).toBe(true);
       expect(context.storage.sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM system_requests WHERE action='publishTrainingWeek'").one().count).toBe(1);
       expect(context.storage.sql.exec<{ status: string }>(

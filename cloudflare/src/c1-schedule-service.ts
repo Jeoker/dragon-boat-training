@@ -202,6 +202,30 @@ export class C1ScheduleService {
     ).toArray();
   }
 
+  private scheduleExportSnapshot(seasonId: string, options: {
+    weekId?: string; practiceIds?: string[]; templateIds?: string[];
+  } = {}): Record<string, unknown> {
+    const season = this.requireSeason(seasonId);
+    const templates = [...new Set(options.templateIds ?? [])].sort().map((id) => {
+      const row = firstRow<SqlRow>(this.ctx.storage.sql,
+        "SELECT * FROM schedule_templates WHERE season_id=? AND template_id=?", seasonId, id);
+      if (!row) throw new Error(`Missing schedule template ${id} during outbox capture.`);
+      return importComparable("schedule_templates", row);
+    });
+    const practiceIds = [...new Set(options.practiceIds ?? [])].sort();
+    if (practiceIds.length && !options.weekId) throw new Error("A schedule practice snapshot needs its week.");
+    const practiceRows = practiceIds.length ? this.practiceRows(seasonId, options.weekId!) : [];
+    const practicesById = new Map(practiceRows.map((row) => [String(row.practice_id), row]));
+    const practices = practiceIds.map((id) => {
+      const row = practicesById.get(id);
+      if (!row) throw new Error(`Missing practice ${id} in its week during outbox capture.`);
+      return importComparable("practices", row);
+    });
+    return { snapshot_schema: 1, season_version: Number(season.season_version), templates,
+      week: options.weekId ? importComparable("training_weeks", this.requireWeek(seasonId, options.weekId)) : null,
+      practices };
+  }
+
   private workspaceProjection(seasonId: string): Record<string, unknown> {
     this.requireSeason(seasonId);
     const sql = this.ctx.storage.sql;
@@ -441,6 +465,9 @@ export class C1ScheduleService {
       this.core.assertSessionCurrent(auth);
       const season = this.requireOpenSeason(input.season_id);
       if (Number(season.season_version) !== input.season_version) throw new ApiError("VERSION_CONFLICT", "The season changed.", 409);
+      const replacedTemplateIds = this.ctx.storage.sql.exec<{ template_id: string }>(
+        "SELECT template_id FROM schedule_templates WHERE season_id=? AND active=1", input.season_id
+      ).toArray().map((row) => row.template_id);
       this.ctx.storage.sql.exec(
         `UPDATE schedule_templates SET active=0, template_version=template_version+1, updated_at=?
          WHERE season_id=? AND active=1`, at, input.season_id).toArray();
@@ -458,7 +485,12 @@ export class C1ScheduleService {
         result: { season_id: input.season_id, season_version: nextSeasonVersion, templates: created } };
       this.core.recordRequest(identity, auth.coach_id, "updateScheduleTemplates", input.request_id, response,
         { season_id: input.season_id, template_count: created.length }, at);
-      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "updateScheduleTemplates", { season_id: input.season_id }, at);
+      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "updateScheduleTemplates", {
+        season_id: input.season_id,
+        ...this.scheduleExportSnapshot(input.season_id, {
+          templateIds: [...replacedTemplateIds, ...created.map((row) => String(row.template_id))]
+        })
+      }, at);
     });
     return this.currentView(response, input.season_id);
   }
@@ -545,8 +577,13 @@ export class C1ScheduleService {
       } };
       this.core.recordRequest(identity, auth.coach_id, "prepareTrainingWeek", input.request_id, response,
         { season_id: input.season_id, week_id: week.week_id, created }, at);
-      if (created) this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "prepareTrainingWeek",
-        { season_id: input.season_id, week_id: week.week_id }, at);
+      if (created) this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "prepareTrainingWeek", {
+        season_id: input.season_id, week_id: week.week_id,
+        ...this.scheduleExportSnapshot(input.season_id, {
+          weekId: String(week.week_id), practiceIds: this.practiceRows(input.season_id, String(week.week_id))
+            .map((row) => String(row.practice_id))
+        })
+      }, at);
     });
     return this.currentView(response, input.season_id);
   }
@@ -637,8 +674,13 @@ export class C1ScheduleService {
       } };
       this.core.recordRequest(identity, auth.coach_id, "confirmTrainingWeek", input.request_id, response,
         { season_id: input.season_id, week_id: input.week_id, open_at: openAt }, at);
-      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "confirmTrainingWeek",
-        { season_id: input.season_id, week_id: input.week_id }, at);
+      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "confirmTrainingWeek", {
+        season_id: input.season_id, week_id: input.week_id,
+        ...this.scheduleExportSnapshot(input.season_id, {
+          weekId: input.week_id,
+          practiceIds: currentWeek.status === "OPENED" ? active.map((row) => String(row.practice_id)) : []
+        })
+      }, at);
     });
     return this.currentView(response, input.season_id);
   }
@@ -676,8 +718,12 @@ export class C1ScheduleService {
       } };
       this.core.recordRequest(identity, auth ? auth.coach_id : "C1:SYSTEM", "publishTrainingWeek", requestId, response,
         { season_id: seasonId, week_id: weekId }, at);
-      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "publishTrainingWeek",
-        { season_id: seasonId, week_id: weekId }, at);
+      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "publishTrainingWeek", {
+        season_id: seasonId, week_id: weekId,
+        ...this.scheduleExportSnapshot(seasonId, {
+          weekId, practiceIds: practices.filter((row) => !row.cancelled_at).map((row) => String(row.practice_id))
+        })
+      }, at);
     });
     return response;
   }
@@ -735,8 +781,10 @@ export class C1ScheduleService {
       } };
       this.core.recordRequest(identity, auth.coach_id, "createPractice", input.request_id, response,
         { season_id: input.season_id, week_id: input.week_id, practice_id: practice.practice_id }, at);
-      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "createPractice",
-        { season_id: input.season_id, week_id: input.week_id, practice_id: practice.practice_id }, at);
+      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "createPractice", {
+        season_id: input.season_id, week_id: input.week_id, practice_id: practice.practice_id,
+        ...this.scheduleExportSnapshot(input.season_id, { weekId: input.week_id, practiceIds: [practice.practice_id] })
+      }, at);
     });
     return this.currentView(response, input.season_id);
   }
@@ -774,8 +822,10 @@ export class C1ScheduleService {
       } };
       this.core.recordRequest(identity, auth.coach_id, "publishAdditionalPractice", input.request_id, response,
         { season_id: input.season_id, week_id: input.week_id, practice_id: input.practice_id }, at);
-      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "publishAdditionalPractice",
-        { season_id: input.season_id, week_id: input.week_id, practice_id: input.practice_id }, at);
+      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", "publishAdditionalPractice", {
+        season_id: input.season_id, week_id: input.week_id, practice_id: input.practice_id,
+        ...this.scheduleExportSnapshot(input.season_id, { weekId: input.week_id, practiceIds: [input.practice_id] })
+      }, at);
     });
     return this.currentView(response, input.season_id);
   }
@@ -886,8 +936,10 @@ export class C1ScheduleService {
       this.core.recordRequest(identity, auth.coach_id, action, input.request_id, response,
         { season_id: input.season_id, week_id: input.week_id, practice_id: input.practice_id,
           before: preview.before, after: preview.after, signup_version: input.signup_version }, at);
-      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", action,
-        { season_id: input.season_id, week_id: input.week_id, practice_id: input.practice_id }, at);
+      this.core.enqueueChange(identity, "SCHEDULE_CHANGED", action, {
+        season_id: input.season_id, week_id: input.week_id, practice_id: input.practice_id,
+        ...this.scheduleExportSnapshot(input.season_id, { weekId: input.week_id, practiceIds: [input.practice_id] })
+      }, at);
     });
     return this.currentView(response, input.season_id);
   }
