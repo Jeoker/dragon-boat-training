@@ -5,6 +5,7 @@ import { SHEET_SCOPES, type ScheduleSheetScope } from "./c2-sheet-bridge";
 import { ApiError } from "./http";
 
 export interface ScheduleBaselineRow {
+  [key: string]: string | number;
   dependency_group: string;
   baseline_json: string;
   cloud_version: number;

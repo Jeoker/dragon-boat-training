@@ -116,6 +116,6 @@ schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、�
 
 排期写回也未开放。新的 `SCHEDULE_CHANGED` outbox 在七条 C1 排期事务内固定 `snapshot_schema=1`、赛季版本，以及本次改变的完整模板、周次和训练行。未来开放的确认事件只含周次变化；到期发布事件再含实际发布的训练。连续改期、取消和模板替换不会改变较早事件的快照。见[排期快照本地记录](../tests/C2-SCHEDULE-EVENT-SNAPSHOT-LOCAL.md)。
 
-本地 Google 桥接现可只读 `ScheduleTemplates`／`TrainingWeeks`，并对这两张表和 `Practices` 各执行最多四行的签名、绑定核验、前值保护和可恢复回执补丁。`SCHEDULE_TEMPLATE`／`TRAINING_WEEK` 目前只是桥接传输作用域，尚未进入 C2.3 的 B/C/G 语义比较和同步基线；没有 Worker 排期导出入口。见[排期桥接本地记录](../tests/C2-SCHEDULE-BRIDGE-LOCAL.md)。
+本地 Google 桥接可只读 `ScheduleTemplates`／`TrainingWeeks`，并对这两张表和 `Practices` 各执行最多四行的签名、绑定核验、前值保护和可恢复回执补丁。`SCHEDULE_TEMPLATE`／`TRAINING_WEEK` 已进入 schema v10 的 B/C/G、基线及批次约束；`PRACTICE` 使用真实 Google 原始列。`export-next-schedule` 的本地单行批次按模板→周次→训练推进，以赛季版本补丁核验后确认整事件。Coach 引用只通过受签名保护的只读桥接返回 ID，不传凭据摘要。旧无源快照事件和旧格式 B 均阻断；三表真实 Google 写回尚未验收。见[排期导出本地记录](../tests/C2-SCHEDULE-EXPORT-LOCAL-2026-09-28.md)。
 
-远端专用 `c2test`／独立 Google Web App v10 运行成员及赛季名单版本切片，已真实写入并核验十名隔离测试成员和名单版本 10；报名／排座／排期快照仍只在本地，未部署或写入 Google。入口受 C2 测试传输门及 `C2_MEMBER_EXPORT_ENABLED` 控制，生产和原 staging 的配置关闭；没有普通页面入口，也没有报名／训练／座位写回或 Google 修改导入。真实部分写入与响应丢失仍只由本地故障注入覆盖，余下实体批次完成前不能把 C2.4 标记为通过。自动调度、失败退避与暂停／恢复按迁移计划属于 C2.5。见[成员隔离验收](../tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)和[赛季版本验收](../tests/C2-SEASON-PATCH-LOCAL.md)。
+远端专用 `c2test` 仍为 Worker `0.12.0-c2-season-export`／schema v9 和独立 Google Web App v12 清洁构建，已真实核验十名隔离测试成员、名单版本 12、部分批次及已写后丢回执恢复；原 staging 和生产未启用。当前源代码的 `0.13.0-c2-schedule-export`／schema v10 **尚未部署**，所有部署配置的 `C2_SCHEDULE_EXPORT_ENABLED` 均为 false。没有普通页面排期写回或 Google 修改导入；自动调度、失败退避与暂停／恢复按迁移计划属于 C2.5。见[最新隔离验收](../tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)和[排期导出本地记录](../tests/C2-SCHEDULE-EXPORT-LOCAL-2026-09-28.md)。

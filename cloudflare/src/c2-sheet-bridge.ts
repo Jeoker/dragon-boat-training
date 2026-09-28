@@ -4,6 +4,7 @@ import { isRecord } from "./c1-support";
 import type { SyncEntityType } from "../../shared/c2-sync-rules";
 
 export const SHEET_SCOPES = {
+  COACH: { tab: "Coaches", headers: ["coach_id"] },
   SEASON: { tab: "Seasons", headers: ["season_id", "name", "start_date", "end_date", "timezone",
     "season_ends_at", "status", "form_id", "form_url", "runtime_spreadsheet_id",
     "response_sheet_id", "response_sheet_name", "field_mapping_json", "schema_fingerprint",
@@ -64,6 +65,18 @@ export interface SchedulePatchReceipt extends Omit<MemberPatchReceipt, "verified
   entity_type: ScheduleSheetScope; verified_row_ids: string[];
 }
 
+export function schedulePatchPayload(input: {
+  season_id: string; batch_id: string; entity_type: ScheduleSheetScope;
+  spreadsheet_id: string; tab_id: string; items: SchedulePatchItem[];
+}): Record<string, unknown> {
+  const idKey = input.entity_type === "SCHEDULE_TEMPLATE" ? "template_id" :
+    input.entity_type === "TRAINING_WEEK" ? "week_id" : "practice_id";
+  return { season_id: input.season_id, batch_id: input.batch_id,
+    entity_type: input.entity_type, spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id,
+    items: input.items.map((item) => ({ [idKey]: item.row_id,
+      expected: item.expected, target: item.target })) };
+}
+
 const SCHEDULE_PATCH_ACTIONS = {
   SCHEDULE_TEMPLATE: "cloudflarePatchScheduleTemplateSheet",
   TRAINING_WEEK: "cloudflarePatchTrainingWeekSheet",
@@ -115,13 +128,7 @@ export async function patchGoogleScheduleRows(env: Env, input: {
   entity_type: ScheduleSheetScope; spreadsheet_id: string; tab_id: string; items: SchedulePatchItem[];
 }): Promise<SchedulePatchReceipt> {
   return patchBoundRows<SchedulePatchReceipt>(env, input, SCHEDULE_PATCH_ACTIONS[input.entity_type],
-    { season_id: input.season_id, batch_id: input.batch_id, entity_type: input.entity_type,
-      spreadsheet_id: input.spreadsheet_id, tab_id: input.tab_id,
-      items: input.items.map((item) => ({
-        [input.entity_type === "SCHEDULE_TEMPLATE" ? "template_id" :
-          input.entity_type === "TRAINING_WEEK" ? "week_id" : "practice_id"]: item.row_id,
-        expected: item.expected, target: item.target
-      })) }, "verified_row_ids", input.items.map((item) => item.row_id), input.entity_type);
+    schedulePatchPayload(input), "verified_row_ids", input.items.map((item) => item.row_id), input.entity_type);
 }
 
 export async function patchGoogleSeason(env: Env, input: {
@@ -187,7 +194,8 @@ export async function readGoogleSheet<S extends SheetScope>(env: Env, input: {
       page.binding_version !== input.binding_version || page.writer_epoch !== Number(env.WRITER_EPOCH) ||
       page.operation_id !== input.operation_id || page.payload_digest !== bridge.payload_digest ||
       typeof page.spreadsheet_id !== "string" || !/^[A-Za-z0-9_-]{10,256}$/u.test(page.spreadsheet_id) ||
-      input.entity_type !== "SEASON" && page.spreadsheet_id !== input.runtime_spreadsheet_id ||
+      input.entity_type !== "SEASON" && input.entity_type !== "COACH" &&
+        page.spreadsheet_id !== input.runtime_spreadsheet_id ||
       page.tab_name !== SHEET_SCOPES[input.entity_type].tab ||
       typeof page.tab_id !== "string" || !/^(?:0|[1-9]\d{0,15})$/u.test(page.tab_id) ||
       !Number.isSafeInteger(page.read_at_ms) || Number(page.read_at_ms) < 0 ||

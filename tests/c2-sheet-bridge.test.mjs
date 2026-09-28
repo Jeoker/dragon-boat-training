@@ -57,6 +57,13 @@ test("signed Sheet inspection reads only registered bound tabs without repairing
   assert.equal(first.data.tab_name, "Members");
   assert.equal(first.data.rows[0].cells[4], "Alice");
   assert.equal(first.data.rows[0].row_number, 2);
+  const coaches = post(backend.context, signedSheetRead(season.season_id, 1, "COACH", "coach_001"));
+  assert.equal(coaches.ok, true);
+  assert.equal(coaches.data.tab_name, "Coaches");
+  assert.equal(coaches.data.headers[0], "coach_id");
+  assert.equal(coaches.data.headers.length, 1);
+  assert.equal(coaches.data.rows[0].cells.length, 1);
+  assert.ok(coaches.data.rows.length >= 1);
   const seating = post(backend.context, signedSheetRead(season.season_id, 1,
     "SEAT_PLAN_DRAFT", "seating_001"));
   assert.equal(seating.ok, true);

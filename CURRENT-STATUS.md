@@ -4,7 +4,7 @@
 
 > 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。仓库拆分本身不等同于 Cloudflare 迁移或新的生产功能验收；后续状态按下方各日期记录及“当前基线”判断。
 
-> Cloudflare 迁移现状：2026-09-28。C0、C1、C2.2 和 C2.3 阶段门槛已通过。专用 `c2test` 运行 C2.4 成员及赛季名单版本导出切片（独立 Apps Script v12 清洁构建、Worker `0.12.0-c2-season-export`、远端 schema v9）；**10 名隔离测试队员和名单版本 12 已真实写入 Google 并核验，但 C2.4 整体未通过**。两行部分批次恢复及 Google 已写、Worker 丢失回执后的原批次恢复均已隔离验收；本地 schema v10 排期同步基础未部署。原 staging 仍为 C2.2／schema v8。生产仍由 Apps Script／Sheets 写入，Pages 未切换。证据见[最新验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)、[最近代码审查](tests/C2-RECENT-CODE-REVIEW-2026-09-27.md)、[C2.3](tests/C2-SHEET-DIFF-ACCEPTANCE.md)和[C2.2](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+> Cloudflare 迁移现状：2026-09-28。C0、C1、C2.2 和 C2.3 阶段门槛已通过。专用 `c2test` 运行 C2.4 成员及赛季名单版本导出切片（独立 Apps Script v12 清洁构建、Worker `0.12.0-c2-season-export`、远端 schema v9）；**10 名隔离测试队员和名单版本 12 已真实写入 Google 并核验，但 C2.4 整体未通过**。两行部分批次恢复及 Google 已写、Worker 丢失回执后的原批次恢复均已隔离验收；本地 schema v10 排期同步基础及导出器未部署。原 staging 仍为 C2.2／schema v8。生产仍由 Apps Script／Sheets 写入，Pages 未切换。证据见[最新验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)、[排期本地集成](tests/C2-SCHEDULE-EXPORT-LOCAL-2026-09-28.md)、[最近代码审查](tests/C2-RECENT-CODE-REVIEW-2026-09-27.md)、[C2.3](tests/C2-SHEET-DIFF-ACCEPTANCE.md)和[C2.2](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
 
 > 2026-09-27 系统级复核快照：当时正式三页、只读 API、Coach 真实登录／受保护读取／退出通过；正式三场测试训练均已结束，故未重新执行正式报名写入。**该快照记录了后续 C2.4 接续前**隔离赛季的 `BASELINE_INCOMPLETE` 和七个待处理 outbox；接续后的状态见下方及赛季版本验收。该系统复核不等于 Cloudflare 端到端或生产切换通过。验收开始时线上 HTML 与本地构建不一致。详见[系统级验收快照](tests/SYSTEM-LEVEL-ACCEPTANCE-2026-09-27.md)。
 
@@ -14,7 +14,7 @@
 
 采用 **Cloudflare Workers + Durable Objects（SQLite）** 保存在线业务主数据，GitHub Pages 保留现有网页，Apps Script 收敛为 Google Form／Sheets 桥接。支持偶尔直接修改 Sheet，通过基线对比、业务校验和 Coach Mode 冲突处理导入；有变化时默认十分钟批量导出，网页保存不等待 Google。
 
-目标架构、C0–C4 顺序、三个 Epic 的新增工作包、真实 Google 边界及切换／回退门槛已整理到[Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md)。**当前在 C2.4：成员及赛季名单版本切片已隔离验收；报名、排座及排期事件快照、排期三表受限桥接、模板／周次同步基线和只读比较仅本地完成。三张排期表的字段映射和纯目标投影已本地校验，但尚无可执行 Worker 排期导出器。下一步是可恢复的关联批次、赛季版本收尾及远端验收，再接报名／座位。周期调度与失败退避归 C2.5。** 下方仍是实际运行中的 Apps Script 生产基线，不代表新架构已经上线。
+目标架构、C0–C4 顺序、三个 Epic 的新增工作包、真实 Google 边界及切换／回退门槛已整理到[Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md)。**当前在 C2.4：成员及赛季名单版本切片已隔离验收；报名、排座及排期事件快照、排期三表受限桥接、模板／周次同步基线和只读比较仅本地完成。三张排期表的字段映射、目标投影和 Worker 单行可恢复批次已通过本地集成测试；排期导出开关在所有部署配置仍关闭，尚未真实 Google 验收。下一步是独立测试环境的 schema v10／桥接升级和跨表写回、回执丢失验收，再接报名／座位。周期调度与失败退避归 C2.5。** 下方仍是实际运行中的 Apps Script 生产基线，不代表新架构已经上线。
 
 2026-09-19 已按 [C0 可执行工作清单](cloudflare-migration-plan.md#c0-可执行工作清单)建立 Worker、SQLite schema v1、不可变请求结果、事务审计／outbox／任务、alarm 租约与应用级重试、旧摘要兼容向量和签名桥接协议。真实本地 Wrangler 进程重启后数据、请求去重结果和待执行任务仍在；并发、回滚、闹钟修复及超过六次失败后的继续续排已有专项测试。独立 Apps Script Web App 的真实往返、重放及过期／篡改／错团队／错 binding／错代次拒绝均通过；实际 Free 计划和 Worker／DO 用量入口已核对。详细证据和观察边界见 [C0 验收记录](tests/C0-CLOUDFLARE-ACCEPTANCE.md)。
 
@@ -37,10 +37,10 @@
 - C2.4 成员／赛季版本导出（隔离切片）：远端 `c2test` 已将九个旧成员事件逐个确认；经精确 Google 行核对后只补缺失赛季 B，未猜测旧事件的中间名单版本。独立 Apps Script v10、Worker `0.12.0-c2-season-export` 部署后，真实 Form 新增第十名成员，成员行写入、人工赛季名称冲突阻断、原名恢复、同请求重试及赛季名单版本 0→10 均通过；最终十个事件及 11 个批次确认，五类 Sheet 诊断为零。Cloudflare `season_version=2`、Google `season_version=1` 仍有差异；该切片仅承诺名单版本写回。原 staging／生产未启用。见[成员隔离验收](tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)与[赛季版本验收](tests/C2-SEASON-PATCH-LOCAL.md)。
 - C2.4 报名／排座事件快照（仅本地）：新报名 outbox 在同一事务内捕获版本和所有变化的报名行，包括递补；若影响排座，还固定角色／版本状态、变化后的完整草稿船位及新正式 revision 的船位和姓名。手动草稿保存与正式发布事件使用同一持久结果快照逻辑。连续报名／换侧／取消／重新报名、草稿与正式版单侧或双侧变化及后续手动改稿均有回归。**尚无 Google 目标投影、报名或排座写回及远端部署**。见[事件快照记录](tests/C2-SIGNUP-EVENT-SNAPSHOT-LOCAL.md)。
 - C2.4 排期事件快照（仅本地）：七条 C1 排期写入路径在事务内固定本次变化的完整模板、周次和训练行，覆盖一次生成／开放多场、定时开放、单场新增／发布／改期／取消及模板替换。连续变化不会重写旧事件；**尚无 Google 三张排期表写回或远端部署**。见[排期事件快照记录](tests/C2-SCHEDULE-EVENT-SNAPSHOT-LOCAL.md)。
-- C2.4 排期 Sheet 桥接（仅本地）：签名只读新增模板与周次表，三张排期表可各自执行最多四行的受限补丁并返回可重试的逐表核验回执；沿用已有的绑定、表头、前值、部分进度和缺表拒绝规则。**尚无 Worker 排期导出器、跨表事件确认或真实 Google 验收**。见[桥接本地记录](tests/C2-SCHEDULE-BRIDGE-LOCAL.md)。
+- C2.4 排期 Sheet 桥接（仅本地）：签名只读新增模板与周次表，三张排期表可各自执行最多四行的受限补丁并返回可重试的逐表核验回执；沿用已有的绑定、表头、前值、部分进度和缺表拒绝规则。**该桥接切片当时尚无 Worker 导出器；现在已有下述本地导出切片，但仍未真实 Google 验收**。见[桥接本地记录](tests/C2-SCHEDULE-BRIDGE-LOCAL.md)。
 - C2 最近代码复审与技术债清理：修复成员导出跨 `binding_version` 误认已确认队员，抽取成员／赛季批次状态和摘要核验骨架及通用回执校验；旧请求不得重发 `SUPERSEDED` 批次或已停止待处理的 outbox，受控导入路径不再带着未完成批次提升绑定版本。独立 `c2test` 已核验名单版本 11、Google 两行 `PARTIAL` 同批恢复与回执重放，见[整体审查](tests/C2-RECENT-CODE-REVIEW-2026-09-27.md)。
-- C2.4 本轮回执丢失与排期同步基础：独立 Google 临时注入“已写后空响应”，Worker 将原批次留为 `FAILED`，重试核验同批回执并确认；测试 Web App 随后恢复为 v12 清洁构建。隔离名单版本达 12，最终 `Seasons` 1 行／`Members` 10 行零差异、零积压。本地 schema v10 扩展模板／周次的基线、冲突、批次实体及受保护 B/C/G 只读比较，旧行保留迁移测试通过；**未部署 schema v10，仍无排期 Worker 写回**。见[本轮验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)。
-- C2.4 排期字段与目标投影（仅本地）：`PRACTICE` B/C/G 改用 Google `Practices` 的实际原始列，移除不存在的 `signup_version` 及派生 `cancelled`；模板、周次和训练的每个 Sheet 列现都有显式规则。旧字段格式或缺依赖组的 B 会显示复核诊断、拒绝投影，不会静默覆盖。独立纯函数核验事件源快照、完整 B、Google 前值、身份、版本和公式风险，生成稳定的目标单元格；**此函数尚未接入 Worker 批次或部署远端，不能视为排期写回通过**。见[排期投影记录](tests/C2-SCHEDULE-PROJECTION-LOCAL-2026-09-28.md)。
+- C2.4 回执丢失与排期同步基础：独立 Google 临时注入“已写后空响应”，Worker 将原批次留为 `FAILED`，重试核验同批回执并确认；测试 Web App 随后恢复为 v12 清洁构建。隔离名单版本达 12，最终 `Seasons` 1 行／`Members` 10 行零差异、零积压。本地 schema v10 扩展模板／周次的基线、冲突、批次实体及受保护 B/C/G 只读比较，旧行保留迁移测试通过；**schema v10 及其后续本地排期导出器均未部署**。见[该阶段验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)。
+- C2.4 排期 Worker 导出（仅本地）：`PRACTICE` B/C/G 已改用 Google 原始列；旧格式或缺组 B 会阻断目标投影。独立开关控制的 `export-next-schedule` 按模板→周次→训练逐行准备并核验批次，同事件所有行确认后，最后只补丁系统赛季行捕获的 `season_version`，其回执与赛季 B、outbox 同事务确认。写入前核对绑定、完整 B、Google 前值、周次／模板与 Coach ID 引用；结尾再次核对各 Google 目标行。模拟已写后丢回执、人工改引用行、人工改已确认行、Cloudflare 另有赛季业务变化及旧无快照事件均在本地覆盖。**所有部署配置的排期导出开关仍为 false，schema v10 和本入口未远端部署**；跨表真实 Google 验收、多行请求合并及极窄人工竞态仍待做。见[排期导出本地记录](tests/C2-SCHEDULE-EXPORT-LOCAL-2026-09-28.md)。
 - 当前跟踪文件不包含 Script ID、私有 Spreadsheet ID、Coach Code、会话令牌或服务端 secret。早期测试夹具曾复用实际 Coach Code，普通提交不会清除 Git 历史，因此下一次管理后端部署前必须轮换该 Code。
 
 ## 运行中 Apps Script 的写入与恢复约束
@@ -76,7 +76,7 @@
 | C2.1 同步基础 | schema v7 的受控绑定／基线／来源影子导入、三方比较、严格 Google ID 和稳定来源约束、C2 独立传输门及 Coach 概览通过；该逻辑随 C2.2 已部署隔离 staging，但仍不自行访问 Google 或消费 outbox。见[C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md) |
 | C2.2 Form 来源导入 | 隔离 Form 的分页、通知、十分钟补扫、桥接故障恢复、人工核查与跨部署持久化通过；并发提交由本地强制竞态测试覆盖。原 staging v6→v8 保留 C1 数据与待同步 outbox；生产未切换。见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md) |
 | C2.3 Sheet 读取与差异 | 五类登记 Sheet 的真实只读读取、B/C/G 人工改名与恢复、持久诊断幂等和过时状态通过；异常结构、删行、改 ID、重复 ID、报名与排座依赖组由本地测试覆盖。`c2test` schema v9，原 staging／生产未升级；没有 Google 写回或自动导入。见[C2.3 验收](tests/C2-SHEET-DIFF-ACCEPTANCE.md) |
-| C2.4 成员导出及赛季名单版本关联 | 独立 `c2test`／Google 文件已真实核验 10 名成员、名单版本 12、人工冲突阻断与恢复、请求重放、两行 `PARTIAL` 同批恢复，以及 Google 已写后 Worker 丢失回执的原批次恢复；最终零差异。报名、排座和排期事务快照、排期三表受限桥接，以及 schema v10 模板／周次同步基础仅本地完成；排期／报名／排座跨 Tab 导出仍未验收，故 C2.4 整体未通过；原 staging／生产未启用。见[最新验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)、[先前审查](tests/C2-RECENT-CODE-REVIEW-2026-09-27.md)、[报名／排座快照](tests/C2-SIGNUP-EVENT-SNAPSHOT-LOCAL.md)、[排期快照](tests/C2-SCHEDULE-EVENT-SNAPSHOT-LOCAL.md)及[排期桥接](tests/C2-SCHEDULE-BRIDGE-LOCAL.md) |
+| C2.4 成员及排期导出切片 | 独立 `c2test`／Google 文件已真实核验 10 名成员、名单版本 12、人工冲突阻断与恢复、请求重放、两行 `PARTIAL` 同批恢复，以及 Google 已写后 Worker 丢失回执的原批次恢复；最终零差异。报名／排座事件快照、排期事务快照和桥接、schema v10 同步基础，以及排期 Worker 有序单行批次仅本地完成；排期／报名／排座跨 Tab 导出仍未真实验收，故 C2.4 整体未通过；原 staging／生产未启用。见[最新隔离验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)、[排期本地集成](tests/C2-SCHEDULE-EXPORT-LOCAL-2026-09-28.md)及[先前审查](tests/C2-RECENT-CODE-REVIEW-2026-09-27.md) |
 
 完整 P3 场景、版本和验证层次见[P3 验收报告](tests/P3-ACCEPTANCE.md)。[P2](tests/live-p2-acceptance.mjs)和[P3](tests/live-p3-acceptance.mjs)真实脚本均为显式手动运行，不随 `npm test` 执行，不修改真实训练时间。运行限制见[后端说明](backend/README.md#验证边界)。
 
@@ -99,7 +99,7 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 
 ## 未完成范围与下一步
 
-1. **继续 C2.4 排期导出，同时保留恢复门槛**：成员与赛季名单版本的隔离写回、Google 桥接两行部分批次恢复，以及 Google 已写后 Worker 丢失回执的原批次恢复已验收；报名、手动／系统排座及排期 outbox 已有固定源快照。排期三表桥接和 schema v10 模板／周次同步基线及 B/C/G 只读比较仅本地通过，尚未部署。`PRACTICE` 原始列映射与三张排期表的纯目标投影已在本地完成，旧格式 B 会阻断写回；下一步复用共享批次骨架实现按模板→周次→训练顺序的可恢复批次，并以赛季版本补丁收尾后确认整事件；核验报名训练行及成员前置关系后再接报名／座位。多行 payload 须按实际字符长度拆批，旧无快照事件不得从当前行推测；只有 Google 核验后才能推进基线和 outbox。`c2test` 当前无旧绑定残留；未来若出现旧绑定未完成批次，须经 Google 核验后清障，不能直接删除。极窄人工并发与配额耗尽仍待隔离验收；`season_version` 的非名单变化仍须单独设计导出或明确由 Google 管理。十分钟周期调度、失败退避及暂停／恢复属于 C2.5。不得连接生产 Pages／Google 文件或改变 Apps Script 写入归属。计划及门槛见[Cloudflare 迁移计划](cloudflare-migration-plan.md#c2-可执行工作清单)和[本轮验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)。
+1. **继续 C2.4 排期导出，同时保留恢复门槛**：成员与赛季名单版本的隔离写回、Google 桥接两行部分批次恢复，以及 Google 已写后 Worker 丢失回执的原批次恢复已验收；报名、手动／系统排座及排期 outbox 已有固定源快照。排期三表桥接和 schema v10 模板／周次同步基线及 B/C/G 只读比较仅本地通过，尚未部署。`PRACTICE` 原始列映射与三张排期表的纯目标投影已在本地完成，旧格式 B 会阻断写回；本地已复用共享批次骨架实现按模板→周次→训练顺序的单行可恢复批次、赛季版本收尾和整事件确认；下一步在独立 Google 文件进行真实写回及故障验收，并评估多行合并；核验报名训练行及成员前置关系后再接报名／座位。多行 payload 须按实际字符长度拆批，旧无快照事件不得从当前行推测；只有 Google 核验后才能推进基线和 outbox。`c2test` 当前无旧绑定残留；未来若出现旧绑定未完成批次，须经 Google 核验后清障，不能直接删除。极窄人工并发与配额耗尽仍待隔离验收；`season_version` 的非名单变化仍须单独设计导出或明确由 Google 管理。十分钟周期调度、失败退避及暂停／恢复属于 C2.5。不得连接生产 Pages／Google 文件或改变 Apps Script 写入归属。计划及门槛见[Cloudflare 迁移计划](cloudflare-migration-plan.md#c2-可执行工作清单)和[本轮验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)。
 2. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
 3. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
 4. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。

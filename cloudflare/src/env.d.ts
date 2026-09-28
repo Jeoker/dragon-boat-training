@@ -8,4 +8,5 @@ interface Env {
   GOOGLE_BRIDGE_URL?: string;
   GOOGLE_BRIDGE_SECRET?: string;
   C2_MEMBER_EXPORT_ENABLED?: string;
+  C2_SCHEDULE_EXPORT_ENABLED?: string;
 }

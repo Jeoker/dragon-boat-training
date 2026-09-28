@@ -1,5 +1,7 @@
 # C2.4 排期字段与目标投影：本地切片
 
+后续 Worker 批次接入与本地集成结果见[排期导出记录](C2-SCHEDULE-EXPORT-LOCAL-2026-09-28.md)；本页“尚未接入”仅描述当时这一纯投影切片。
+
 日期：2026-09-28。只更改本地源代码和测试；没有部署 Worker、Apps Script 或 Pages，也没有向 Google 排期表写入数据。独立 `c2test` 仍运行上一切片的 schema v9／成员导出，正式生产仍由 Apps Script 写入。
 
 `Practices` 真正保存的是 `cancelled_at`、`cancelled_by`、`schedule_published_at`、`schedule_published_by` 等原始列，没有 `signup_version`。旧 B/C/G 映射中的派生 `cancelled` 和 `signup_version` 已移除；模板、周次及训练的全部 Google 表头列现均有明确的同步字段定义。受保护只读比较直接使用训练 SQLite 原始行。旧字段格式、缺依赖组的 B 产生复核诊断；纯目标投影则拒绝继续，不能将旧 B 当成已确认的新格式。

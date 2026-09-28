@@ -5,7 +5,8 @@ function cloudflareReadSheetRecords_(request) {
   var seasonId = requireRequestString_(input, "season_id", 8, 128);
   var entityType = requireRequestString_(input, "entity_type", 1, 40);
   var tabNames = {
-    SEASON: "Seasons", MEMBER: "Members", SIGNUP: "SignupsCurrent", PRACTICE: "Practices",
+    COACH: "Coaches", SEASON: "Seasons", MEMBER: "Members",
+    SIGNUP: "SignupsCurrent", PRACTICE: "Practices",
     SCHEDULE_TEMPLATE: "ScheduleTemplates", TRAINING_WEEK: "TrainingWeeks",
     SEAT_PLAN_DRAFT: "SeatPlanState"
   };
@@ -18,7 +19,8 @@ function cloudflareReadSheetRecords_(request) {
       verified.binding_version !== seasonId + ":" + bindingVersion) {
     throw dragonBoatRequestError_("BRIDGE_OWNERSHIP_INVALID", "The Sheet read has the wrong season binding.");
   }
-  var spreadsheet = entityType === "SEASON" ? getSystemSpreadsheet_() : getSeasonSpreadsheet_(season);
+  var spreadsheet = entityType === "SEASON" || entityType === "COACH" ?
+    getSystemSpreadsheet_() : getSeasonSpreadsheet_(season);
   var inspectedCells = 0;
   var inspectedCharacters = 0;
   function readTab(name) {
@@ -43,6 +45,16 @@ function cloudflareReadSheetRecords_(request) {
       rows: values.slice(1).map(function (cells, index) { return { row_number: index + 2, cells: cells }; }) };
   }
   var primary = readTab(tabNames[entityType]);
+  if (entityType === "COACH") {
+    if (JSON.stringify(primary.headers) !== JSON.stringify(DRAGON_BOAT_SHEET_HEADERS_.Coaches)) {
+      throw dragonBoatRequestError_("SHEET_STRUCTURE_INVALID", "The Coach tab header changed.");
+    }
+    // Reference checks need stable IDs only; never send credential digests to the Worker.
+    primary.headers = ["coach_id"];
+    primary.rows = primary.rows.map(function (row) {
+      return { row_number: row.row_number, cells: [row.cells[0]] };
+    });
+  }
   var secondary = entityType === "SEAT_PLAN_DRAFT" ? readTab("SeatPlanCurrent") : null;
   return {
     protocol_version: verified.protocol,
