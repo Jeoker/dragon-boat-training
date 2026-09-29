@@ -49,7 +49,7 @@
         "TEAM_ID": "pentasus-c2-test",
         "C2_FORM_POLL_ENABLED": "false",
         "C2_MEMBER_EXPORT_ENABLED": "true",
-        "C2_SCHEDULE_EXPORT_ENABLED": "false",
+        "C2_SCHEDULE_EXPORT_ENABLED": "true",
         "C2_EXPORT_POLL_ENABLED": "false"
       },
       "durable_objects": {
