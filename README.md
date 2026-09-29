@@ -1,7 +1,7 @@
 # Dragon Boat Training
 
 > 实现进度、部署版本、验收边界和接续位置统一见[当前进度](CURRENT-STATUS.md)。
-> 产品规则最后核对：2026-09-21
+> 产品规则最后核对：2026-09-29
 > 仓库拆分：2026-09-13
 
 为龙舟队提供按赛季入队、每周排期与训练报名、候补、排座和历史荣誉墙。网站部署于 GitHub Pages；已确认的目标架构使用 Cloudflare Workers + Durable Objects（SQLite）处理业务和保存在线主数据，Google Form 负责入队登记，Google Sheets 保存可核对的运营副本及私有归档。迁移完成前线上继续运行 Apps Script，实际状态见当前进度。

@@ -5,7 +5,7 @@
 - [api-v1.json](api-v1.json)：现行 Apps Script 动作、权限、输入和输出清单。
 - [api-cloudflare-c0.json](api-cloudflare-c0.json)：Cloudflare C0 隔离测试接口，不是生产报名 API。
 - [api-cloudflare-c1.json](api-cloudflare-c1.json)：C1 核心、权限、排期、报名候补、排座、冻结历史与运维切片的隔离接口。
-- [api-cloudflare-c2.json](api-cloudflare-c2.json)：C2 绑定元数据、Form 稳定来源导入、受保护 Sheet 差异检查与签名提交通知的隔离接口；Google 读取和诊断元数据持久化已实现，Sheet 写入尚未实现。
+- [api-cloudflare-c2.json](api-cloudflare-c2.json)：C2 绑定、Form 导入、Sheet 差异、成员／赛季版本导出，以及本地排期导出和导出运维的隔离接口。成员／赛季名单版本已通过独立 Google 验收；排期及 C2.5 运维仅通过本地测试，均未接入生产。
 
 这些 JSON 文件是接口清单，不是可交给 JSON Schema 验证器执行的 schema。C1 的动作注册在 `shared/c1-actions.ts`，核心、排期、报名、排座及历史 DTO／运行时解析分别在 `shared/c1-contract.ts`、`shared/c1-schedule-contract.ts`、`shared/c1-signup-contract.ts`、`shared/c1-seating-contract.ts` 和 `shared/c1-history-contract.ts`；服务端业务校验及客户端响应校验继续独立承担相应边界。测试核对代码与清单中的动作、方法和权限声明一致。不能把字段清单当成完整的类型或权限校验。C1 影子导入的 `transport_only` 表示本地／staging 隔离入口只使用统一的 `C1_TEST_KEY` 传输门；当前没有第二个未实现的 migration key，production 入口仍固定隐藏。
 
@@ -52,8 +52,8 @@ Apps Script 业务失败可能仍是 HTTP 200，必须检查 envelope。客户�
 - 历史摘要的 JSON 字段顺序、规范化和请求范围是兼容数据，不能为了统一风格改写。新增摘要算法必须带版本并保留旧向量测试。
 - 审计分页在每个日志内保持倒序追加顺序，只比较两个日志的队首时间来合并。同时间记录和迟到恢复记录不会漏项；这不是全局按业务发生时间排序的承诺。分页期间审计表不可被人工排序或删行。
 
-## C1 接口设计约束
+## C1／C2 接口设计约束
 
-C1.1–C1.6 已按业务域建立独立请求／响应 DTO、运行时解析、集中动作注册和契约测试；C2 继续沿用这一结构。C2.1 的 `shared/c2-sync-contract.ts` 明确校验 Google 文件 ID、数字 Sheet tab ID、字段映射、依赖组基线及稳定来源键；同步概览用 `binding_current` 区分旧绑定和当前赛季版本，基线及开放冲突按当前绑定版本计数，来源按整季计数。C2.2 增加 Form 回答签名读取、分页导入、只读核查列表、显式关联和默认关闭的定时轮询。C2.3 的 `check-sheet-differences` 要求当前绑定与 Coach 会话，按登记 Tab 比较 B/C/G，并把需要处理的诊断持久化；它会写诊断元数据，但不改变业务行、不写 Google、不驱动业务维护。C2.4 已有成员及赛季名单版本的隔离写回，以及排期写回的本地实现；报名、排座、冲突处理和浏览器页面仍待后续切片。接口清单只描述边界，不能代替运行时类型系统。版本与选项、业务结果与当前视图、公开与管理投影分别建模。
+C1.1–C1.6 已按业务域建立独立请求／响应 DTO、运行时解析、集中动作注册和契约测试；C2 继续沿用这一结构。C2.1 的 `shared/c2-sync-contract.ts` 校验 Google 文件 ID、数字 Sheet tab ID、字段映射、依赖组基线及稳定来源键；同步概览用 `binding_current` 区分旧绑定和当前赛季版本。C2.2 增加 Form 签名读取、分页导入、核查列表、显式关联和默认关闭的轮询。C2.3 的 `check-sheet-differences` 要求当前绑定与 Coach 会话，按登记 Tab 比较 B/C/G；它只写诊断元数据，不修改业务行或 Google。C2.4 的成员及赛季名单版本已隔离写回，排期导出仅本地实现。C2.5 本地实现了 Coach 会话保护的每季暂停／恢复、冲突分页／详情、积压概览和关闭状态的持久退避轮询；冲突的业务解决与导入、报名／排座写回和浏览器页面尚未实现。接口清单只描述边界，不能代替运行时类型系统；部署与验收状态以[当前进度](../CURRENT-STATUS.md)为准。
 
 新接口统一写入回执与可选视图；异步维护返回任务标识及任务状态。旧动作和历史日志由兼容适配器承接，不破坏重试摘要。接口清单中的服务版本、动作、方法、权限和直接业务错误必须由测试与实现对照；修改 `wrangler.jsonc` 后必须重新生成 Worker 类型。前端接入前验证完整业务响应形状、缓存代次、结果查询权限和浏览器 CORS。C0 探针的成功只证明持久化与桥接机制，不能替代这些业务契约验收。

@@ -58,7 +58,7 @@
       "writes": true,
       "request": ["request_id", "session_token", "season_id", "entity_type"],
       "response": ["season_id", "binding_version", "entity_type", "tab_name", "tab_id", "secondary_tab", "read_at", "sheet_digest", "rows_read", "status", "compared", "findings_count", "findings", "truncated", "conflict_records"],
-      "notes": "C2.3 signed, read-only Google inspection for registered Seasons, Members, SignupsCurrent, Practices, and SeatPlanState plus SeatPlanCurrent tabs; local schema v10 also includes ScheduleTemplates and TrainingWeeks. Requires current binding and Coach session. The Worker validates ownership and exact layout, indexes stable IDs, then compares confirmed B groups with current C and G. Sorting is immaterial; missing, duplicate or altered IDs and unknown columns are surfaced without importing. Seat roles and occupied cells share one dependency group. CONFLICT, REVIEW_REQUIRED and REJECTED findings become versioned sync_conflicts rows; unchanged findings cause no metadata write, repeated findings are idempotent, and cleared findings are superseded after a complete scan. Findings are capped at 100 in the response; truncated or structurally invalid scans do not supersede unrelated open records. conflict_records reports created, superseded and open counts. No business row, Google cell, baseline or outbox is changed."
+      "notes": "C2.3 signed, read-only Google inspection for registered Seasons, Members, SignupsCurrent, Practices, and SeatPlanState plus SeatPlanCurrent tabs; current local schema v11 also includes ScheduleTemplates and TrainingWeeks through its v10 migration. Requires current binding and Coach session. The Worker validates ownership and exact layout, indexes stable IDs, then compares confirmed B groups with current C and G. Sorting is immaterial; missing, duplicate or altered IDs and unknown columns are surfaced without importing. Seat roles and occupied cells share one dependency group. CONFLICT, REVIEW_REQUIRED and REJECTED findings become versioned sync_conflicts rows; unchanged findings cause no metadata write, repeated findings are idempotent, and cleared findings are superseded after a complete scan. Findings are capped at 100 in the response; truncated or structurally invalid scans do not supersede unrelated open records. conflict_records reports created, superseded and open counts. No business row, Google cell, baseline or outbox is changed."
     },
     "/internal/c2/export-next-member": {
       "method": "POST",
@@ -132,8 +132,8 @@
     "SHEET_PATCH_STRUCTURE", "SHEET_PATCH_CONFLICT", "SHEET_PATCH_UNVERIFIED", "INTERNAL_ERROR"
   ],
   "not_yet_in_this_slice": [
-    "Frozen-history Sheet inspection", "signup and seating Google writes", "real Google acceptance for practice writes", "automatic outbox scheduling",
-    "conflict resolution or pagination", "pause or resume actions", "annual Google export",
+    "Frozen-history Sheet inspection", "signup and seating Google writes", "real Google acceptance for schedule writes", "production automatic export scheduling",
+    "business conflict resolution or import", "same-season independent-entity progress around a blocked conflict", "annual Google export",
     "production or Pages routing", "browser CORS"
   ]
 }
