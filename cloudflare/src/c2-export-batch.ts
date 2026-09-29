@@ -66,6 +66,8 @@ export function confirmExportReceipt(sql: SqlStorage, batch: ExportBatch, receip
     JSON.stringify(receipt), at, batch.batch_id).toArray();
   sql.exec("UPDATE sync_batches SET status='CONFIRMED',last_error='',updated_at=?,completed_at=? WHERE batch_id=? AND status='SENT'",
     at, at, batch.batch_id).toArray();
+  sql.exec("DELETE FROM sync_export_retries WHERE season_id=? AND binding_version=?",
+    batch.season_id, batch.binding_version).toArray();
   if (completion === "EVENT") {
     sql.exec("UPDATE sync_outbox SET status='CONFIRMED',completed_at=?,last_error='' WHERE outbox_id=? AND status='PENDING'",
       at, batch.first_outbox_id).toArray();

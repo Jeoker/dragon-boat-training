@@ -1,5 +1,6 @@
 import {
-  parseCheckSheetDifferences, parseImportSyncFoundation, parseListFormReviews, parseSyncOverview, type ImportSyncFoundationRequest,
+  parseCheckSheetDifferences, parseGetSyncConflict, parseImportSyncFoundation, parseListFormReviews,
+  parseListSyncConflicts, parseSetExportPause, parseSyncOverview, type ImportSyncFoundationRequest,
   type SourceImportSnapshot, type SyncBaselineSnapshot, type SyncBindingSnapshot
 } from "../../shared/c2-sync-contract";
 import { SYNC_FIELD_DEFINITIONS, formResponseSourceId, normalizeSyncValue } from "../../shared/c2-sync-rules";
@@ -16,6 +17,8 @@ import { persistSheetFindings, prepareSheetFindings } from "./c2-sheet-findings"
 import { C2MemberExportService } from "./c2-member-export";
 import { C2ScheduleExportService } from "./c2-schedule-export";
 import { assertNoUnfinishedExportBeforeRebinding } from "./sync-binding-guard";
+import { exportPauseRequested, unfinishedExport } from "./c2-export-control";
+import { pollDueExports } from "./c2-export-poller";
 
 interface PreparedBaseline extends SyncBaselineSnapshot { baseline_digest: string; }
 
@@ -71,10 +74,14 @@ export class C2SyncService {
   async handle(path: string, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (path === "/internal/c2/import-sync-foundation") return this.importFoundation(raw);
     if (path === "/internal/c2/get-sync-overview") return this.getOverview(raw);
+    if (path === "/internal/c2/set-export-pause") return this.setExportPause(raw);
+    if (path === "/internal/c2/list-sync-conflicts") return this.listSyncConflicts(raw);
+    if (path === "/internal/c2/get-sync-conflict") return this.getSyncConflict(raw);
     if (path === "/internal/c2/list-form-reviews") return this.listFormReviews(raw);
     if (path === "/internal/c2/check-sheet-differences") return this.checkSheetDifferences(raw);
     if (path === "/internal/c2/export-next-member") return new C2MemberExportService(this.ctx, this.env).process(raw);
     if (path === "/internal/c2/export-next-schedule") return new C2ScheduleExportService(this.ctx, this.env).process(raw);
+    if (path === "/internal/c2/poll-due-exports") return pollDueExports(this.ctx, this.env, raw);
     if (path === "/internal/c2/pull-form-responses") return new C2FormService(this.ctx, this.env).pull(raw);
     if (path === "/internal/c2/form-submit-notification") return this.formSubmitNotification(raw);
     if (path === "/internal/c2/poll-active-forms") return this.pollActiveForms(raw);
@@ -439,22 +446,61 @@ export class C2SyncService {
     const count = (query: string, ...values: SqlStorageValue[]) =>
       Number(this.ctx.storage.sql.exec<{ count: number }>(query, ...values).one().count);
     const bindingCurrent = !!binding && Number(binding.binding_version) === Number(season.binding_version);
+    const unfinished = unfinishedExport(this.ctx.storage.sql, input.season_id);
+    const requested = exportPauseRequested(this.ctx.storage.sql, input.season_id);
+    const retry = bindingCurrent ? firstRow<SqlRow>(this.ctx.storage.sql,
+      `SELECT failure_count,next_attempt_at_ms,last_error,updated_at FROM sync_export_retries
+       WHERE season_id=? AND binding_version=?`, input.season_id, Number(season.binding_version)) : null;
+    const oldestOutbox = firstRow<SqlRow>(this.ctx.storage.sql,
+      `SELECT topic,created_at,due_at_ms FROM sync_outbox WHERE status='PENDING'
+       AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY created_at,rowid LIMIT 1`, input.season_id);
+    const due = firstRow<{ next_due_ms: number | null }>(this.ctx.storage.sql,
+      `SELECT MIN(due_at_ms) AS next_due_ms FROM sync_outbox WHERE status='PENDING'
+       AND json_extract(payload_json,'$.entity.season_id')=?`, input.season_id);
+    const openConflicts = bindingCurrent ? count(
+      "SELECT COUNT(*) AS count FROM sync_conflicts WHERE season_id=? AND binding_version=? AND status='OPEN'",
+      input.season_id, Number(season.binding_version)) : 0;
+    const sourceReviews = count(
+      "SELECT COUNT(*) AS count FROM source_imports WHERE season_id=? AND status='REVIEW_REQUIRED'",
+      input.season_id);
+    const hints: string[] = [];
+    if (!binding) hints.push("BINDING_MISSING");
+    else if (!bindingCurrent) hints.push("BINDING_STALE");
+    if (unfinished) hints.push("UNFINISHED_GOOGLE_BATCH");
+    if (unfinished && Number(binding?.export_paused ?? 0) === 1) {
+      hints.push("SOURCE_PAUSE_BLOCKS_BATCH_RECOVERY");
+    }
+    if (oldestOutbox) hints.push("PENDING_EXPORT");
+    if (openConflicts) hints.push("OPEN_CONFLICTS");
+    if (sourceReviews) hints.push("SOURCE_REVIEW_REQUIRED");
+    if (retry && Number(retry.failure_count) > 0) hints.push("EXPORT_RETRYING");
+    const exportStatus = !bindingCurrent ? "UNAVAILABLE" : Number(binding.export_paused) === 1
+      ? unfinished ? "BLOCKED" : "SOURCE_PAUSED"
+      : requested ? unfinished ? "PAUSING" : "PAUSED" : "RUNNING";
     return {
       season_id: input.season_id,
       binding: binding ? bindingComparable(binding) : null,
       binding_current: bindingCurrent,
+      export_control: { status: exportStatus, pause_requested: requested,
+        source_paused: Number(binding?.export_paused ?? 0) === 1,
+        unfinished_batch: unfinished,
+        retry: retry ? { failure_count: Number(retry.failure_count),
+          next_attempt_at: Number(retry.next_attempt_at_ms) > 0
+            ? new Date(Number(retry.next_attempt_at_ms)).toISOString() : null,
+          last_error: String(retry.last_error), updated_at: String(retry.updated_at) } : null,
+        oldest_pending: oldestOutbox ? { topic: String(oldestOutbox.topic),
+          created_at: String(oldestOutbox.created_at),
+          due_at: new Date(Number(oldestOutbox.due_at_ms)).toISOString() } : null,
+        next_due_at: due?.next_due_ms == null ? null : new Date(Number(due.next_due_ms)).toISOString(),
+        integrity_hints: hints },
       counts: {
         baselines: bindingCurrent ? count("SELECT COUNT(*) AS count FROM sync_baselines WHERE season_id=? AND binding_version=?",
           input.season_id, Number(season.binding_version)) : 0,
         imported_sources: count(
           "SELECT COUNT(*) AS count FROM source_imports WHERE season_id=? AND status='IMPORTED'",
           input.season_id),
-        sources_needing_review: count(
-          "SELECT COUNT(*) AS count FROM source_imports WHERE season_id=? AND status='REVIEW_REQUIRED'",
-          input.season_id),
-        open_conflicts: bindingCurrent ? count(
-          "SELECT COUNT(*) AS count FROM sync_conflicts WHERE season_id=? AND binding_version=? AND status='OPEN'",
-          input.season_id, Number(season.binding_version)) : 0,
+        sources_needing_review: sourceReviews,
+        open_conflicts: openConflicts,
         pending_batches: count(
           "SELECT COUNT(*) AS count FROM sync_batches WHERE season_id=? AND status IN ('PREPARED','SENT','PARTIAL','FAILED')",
           input.season_id),
@@ -465,6 +511,86 @@ export class C2SyncService {
       schema_version: APPLICATION_SCHEMA_VERSION,
       generated_at: new Date().toISOString()
     };
+  }
+
+  private async setExportPause(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const input = parseContract(() => parseSetExportPause(raw));
+    const coach = await this.core.authenticateSession(input.session_token);
+    const identity = await this.core.createRequestIdentity(coach.coach_id, "setExportPause",
+      input.request_id, { season_id: input.season_id, paused: input.paused });
+    const replay = this.core.replayRequest(identity.requestKey, identity.payloadDigest);
+    if (replay) return replay;
+    const at = new Date().toISOString();
+    return this.ctx.storage.transactionSync(() => {
+      this.core.assertSessionCurrent(coach);
+      const binding = firstRow<SqlRow>(this.ctx.storage.sql,
+        `SELECT b.binding_version,b.export_paused FROM sync_bindings b JOIN seasons s
+         ON s.season_id=b.season_id AND s.binding_version=b.binding_version
+         WHERE b.season_id=?`, input.season_id);
+      if (!binding) throw new ApiError("SYNC_BINDING_NOT_FOUND", "A current Sheet binding is required.", 409);
+      const unfinished = unfinishedExport(this.ctx.storage.sql, input.season_id);
+      if (!input.paused && exportPauseRequested(this.ctx.storage.sql, input.season_id) && unfinished) {
+        throw new ApiError("SYNC_EXPORT_DRAINING",
+          "The existing Google batch must be verified before export can resume.", 409);
+      }
+      this.ctx.storage.sql.exec(
+        `INSERT INTO sync_export_controls(season_id,pause_requested,updated_at) VALUES (?,?,?)
+         ON CONFLICT(season_id) DO UPDATE SET pause_requested=excluded.pause_requested,
+           updated_at=excluded.updated_at`, input.season_id, input.paused ? 1 : 0, at).toArray();
+      if (!input.paused) {
+        this.ctx.storage.sql.exec(
+          "UPDATE sync_export_retries SET next_attempt_at_ms=0,updated_at=? WHERE season_id=? AND binding_version=?",
+          at, input.season_id, Number(binding.binding_version)).toArray();
+      }
+      const result = { operation: operationReceipt("setExportPause", input.request_id, at),
+        result: { season_id: input.season_id, status: Number(binding.export_paused) === 1
+          ? unfinished ? "BLOCKED" : "SOURCE_PAUSED"
+          : input.paused ? unfinished ? "PAUSING" : "PAUSED" : "RUNNING",
+          unfinished_batch_id: unfinished?.batch_id ?? null,
+          // The next new batch must run its normal fresh B/C/G preflight; no old patch is released.
+          next_batch_requires_fresh_comparison: !input.paused } };
+      this.core.recordRequest(identity, coach.coach_id, "setExportPause", input.request_id,
+        result, result.result, at);
+      return result;
+    });
+  }
+
+  private async listSyncConflicts(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const input = parseContract(() => parseListSyncConflicts(raw));
+    await this.core.authenticateSession(input.session_token);
+    const binding = firstRow<SqlRow>(this.ctx.storage.sql,
+      `SELECT b.binding_version FROM sync_bindings b JOIN seasons s
+       ON s.season_id=b.season_id AND s.binding_version=b.binding_version WHERE b.season_id=?`,
+      input.season_id);
+    if (!binding) throw new ApiError("SYNC_BINDING_NOT_FOUND", "A current Sheet binding is required.", 409);
+    const rows = this.ctx.storage.sql.exec<SqlRow>(
+      `SELECT conflict_id,entity_type,entity_id,dependency_group,finding_outcome,reason,
+        row_number,cloud_version,created_at,resolved_at,status FROM sync_conflicts
+       WHERE season_id=? AND binding_version=? AND status=? AND conflict_id>?
+       ORDER BY conflict_id LIMIT ?`, input.season_id, Number(binding.binding_version),
+      input.status, input.cursor ?? "", input.limit + 1).toArray();
+    const items = rows.slice(0, input.limit);
+    return { season_id: input.season_id, binding_version: Number(binding.binding_version),
+      status: input.status, items,
+      next_cursor: rows.length > input.limit ? String(items.at(-1)?.conflict_id) : null };
+  }
+
+  private async getSyncConflict(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const input = parseContract(() => parseGetSyncConflict(raw));
+    await this.core.authenticateSession(input.session_token);
+    const binding = firstRow<SqlRow>(this.ctx.storage.sql,
+      `SELECT b.binding_version FROM sync_bindings b JOIN seasons s
+       ON s.season_id=b.season_id AND s.binding_version=b.binding_version WHERE b.season_id=?`,
+      input.season_id);
+    if (!binding) throw new ApiError("SYNC_BINDING_NOT_FOUND", "A current Sheet binding is required.", 409);
+    const row = firstRow<SqlRow>(this.ctx.storage.sql,
+      "SELECT * FROM sync_conflicts WHERE season_id=? AND binding_version=? AND conflict_id=?",
+      input.season_id, Number(binding.binding_version), input.conflict_id);
+    if (!row) throw new ApiError("SYNC_CONFLICT_NOT_FOUND", "The conflict does not exist.", 404);
+    const { baseline_json, cloud_json, google_json, resolution_json, ...metadata } = row;
+    return { ...metadata, baseline: JSON.parse(String(baseline_json)),
+      cloudflare: JSON.parse(String(cloud_json)), google: JSON.parse(String(google_json)),
+      resolution: resolution_json == null ? null : JSON.parse(String(resolution_json)) };
   }
 
   private async checkSheetDifferences(raw: Record<string, unknown>): Promise<Record<string, unknown>> {

@@ -1,9 +1,9 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C2.4 member and roster-version export verified in isolated Google; schedule export is local only and disabled in all deployed configurations",
-  "contract_version": "2026-09-28.c2.4-schedule",
-  "service_version": "0.13.0-c2-schedule-export",
+  "status": "C2.5 operations implemented and tested locally only; C2.4 schedule export still lacks isolated Google acceptance",
+  "contract_version": "2026-09-29.c2.5-operations",
+  "service_version": "0.14.0-c2-operations",
   "transport_gate": "C2 routes are absent in production. Local or staging diagnostic routes require C2_TEST_KEY; the Form notification instead verifies a fresh Google bridge HMAC, team and writer epoch before reaching the DO. This gate is independent from the Coach session required by management reads.",
   "response": {
     "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
@@ -23,8 +23,26 @@
       "authentication": "session_token",
       "writes": false,
       "request": ["request_id", "session_token", "season_id"],
-      "response": ["season_id", "binding", "binding_current", "counts", "schema_version", "generated_at"],
+      "response": ["season_id", "binding", "binding_current", "export_control", "counts", "schema_version", "generated_at"],
       "notes": "Protected C2.1 diagnostic projection. File identifiers remain private. binding_current shows whether the stored binding matches the season version. Baseline count uses the active binding version; source counts cover the entire season, including unmoved mappings from older binding versions. Conflict, batch and business outbox counts cover the season."
+    },
+    "/internal/c2/set-export-pause": {
+      "method": "POST", "authentication": "session_token", "writes": true,
+      "request": ["request_id", "session_token", "season_id", "paused"],
+      "response_result": ["season_id", "status", "unfinished_batch_id", "next_batch_requires_fresh_comparison"],
+      "notes": "Coach-only per-season runtime pause is separate from imported binding metadata. PAUSING means an existing PREPARED/SENT/PARTIAL/FAILED batch still needs same-batch verification; no new batch can be prepared. Resume refuses unresolved batches. New batches re-read Google and compare B/C/G before preparation. This does not itself import a Google edit."
+    },
+    "/internal/c2/list-sync-conflicts": {
+      "method": "POST", "authentication": "session_token", "writes": false,
+      "request": ["request_id", "session_token", "season_id", "optional status", "optional limit", "optional cursor"],
+      "response": ["season_id", "binding_version", "status", "items", "next_cursor"],
+      "notes": "Coach-only current-binding conflict summaries, ordered by stable conflict_id with a limit of 100. Full B/C/G evidence requires get-sync-conflict."
+    },
+    "/internal/c2/get-sync-conflict": {
+      "method": "POST", "authentication": "session_token", "writes": false,
+      "request": ["request_id", "session_token", "season_id", "conflict_id"],
+      "response": ["conflict metadata", "baseline", "cloudflare", "google", "resolution"],
+      "notes": "Coach-only detail for one current-binding conflict; does not resolve or import it."
     },
     "/internal/c2/list-form-reviews": {
       "method": "POST",
@@ -57,6 +75,11 @@
       "request": ["request_id", "season_id"],
       "response": ["season_id", "status", "optional batch_id", "optional outbox_id", "optional entity_type", "optional row_id", "optional cloud_version", "optional season_version"],
       "notes": "Local-only, separately feature-gated C2.4 schedule exporter. An expired SCHEDULE_CHANGED event must contain a complete transaction-captured snapshot; older events are rejected rather than reconstructed. One bounded row batch at a time exports templates, then the week, then practices, with durable before/target values, signed Google verification, same-batch retry, full mapped baselines, Coach and schedule reference checks. The existing system Seasons row receives that event's captured season_version as the last batch; only its verified receipt atomically confirms the event and season baseline. A final read detects edits to previously confirmed schedule rows. Google cross-tab writes are not atomic. This route is disabled by configuration in original staging, isolated c2test and production until a controlled live acceptance is prepared."
+    },
+    "/internal/c2/poll-due-exports": {
+      "method": "POST", "authentication": "transport_only", "writes": true,
+      "request": ["request_id"], "response": ["polled", "results"],
+      "notes": "Feature-gated ten-minute scheduler. Processes at most four due seasons and one resumable batch per season per tick. Per-season SQLite retry counts and next-attempt times survive platform retry limits, cap backoff at six hours and never delete the outbox. Unsupported earlier event topics remain pending and are reported as blocked/retrying. Disabled in every deployed configuration."
     },
     "/internal/c2/pull-form-responses": {
       "method": "POST",
@@ -99,7 +122,7 @@
     "SYNC_BINDING_NOT_FOUND", "SYNC_BINDING_STALE", "SYNC_BINDING_IDENTITY_CONFLICT", "SYNC_MAPPING_INVALID",
     "SOURCE_IDENTITY_INVALID", "SOURCE_IDENTITY_CONFLICT", "FORM_IMPORT_CLOSED",
     "FORM_IMPORT_STALE", "FORM_SOURCE_REVIEW_REQUIRED", "FORM_POLL_DISABLED", "FORM_NOTIFICATION_INVALID", "FORM_NOTIFICATION_PENDING", "SHEET_INSPECTION_STALE", "BINDING_SHEET_MISSING", "SHEET_SCAN_LIMIT", "BRIDGE_CONFIGURATION_REQUIRED",
-    "BRIDGE_UNAVAILABLE", "BRIDGE_INVALID_RESPONSE", "MEMBER_EXPORT_DISABLED", "SCHEDULE_EXPORT_DISABLED", "SYNC_EXPORT_PAUSED",
+    "BRIDGE_UNAVAILABLE", "BRIDGE_INVALID_RESPONSE", "MEMBER_EXPORT_DISABLED", "SCHEDULE_EXPORT_DISABLED", "SYNC_EXPORT_PAUSED", "SYNC_EXPORT_DRAINING", "EXPORT_POLL_DISABLED", "EXPORT_HANDLER_DISABLED", "SYNC_CONFLICT_NOT_FOUND",
     "SYNC_EXPORT_STALE", "SYNC_OUTBOX_BLOCKED", "SYNC_BATCH_INVALID", "SYNC_BATCH_TOO_LARGE", "SYNC_BASELINE_INCOMPLETE",
     "SYNC_MEMBER_INVALID", "SYNC_MEMBER_MISSING", "SYNC_MEMBER_NEEDS_REVIEW", "SYNC_BINDING_CHANGED_AFTER_WRITE",
     "SYNC_OUTBOX_INVALID", "SYNC_ROSTER_VERSION_UNCAPTURED", "SYNC_ROSTER_VERSION_REGRESSION",

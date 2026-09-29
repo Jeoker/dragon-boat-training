@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 10;
+export const APPLICATION_SCHEMA_VERSION = 11;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -525,6 +525,26 @@ function applyC2ScheduleEntitySchema(sql: SqlStorage): void {
   `).toArray();
 }
 
+function applyC2ExportOperationsSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS sync_export_controls (
+      season_id TEXT PRIMARY KEY,
+      pause_requested INTEGER NOT NULL DEFAULT 0 CHECK (pause_requested IN (0, 1)),
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE TABLE IF NOT EXISTS sync_export_retries (
+      season_id TEXT PRIMARY KEY,
+      binding_version INTEGER NOT NULL CHECK (binding_version >= 1),
+      failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+      next_attempt_at_ms INTEGER NOT NULL DEFAULT 0 CHECK (next_attempt_at_ms >= 0),
+      last_error TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+  `).toArray();
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -545,6 +565,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 8) applyC2FormImportSchema(sql);
     if (currentVersion < 9) applyC2SheetInspectionSchema(sql);
     if (currentVersion < 10) applyC2ScheduleEntitySchema(sql);
+    if (currentVersion < 11) applyC2ExportOperationsSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

@@ -160,6 +160,8 @@ export class TeamState extends DurableObject<Env> {
         const data = await new C2SyncService(this.ctx, this.env).handle(url.pathname, input);
         // Sync bookkeeping must not drive unrelated business jobs.
         if (c2Action?.writes && url.pathname !== "/internal/c2/check-sheet-differences" &&
+            url.pathname !== "/internal/c2/set-export-pause" &&
+            url.pathname !== "/internal/c2/poll-due-exports" &&
             url.pathname !== "/internal/c2/export-next-member" &&
             url.pathname !== "/internal/c2/export-next-schedule") {
           await this.repairScheduledWork();

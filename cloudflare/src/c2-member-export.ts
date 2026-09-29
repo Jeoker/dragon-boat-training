@@ -5,6 +5,7 @@ import { sha256Base64Url } from "./crypto";
 import { ApiError } from "./http";
 import { firstRow, parseContract, type SqlRow } from "./c1-support";
 import { C1Service } from "./c1-service";
+import { assertExportMayPrepare } from "./c2-export-control";
 import { assertSentBatch, beginExportSend, confirmExportReceipt, recordExportFailure,
   recordExportPartial, verifyStoredPatch, type ExportBatch } from "./c2-export-batch";
 import { assertBridgePatchBudget, patchGoogleMembers, patchGoogleSeason, readGoogleSheet, SHEET_SCOPES,
@@ -207,6 +208,7 @@ export class C2MemberExportService {
       `SELECT * FROM sync_batches WHERE season_id=? AND direction='CLOUDFLARE_TO_GOOGLE'
        AND status IN ('PREPARED','SENT','PARTIAL','FAILED') ORDER BY created_at,batch_id LIMIT 1`, input.season_id);
     if (batch) return this.send(batch, input.request_id, identity);
+    assertExportMayPrepare(sql, input.season_id);
     const event = firstRow<ExportEvent>(sql,
       `SELECT rowid AS sequence,outbox_id,payload_json FROM sync_outbox
        WHERE status='PENDING' AND due_at_ms<=? AND
@@ -282,6 +284,7 @@ export class C2MemberExportService {
     assertBridgePatchBudget(payload);
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
+      assertExportMayPrepare(sql, input.season_id);
       const current = firstRow<SqlRow>(sql, "SELECT binding_version,export_paused,runtime_spreadsheet_id FROM sync_bindings WHERE season_id=?",
         input.season_id);
       const currentMember = firstRow<SqlRow>(sql, "SELECT member_version FROM members WHERE season_id=? AND member_id=?",
@@ -376,6 +379,7 @@ export class C2MemberExportService {
     const targetDigest = `sha256_v1:${await sha256Base64Url(canonicalJson(target))}`;
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
+      assertExportMayPrepare(sql, String(season.season_id));
       const current = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", season.season_id);
       const currentSeason = firstRow<SqlRow>(sql, "SELECT binding_version,roster_version FROM seasons WHERE season_id=?", season.season_id);
       const competing = firstRow<SqlRow>(sql,

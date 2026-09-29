@@ -79,16 +79,35 @@ export default {
     }
   },
   async scheduled(controller, env): Promise<void> {
-    if (env.ENVIRONMENT === "production" || String(env.C2_FORM_POLL_ENABLED) !== "true") return;
-    const response = await env.TEAM_STATE.getByName(env.TEAM_ID).fetch(new Request(
-      "https://internal.example/internal/c2/poll-active-forms", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ request_id: `c2_poll_${controller.scheduledTime}` })
-      }));
-    if (!response.ok) throw new Error("Scheduled Form polling did not complete.");
-    const body = await response.json() as { data?: { results?: Array<{ status: string }> } };
-    if (body.data?.results?.some((item) => item.status === "RETRY_REQUIRED")) {
-      throw new Error("Scheduled Form polling has retryable failures.");
+    if (env.ENVIRONMENT === "production") return;
+    const tasks: Array<{ enabled: boolean; path: string; request_id: string }> = [
+      { enabled: String(env.C2_FORM_POLL_ENABLED) === "true",
+        path: "poll-active-forms", request_id: `c2_poll_${controller.scheduledTime}` },
+      { enabled: String(env.C2_EXPORT_POLL_ENABLED) === "true",
+        path: "poll-due-exports", request_id: `c2_export_poll_${controller.scheduledTime}` }
+    ];
+    let formFailure = false;
+    for (const task of tasks) {
+      if (!task.enabled) continue;
+      const response = await env.TEAM_STATE.getByName(env.TEAM_ID).fetch(new Request(
+        `https://internal.example/internal/c2/${task.path}`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ request_id: task.request_id })
+        }));
+      if (!response.ok) {
+        if (task.path === "poll-active-forms") {
+          formFailure = true;
+          continue;
+        }
+        throw new Error(`Scheduled ${task.path} did not complete.`);
+      }
+      const body = await response.json() as { data?: { results?: Array<{ status: string }> } };
+      if (task.path === "poll-active-forms" &&
+          body.data?.results?.some((item) => item.status === "RETRY_REQUIRED")) {
+        formFailure = true;
+      }
+      // Export retry state is durable in SQLite; platform retry limits must not discard it.
     }
+    if (formFailure) throw new Error("Scheduled Form polling has retryable failures.");
   }
 } satisfies ExportedHandler<Env>;

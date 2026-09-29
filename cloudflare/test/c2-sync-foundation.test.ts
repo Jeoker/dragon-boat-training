@@ -812,7 +812,7 @@ describe("C2.2 Form source import", () => {
       sql.exec("UPDATE app_meta SET value='9' WHERE key='schema_version'").toArray();
       applySchema(context.storage);
       expect(sql.exec<{ value: string }>(
-        "SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe("10");
+        "SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe(String(APPLICATION_SCHEMA_VERSION));
       for (const table of tables) expect(sql.exec(`SELECT * FROM ${table}`).toArray()).toEqual(prior[table]);
       expect(sql.exec("PRAGMA foreign_key_check").toArray()).toEqual([]);
       for (const index of ["sync_baselines_entity_idx", "sync_conflicts_open_idx"]) {

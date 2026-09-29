@@ -16,7 +16,8 @@ export default defineConfig({
           GOOGLE_BRIDGE_URL: "https://script.google.com/macros/s/local-fixture/exec",
           GOOGLE_BRIDGE_SECRET: "local-test-bridge-secret",
           C2_MEMBER_EXPORT_ENABLED: "true",
-          C2_SCHEDULE_EXPORT_ENABLED: "true"
+          C2_SCHEDULE_EXPORT_ENABLED: "true",
+          C2_EXPORT_POLL_ENABLED: "true"
         }
       }
     })

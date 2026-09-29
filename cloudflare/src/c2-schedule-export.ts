@@ -4,6 +4,7 @@ import { SYNC_FIELD_DEFINITIONS, normalizeSyncValue } from "../../shared/c2-sync
 import { sha256Base64Url } from "./crypto";
 import { ApiError } from "./http";
 import { C1Service } from "./c1-service";
+import { assertExportMayPrepare } from "./c2-export-control";
 import { firstRow, isRecord, parseContract, type SqlRow } from "./c1-support";
 import { assertSentBatch, beginExportSend, confirmExportReceipt, recordExportFailure,
   recordExportPartial, verifyStoredPatch, type ExportBatch } from "./c2-export-batch";
@@ -180,6 +181,7 @@ export class C2ScheduleExportService {
        AND status IN ('PREPARED','SENT','PARTIAL','FAILED') ORDER BY created_at,batch_id LIMIT 1`,
       input.season_id);
     if (unfinished) return this.send(unfinished, input.request_id, identity);
+    assertExportMayPrepare(sql, input.season_id);
     const event = firstRow<ScheduleEvent>(sql,
       `SELECT outbox_id,payload_json,topic,due_at_ms FROM sync_outbox
        WHERE status='PENDING' AND json_extract(payload_json,'$.entity.season_id')=?
@@ -254,6 +256,7 @@ export class C2ScheduleExportService {
     const targetDigest = `sha256_v1:${await sha256Base64Url(canonicalJson(stored.target))}`;
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
+      assertExportMayPrepare(sql, String(binding.season_id));
       const current = firstRow<SqlRow>(sql,
         "SELECT binding_version,export_paused,runtime_spreadsheet_id FROM sync_bindings WHERE season_id=?",
         binding.season_id);
@@ -416,6 +419,7 @@ export class C2ScheduleExportService {
     const targetDigest = `sha256_v1:${await sha256Base64Url(canonicalJson(target))}`;
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
+      assertExportMayPrepare(sql, String(binding.season_id));
       const current = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", binding.season_id);
       const currentSeason = firstRow<SqlRow>(sql,
         "SELECT binding_version,season_version FROM seasons WHERE season_id=?", binding.season_id);

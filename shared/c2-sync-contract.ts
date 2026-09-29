@@ -58,6 +58,11 @@ export interface ImportSyncFoundationRequest {
 }
 
 export interface SyncOverviewRequest extends SessionRequest { season_id: string; }
+export interface SetExportPauseRequest extends SessionRequest { season_id: string; paused: boolean; }
+export interface ListSyncConflictsRequest extends SessionRequest {
+  season_id: string; limit: number; cursor: string | null; status: "OPEN" | "RESOLVED" | "SUPERSEDED";
+}
+export interface GetSyncConflictRequest extends SessionRequest { season_id: string; conflict_id: string; }
 export interface CheckSheetDifferencesRequest extends SessionRequest {
   season_id: string;
   entity_type: SyncEntityType;
@@ -217,6 +222,28 @@ export function parseImportSyncFoundation(value: unknown): ImportSyncFoundationR
 export function parseSyncOverview(value: unknown): SyncOverviewRequest {
   const input = object(value);
   return { ...sessionRequest(input), season_id: identifier(input, "season_id") };
+}
+
+export function parseSetExportPause(value: unknown): SetExportPauseRequest {
+  const input = object(value);
+  return { ...sessionRequest(input), season_id: identifier(input, "season_id"),
+    paused: boolean(input, "paused") };
+}
+
+export function parseListSyncConflicts(value: unknown): ListSyncConflictsRequest {
+  const input = object(value);
+  const limit = input.limit === undefined ? 50 : integer(input, "limit", 1);
+  if (limit > 100) throw new ContractValidationError("limit must not exceed 100.", "limit");
+  return { ...sessionRequest(input), season_id: identifier(input, "season_id"), limit,
+    cursor: input.cursor == null ? null : identifier(input, "cursor"),
+    status: input.status === undefined ? "OPEN" :
+      enumeration(input, "status", ["OPEN", "RESOLVED", "SUPERSEDED"] as const) };
+}
+
+export function parseGetSyncConflict(value: unknown): GetSyncConflictRequest {
+  const input = object(value);
+  return { ...sessionRequest(input), season_id: identifier(input, "season_id"),
+    conflict_id: identifier(input, "conflict_id") };
 }
 
 export function parseCheckSheetDifferences(value: unknown): CheckSheetDifferencesRequest {

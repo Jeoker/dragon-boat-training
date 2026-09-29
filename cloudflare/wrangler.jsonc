@@ -10,7 +10,7 @@
   },
   "vars": {
     "ENVIRONMENT": "staging",
-    "SERVICE_VERSION": "0.13.0-c2-schedule-export",
+    "SERVICE_VERSION": "0.14.0-c2-operations",
     "CONTRACT_VERSION": "2026-09-19.c0",
     "BACKEND_INSTANCE": "dragon-boat-training-staging",
     "BACKEND_GENERATION": "cf-c2-staging-4",
@@ -18,7 +18,8 @@
     "TEAM_ID": "pentasus",
     "C2_FORM_POLL_ENABLED": "false",
     "C2_MEMBER_EXPORT_ENABLED": "false",
-    "C2_SCHEDULE_EXPORT_ENABLED": "false"
+    "C2_SCHEDULE_EXPORT_ENABLED": "false",
+    "C2_EXPORT_POLL_ENABLED": "false"
   },
   "durable_objects": {
     "bindings": [
@@ -40,7 +41,7 @@
       "triggers": { "crons": [] },
       "vars": {
         "ENVIRONMENT": "staging",
-        "SERVICE_VERSION": "0.13.0-c2-schedule-export",
+        "SERVICE_VERSION": "0.14.0-c2-operations",
         "CONTRACT_VERSION": "2026-09-19.c0",
         "BACKEND_INSTANCE": "dragon-boat-training-c2-test",
         "BACKEND_GENERATION": "cf-c2-isolated-1",
@@ -48,7 +49,8 @@
         "TEAM_ID": "pentasus-c2-test",
         "C2_FORM_POLL_ENABLED": "false",
         "C2_MEMBER_EXPORT_ENABLED": "true",
-        "C2_SCHEDULE_EXPORT_ENABLED": "false"
+        "C2_SCHEDULE_EXPORT_ENABLED": "false",
+        "C2_EXPORT_POLL_ENABLED": "false"
       },
       "durable_objects": {
         "bindings": [
@@ -69,7 +71,8 @@
         "TEAM_ID": "pentasus",
         "C2_FORM_POLL_ENABLED": "false",
         "C2_MEMBER_EXPORT_ENABLED": "false",
-        "C2_SCHEDULE_EXPORT_ENABLED": "false"
+        "C2_SCHEDULE_EXPORT_ENABLED": "false",
+        "C2_EXPORT_POLL_ENABLED": "false"
       },
       "durable_objects": {
         "bindings": [
