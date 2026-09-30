@@ -132,6 +132,44 @@ test("schedule bridge reads and patches three bound tabs with verified resumable
   assert.equal(sheet.rows.filter((row) => row[1] === thirdId).length, 1);
   assert.equal(receipts.rows.at(-1)[5], "VERIFIED");
 
+  const headers = sheet.rows[0];
+  const cellBefore = [...sheet.rows[1]];
+  const cellTarget = [...cellBefore];
+  cellTarget[headers.indexOf("location")] = "Dock after interrupted write";
+  cellTarget[headers.indexOf("address")] = "2 River Road";
+  cellTarget[headers.indexOf("updated_at")] = "2026-09-04T00:00:00.000Z";
+  const cellBatchId = "batch_schedule_interrupted_cell_001";
+  const cellPayload = { ...partialPayload, batch_id: cellBatchId,
+    items: [{ template_id: template.id, expected: cellBefore, target: cellTarget }] };
+  const originalGetRange = sheet.getRange.bind(sheet);
+  let interruptOnce = true;
+  sheet.getRange = (...args) => {
+    const range = originalGetRange(...args);
+    if (interruptOnce && args[0] === 2 && args[1] === headers.indexOf("location") + 1) {
+      const originalSetValues = range.setValues.bind(range);
+      range.setValues = (values) => {
+        originalSetValues(values);
+        interruptOnce = false;
+        throw new Error("Simulated interruption after one Google cell write");
+      };
+    }
+    return range;
+  };
+  try {
+    assert.equal(post(backend.context, signed(template.action, season.season_id,
+      cellPayload, cellBatchId)).ok, false);
+  } finally {
+    sheet.getRange = originalGetRange;
+  }
+  assert.equal(sheet.rows[1][headers.indexOf("location")], cellTarget[headers.indexOf("location")]);
+  assert.equal(sheet.rows[1][headers.indexOf("address")], cellBefore[headers.indexOf("address")]);
+  assert.equal(receipts.rows.at(-1)[5], "PREPARED");
+  assert.equal(post(backend.context, signed(template.action, season.season_id,
+    cellPayload, cellBatchId)).ok, true);
+  assert.deepEqual([...sheet.rows[1]], cellTarget);
+  assert.equal(receipts.rows.at(-1)[5], "VERIFIED");
+  sheet.rows[1] = cellBefore;
+
   const editId = "batch_schedule_manual_edit";
   const targetAfterEdit = [...firstRow];
   targetAfterEdit[6] = "Proposed Dock";

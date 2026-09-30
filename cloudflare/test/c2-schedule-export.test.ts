@@ -128,11 +128,9 @@ afterEach(() => {
     String((seasonRecord as Record<string, unknown>)[header] ?? ""))];
 });
 
-it("confirms a three-tab schedule event only after its season version, replaying a lost reply", async () => {
-  const environment = testEnv("lost-reply");
-  const stub = await seed(environment);
+function mockSheetBridge(firstPatchFault: "LOST_REPLY" | "SERVICE_BUSY") {
   const receipts = new Map<string, Record<string, unknown>>();
-  let loseReply = true;
+  let injectFault = true;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
     const envelope = JSON.parse(String(init?.body));
     const payload = JSON.parse(envelope.payload_json);
@@ -150,8 +148,13 @@ it("confirms a three-tab schedule event only after its season version, replaying
           scope === "SCHEDULE_TEMPLATE" ? "101" :
           scope === "TRAINING_WEEK" ? "102" : "103", read_at_ms: Date.now(),
         headers: [...SHEET_SCOPES[scope].headers], secondary: null,
-        rows: rows[scope].map((cells, index) => ({ row_number: index + 2, cells }))
+        rows: rows[scope].map((cells, index) => ({ row_number: index + 2, cells: [...cells] }))
       } });
+    }
+    if (injectFault && firstPatchFault === "SERVICE_BUSY") {
+      injectFault = false;
+      return Response.json({ ok: false, meta: { request_id: envelope.request_id },
+        error: { code: "SERVICE_BUSY", message: "Temporary Google quota", retryable: true } });
     }
     const scope = envelope.action === "cloudflarePatchSeasonSheet" ? "SEASON" :
       payload.entity_type as keyof typeof rows;
@@ -161,8 +164,8 @@ it("confirms a three-tab schedule event only after its season version, replaying
         scope === "TRAINING_WEEK" ? "week_id" : "practice_id";
       for (const item of payload.items) {
         const index = rows[scope].findIndex((cells) => cells[scope === "SEASON" ? 0 : 1] === item[idKey]);
-        if (index < 0) rows[scope].push(item.target);
-        else rows[scope][index] = item.target;
+        if (index < 0) rows[scope].push([...item.target]);
+        else rows[scope][index] = [...item.target];
       }
       receipt = { status: "verified", protocol_version: envelope.protocol_version,
         team_id: envelope.team_id, season_id: seasonId, binding_version: 1,
@@ -173,9 +176,18 @@ it("confirms a three-tab schedule event only after its season version, replaying
         acknowledged_at: new Date().toISOString() };
       receipts.set(envelope.operation_id, receipt);
     }
-    if (loseReply) { loseReply = false; throw new Error("Google wrote but reply was lost"); }
+    if (injectFault && firstPatchFault === "LOST_REPLY") {
+      injectFault = false;
+      throw new Error("Google wrote but reply was lost");
+    }
     return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: receipt });
   });
+}
+
+it("confirms a three-tab schedule event only after its season version, replaying a lost reply", async () => {
+  const environment = testEnv("lost-reply");
+  const stub = await seed(environment);
+  mockSheetBridge("LOST_REPLY");
   const next = async (request_id: string) => (await call(environment,
     "/internal/c2/export-next-schedule", { request_id, season_id: seasonId })).json() as Promise<any>;
   expect(await next("schedule_export_run_001"))
@@ -235,6 +247,50 @@ it("confirms a three-tab schedule event only after its season version, replaying
       "SELECT COUNT(*) AS count FROM sync_baselines WHERE entity_type IN ('SCHEDULE_TEMPLATE','TRAINING_WEEK','PRACTICE')")
       .one().count).toBeGreaterThan(10);
   });
+});
+
+it("keeps a quota failure pending and retries the same schedule batch without duplicate rows", async () => {
+  const environment = testEnv("quota-retry");
+  const stub = await seed(environment);
+  mockSheetBridge("SERVICE_BUSY");
+  const next = async (request_id: string) => (await call(environment,
+    "/internal/c2/export-next-schedule", { request_id, season_id: seasonId })).json() as Promise<any>;
+  expect(await next("schedule_quota_batch_001")).toMatchObject({ error: {
+    code: "SERVICE_BUSY", retryable: true } });
+  expect(rows.SCHEDULE_TEMPLATE).toHaveLength(0);
+  let originalBatchId = "";
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const batch = sql.exec<{ batch_id: string; status: string; attempt_count: number }>(
+      "SELECT batch_id,status,attempt_count FROM sync_batches").one();
+    expect(batch).toMatchObject({ status: "FAILED", attempt_count: 1 });
+    originalBatchId = batch.batch_id;
+    expect(sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id='out_schedule_test_001'").one().status).toBe("PENDING");
+    expect(sql.exec<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM sync_baselines WHERE entity_type='SCHEDULE_TEMPLATE'").one().count).toBe(0);
+  });
+  expect(await next("schedule_quota_batch_001")).toMatchObject({ data: {
+    status: "BATCH_CONFIRMED", entity_type: "SCHEDULE_TEMPLATE", batch_id: originalBatchId } });
+  expect(rows.SCHEDULE_TEMPLATE).toHaveLength(1);
+  for (const [index, entity_type] of ["TRAINING_WEEK", "PRACTICE", "PRACTICE"].entries()) {
+    expect(await next(`schedule_quota_resume_${index}`)).toMatchObject({ data: {
+      status: "BATCH_CONFIRMED", entity_type } });
+  }
+  expect(await next("schedule_quota_complete")).toMatchObject({ data: {
+    status: "EVENT_CONFIRMED", season_version: 2 } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    expect(sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id='out_schedule_test_001'").one().status).toBe("CONFIRMED");
+    expect(sql.exec<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM sync_batches WHERE status<>'CONFIRMED'").one().count).toBe(0);
+    expect(sql.exec<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM sync_batch_items WHERE status<>'VERIFIED'").one().count).toBe(0);
+  });
+  expect(rows.SCHEDULE_TEMPLATE).toHaveLength(1);
+  expect(rows.TRAINING_WEEK).toHaveLength(1);
+  expect(rows.PRACTICE).toHaveLength(2);
 });
 
 it("keeps the schedule exporter disabled in production", async () => {

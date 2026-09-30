@@ -58,6 +58,20 @@ async function api(path, key, payload) {
   return body.data;
 }
 
+async function publicRead(path) {
+  const url = new URL(path, base);
+  url.searchParams.set("request_id", requestId("public"));
+  url.searchParams.set("season_id", seasonId);
+  const response = await fetch(url, {
+    headers: { authorization: `Bearer ${c1Key}` }, signal: AbortSignal.timeout(20_000)
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.meta?.backend_instance, "dragon-boat-training-c2-test");
+  return body.data;
+}
+
 async function inspectGoogle(entityType, bindingVersion) {
   const payload_json = JSON.stringify({ season_id: seasonId, entity_type: entityType });
   const request = {
@@ -103,6 +117,11 @@ try {
     { session_token: token, season_id: seasonId });
   assert.equal(overview.binding_current, true);
   assert.equal(overview.counts.pending_batches, 0);
+  const publicSchedule = await publicRead("/internal/c1/public-schedule");
+  const publicRoster = await publicRead("/internal/c1/public-roster");
+  assert.equal(publicSchedule.practices.length, 0,
+    "The isolated schedule acceptance weeks must stay private drafts.");
+  assert.equal(publicRoster.members.length, 10);
   const bindingVersion = overview.binding.binding_version;
   const sheets = {};
   for (const entityType of Object.keys(scopes)) {
@@ -135,7 +154,8 @@ try {
   }
   console.log(JSON.stringify({ service_version: health.meta.service_version,
     schema_version: overview.schema_version, binding_version: bindingVersion,
-    pending_outbox: overview.counts.pending_outbox, sheets, backup }));
+    pending_outbox: overview.counts.pending_outbox, public_practices: 0,
+    roster_members: publicRoster.members.length, sheets, backup }));
 } finally {
   await api("/internal/c1/coach-logout", c1Key, { session_token: token });
 }
