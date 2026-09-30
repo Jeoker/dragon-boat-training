@@ -5,6 +5,7 @@ import { C2_SYNC_ACTIONS, C2_CONTRACT_VERSION } from "../../shared/c2-actions";
 import { SYNC_FIELD_DEFINITIONS, compareSyncRecord, formResponseSourceId,
   normalizeSyncValue } from "../../shared/c2-sync-rules";
 import { legacyCredentialDigest } from "../src/crypto";
+import { sha256Base64Url } from "../src/crypto";
 import { applySchema, APPLICATION_SCHEMA_VERSION } from "../src/schema";
 import { TeamState } from "../src/team-state";
 import { C2SyncService } from "../src/c2-sync-service";
@@ -641,6 +642,136 @@ describe("C2.3 protected Sheet difference inspection", () => {
       expect(context.storage.sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM sync_outbox").one().count).toBe(0);
     });
+  });
+
+  it("guards the read-only associated physical route and rejects a changing B snapshot", async () => {
+    const testEnv = teamEnv("physical-read-only");
+    await seed(testEnv, "physical_read_001");
+    expect((await call("/internal/c2/import-sync-foundation", foundation(
+      "c2_physical_foundation_001", "c2_physical_snapshot_001"), testEnv)).status).toBe(200);
+    const login = await call("/internal/c1/coach-login", {
+      request_id: "c2_physical_login_001", coach_code: "local-test-coach-code"
+    }, testEnv, "C1");
+    const token = (await json(login)).data.result.session_token;
+    const scope = "SEAT_PLAN_REVISION";
+    const cells = SHEET_SCOPES[scope].headers.map((header) => ({
+      season_id: "season_c2_open_2026", practice_id: "practice_physical_001",
+      revision_number: "1", revision_id: "revision_physical_001"
+    } as Record<string, string>)[header] ?? "");
+    const cellsJson = JSON.stringify(cells);
+    const digest = `sha256_v1:${await sha256Base64Url(cellsJson)}`;
+    const stub = testEnv.TEAM_STATE.getByName(testEnv.TEAM_ID);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(
+        `INSERT INTO sync_associated_physical_baselines
+         (season_id,binding_version,scope,row_id,cells_json,cells_digest,updated_at)
+         VALUES (?,?,?,?,?,?,?)`, "season_c2_open_2026", 1, scope,
+        "practice_physical_001:1", cellsJson, digest, "2026-09-30T12:00:00.000Z").toArray();
+    });
+    let limit = false;
+    const actions: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const envelope = JSON.parse(String(init?.body));
+      actions.push(envelope.action);
+      if (limit) return Response.json({ ok: false, meta: { request_id: envelope.request_id },
+        error: { code: "SHEET_SCAN_LIMIT", message: "Bounded read limit", retryable: false } });
+      return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+        protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+        season_id: "season_c2_open_2026", entity_type: scope, binding_version: 1,
+        writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
+        payload_digest: envelope.payload_digest, spreadsheet_id: "spreadsheet_c2_fixture_001",
+        tab_name: "SeatPlanRevisions", tab_id: "110", read_at_ms: Date.now(),
+        headers: SHEET_SCOPES[scope].headers,
+        rows: [{ row_number: 2, cells }], secondary: null
+      } });
+    });
+    const check = async (id: string, session = token) => json(await call(
+      "/internal/c2/check-associated-physical-differences", {
+        request_id: id, session_token: session, season_id: "season_c2_open_2026", scope
+      }, testEnv));
+    expect(await check("c2_physical_denied_001", "x".repeat(40)))
+      .toMatchObject({ error: { code: "SESSION_INVALID" } });
+    expect(await check("c2_physical_clean_001")).toMatchObject({ data: {
+      scope, status: "OK", coverage: "complete", rows_read: 1, baselines_checked: 1,
+      findings_count: 0 } });
+    expect(await check("c2_physical_clean_repeat_001")).toMatchObject({ data: {
+      status: "OK", findings_count: 0 } });
+    expect(actions).toEqual(["cloudflareReadSheetRecords", "cloudflareReadSheetRecords"]);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      for (const table of ["sync_conflicts", "sync_outbox", "sync_batches"]) {
+        expect(context.storage.sql.exec<{ count: number }>(`SELECT COUNT(*) AS count FROM ${table}`)
+          .one().count).toBe(0);
+      }
+      expect(context.storage.sql.exec<{ cells_json: string }>(
+        "SELECT cells_json FROM sync_associated_physical_baselines").one().cells_json).toBe(cellsJson);
+    });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const service = new C2SyncService(context, testEnv);
+      const binding = context.storage.sql.exec<Record<string, any>>(
+        "SELECT * FROM sync_bindings WHERE season_id=?", "season_c2_open_2026").one();
+      const snapshot = service["physicalBaselines"]("season_c2_open_2026", 1, scope);
+      context.storage.sql.exec(`UPDATE members SET display_name_override=?
+        WHERE season_id=? AND member_id=?`, "Unrelated change", "season_c2_open_2026",
+      "member_c2_alice_01").toArray();
+      expect(() => service["assertPhysicalSnapshotCurrent"](
+        "season_c2_open_2026", binding, snapshot, scope)).not.toThrow();
+      context.storage.sql.exec(`UPDATE sync_associated_physical_baselines SET cells_digest=?
+        WHERE season_id=? AND scope=?`, "changed_digest",
+      "season_c2_open_2026", scope).toArray();
+      expect(() => service["assertPhysicalSnapshotCurrent"](
+        "season_c2_open_2026", binding, snapshot, scope)).toThrow("changed during inspection");
+    });
+    limit = true;
+    expect(await check("c2_physical_limit_001")).toMatchObject({ data: {
+      status: "INCOMPLETE", coverage: "bounded_limit", rows_read: 0 } });
+    limit = false;
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(`UPDATE sync_associated_physical_baselines SET cells_json=?
+        WHERE season_id=? AND scope=?`, JSON.stringify(["x".repeat(2_000_100)]),
+      "season_c2_open_2026", scope).toArray();
+      const service = new C2SyncService(context, testEnv);
+      const snapshot = service["physicalBaselines"]("season_c2_open_2026", 1, scope);
+      expect(snapshot).toMatchObject({ limited: true, rows: [],
+        counts: [{ count: 1 }] });
+    });
+    expect(await check("c2_physical_large_B_001")).toMatchObject({ data: {
+      status: "INCOMPLETE", coverage: "bounded_limit", baselines_checked: 0 } });
+  });
+
+  it("adds only physical_integrity for signup and draft semantic inspections", async () => {
+    const testEnv = teamEnv("physical-semantic-compat");
+    await seed(testEnv, "physical_semantic_001");
+    expect((await call("/internal/c2/import-sync-foundation", foundation(
+      "c2_physical_semantic_foundation_001", "c2_physical_semantic_snapshot_001"), testEnv)).status).toBe(200);
+    const login = await call("/internal/c1/coach-login", {
+      request_id: "c2_physical_semantic_login_001", coach_code: "local-test-coach-code"
+    }, testEnv, "C1");
+    const token = (await json(login)).data.result.session_token;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const envelope = JSON.parse(String(init?.body));
+      const scope = JSON.parse(envelope.payload_json).entity_type as "SIGNUP" | "SEAT_PLAN_DRAFT";
+      return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+        protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+        season_id: "season_c2_open_2026", entity_type: scope, binding_version: 1,
+        writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
+        payload_digest: envelope.payload_digest, spreadsheet_id: "spreadsheet_c2_fixture_001",
+        tab_name: SHEET_SCOPES[scope].tab, tab_id: "110", read_at_ms: Date.now(),
+        headers: SHEET_SCOPES[scope].headers, rows: [],
+        secondary: scope === "SEAT_PLAN_DRAFT" ? { tab_name: "SeatPlanCurrent", tab_id: "111",
+          headers: SHEET_SCOPES.SEAT_PLAN_CURRENT.headers, rows: [] } : null
+      } });
+    });
+    for (const scope of ["SIGNUP", "SEAT_PLAN_DRAFT"] as const) {
+      const result = await json(await call("/internal/c2/check-sheet-differences", {
+        request_id: `c2_physical_semantic_${scope}_001`, session_token: token,
+        season_id: "season_c2_open_2026", entity_type: scope
+      }, testEnv));
+      expect(result).toMatchObject({ data: { status: "OK", findings_count: 0,
+        findings: [], conflict_records: { created: 0, superseded: 0, open: 0 },
+        physical_integrity: { scope, status: "INCOMPLETE", coverage: "complete",
+          findings: expect.arrayContaining([expect.objectContaining({
+            type: "BASELINE_NOT_ESTABLISHED" })]) } } });
+    }
   });
 });
 

@@ -206,7 +206,7 @@ it("halts a Google reference conflict until a Coach re-arms the corrected season
   expect((await poll("schedule_conflict_poll_006")).data.results[0].status).toBe("BATCH_CONFIRMED");
 });
 
-function mockSheetBridge(firstPatchFault: "LOST_REPLY" | "SERVICE_BUSY") {
+function mockSheetBridge(firstPatchFault: "LOST_REPLY" | "SERVICE_BUSY" | null) {
   const receipts = new Map<string, Record<string, unknown>>();
   let injectFault = true;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
@@ -261,6 +261,91 @@ function mockSheetBridge(firstPatchFault: "LOST_REPLY" | "SERVICE_BUSY") {
     return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: receipt });
   });
 }
+
+it("keeps a short retry between batches, then clears it after the final event", async () => {
+  const environment = { ...testEnv("poll-clean-final"), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const stub = await seed(environment);
+  mockSheetBridge(null);
+  const poll = async (requestId: string) => (await call(environment,
+    "/internal/c2/poll-due-exports", { request_id: requestId })).json() as Promise<any>;
+  for (let index = 0; index < 4; index += 1) {
+    expect((await poll(`schedule_clean_batch_${index}`)).data.results).toEqual([{
+      season_id: seasonId, status: "BATCH_CONFIRMED" }]);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const sql = context.storage.sql;
+      expect(sql.exec<{ next_attempt_at_ms: number }>(
+        "SELECT next_attempt_at_ms FROM sync_export_retries WHERE season_id=?", seasonId)
+        .one().next_attempt_at_ms).toBeGreaterThan(Date.now());
+      sql.exec("UPDATE sync_export_retries SET next_attempt_at_ms=0 WHERE season_id=?", seasonId).toArray();
+    });
+  }
+  expect((await poll("schedule_clean_complete")).data.results).toEqual([{
+    season_id: seasonId, status: "EVENT_CONFIRMED" }]);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    expect(sql.exec<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM sync_export_retries WHERE season_id=?", seasonId).one().count).toBe(0);
+    expect(sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id='out_schedule_test_001'").one().status)
+      .toBe("CONFIRMED");
+  });
+  expect((await poll("schedule_clean_idle")).data.polled).toBe(0);
+});
+
+it.each([
+  ["due", -1000, true],
+  ["future", 600_000, false]
+] as const)("only retains a success retry for a %s next event", async (kind, dueOffset, expectRetry) => {
+  const environment = { ...testEnv(`poll-next-${kind}`), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const stub = await seed(environment);
+  mockSheetBridge(null);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec(`INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
+      SELECT ?,request_key,topic,payload_json,'PENDING',?,created_at
+      FROM sync_outbox WHERE outbox_id='out_schedule_test_001'`,
+    `out_schedule_next_${kind}`, Date.now() + dueOffset).toArray();
+    if (kind === "future") {
+      // A newer event reaching its due time must not bypass the older one.
+      sql.exec(`INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
+        SELECT 'out_schedule_later_due',request_key,'MEMBERS_IMPORTED',payload_json,'PENDING',?,created_at
+        FROM sync_outbox WHERE outbox_id='out_schedule_test_001'`, Date.now() - 1000).toArray();
+    }
+  });
+  const poll = async (requestId: string) => (await call(environment,
+    "/internal/c2/poll-due-exports", { request_id: requestId })).json() as Promise<any>;
+  for (let index = 0; index < 4; index += 1) {
+    expect((await poll(`schedule_next_${kind}_batch_${index}`)).data.results[0].status)
+      .toBe("BATCH_CONFIRMED");
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec("UPDATE sync_export_retries SET next_attempt_at_ms=0 WHERE season_id=?",
+        seasonId).toArray();
+    });
+  }
+  expect((await poll(`schedule_next_${kind}_complete`)).data.results[0].status)
+    .toBe("EVENT_CONFIRMED");
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const retry = sql.exec<{ next_attempt_at_ms: number }>(
+      "SELECT next_attempt_at_ms FROM sync_export_retries WHERE season_id=?", seasonId).toArray();
+    expect(retry).toHaveLength(expectRetry ? 1 : 0);
+    if (expectRetry) expect(retry[0].next_attempt_at_ms).toBeGreaterThan(Date.now());
+    expect(sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id=?", `out_schedule_next_${kind}`)
+      .one().status).toBe("PENDING");
+  });
+  if (!expectRetry) {
+    expect((await poll("schedule_next_future_waiting")).data.polled).toBe(0);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      expect(context.storage.sql.exec<{ status: string }>(
+        "SELECT status FROM sync_outbox WHERE outbox_id='out_schedule_later_due'")
+        .one().status).toBe("PENDING");
+      expect(context.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM sync_export_retries WHERE season_id=?", seasonId)
+        .one().count).toBe(0);
+    });
+  }
+});
 
 it("confirms a three-tab schedule event only after its season version, replaying a lost reply", async () => {
   const environment = testEnv("lost-reply");

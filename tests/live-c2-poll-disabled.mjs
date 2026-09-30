@@ -16,7 +16,7 @@ const healthResponse = await fetch(new URL("/health", base), { signal: AbortSign
 const health = await healthResponse.json();
 assert.equal(healthResponse.status, 200);
 assert.equal(health.meta?.backend_instance, "dragon-boat-training-c2-test");
-assert.equal(health.meta?.service_version, "0.16.1-c2-associated-export");
+assert.equal(health.meta?.service_version, config.env.c2test.vars.SERVICE_VERSION);
 assert.equal(health.meta?.writer_epoch, 0);
 const response = await fetch(new URL("/internal/c2/poll-due-exports", base), {
   method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },

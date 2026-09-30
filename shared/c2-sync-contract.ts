@@ -67,6 +67,14 @@ export interface CheckSheetDifferencesRequest extends SessionRequest {
   season_id: string;
   entity_type: SyncEntityType;
 }
+export type AssociatedPhysicalScope = "SIGNUP" | "SEAT_PLAN_DRAFT" |
+  "SEAT_PLAN_CURRENT" | "SEAT_PLAN_REVISION";
+// This diagnosis covers confirmed physical rows only. Empty Google/B tables without a confirmed
+// physical baseline are INCOMPLETE, not evidence that all application events have been exported.
+export interface CheckAssociatedPhysicalDifferencesRequest extends SessionRequest {
+  season_id: string;
+  scope: AssociatedPhysicalScope;
+}
 export interface ListFormReviewsRequest extends SessionRequest {
   season_id: string;
   limit: number;
@@ -252,6 +260,13 @@ export function parseCheckSheetDifferences(value: unknown): CheckSheetDifference
     entity_type: enumeration(input, "entity_type", ["SEASON", "MEMBER", "SCHEDULE_TEMPLATE",
       "TRAINING_WEEK", "SIGNUP", "PRACTICE",
       "SEAT_PLAN_DRAFT"] as const) };
+}
+
+export function parseCheckAssociatedPhysicalDifferences(value: unknown): CheckAssociatedPhysicalDifferencesRequest {
+  const input = object(value);
+  return { ...sessionRequest(input), season_id: identifier(input, "season_id"),
+    scope: enumeration(input, "scope", ["SIGNUP", "SEAT_PLAN_DRAFT",
+      "SEAT_PLAN_CURRENT", "SEAT_PLAN_REVISION"] as const) };
 }
 
 export function parseListFormReviews(value: unknown): ListFormReviewsRequest {

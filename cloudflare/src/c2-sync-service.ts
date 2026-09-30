@@ -1,5 +1,6 @@
 import {
-  parseCheckSheetDifferences, parseGetSyncConflict, parseImportSyncFoundation, parseListFormReviews,
+  parseCheckAssociatedPhysicalDifferences, parseCheckSheetDifferences, parseGetSyncConflict,
+  parseImportSyncFoundation, parseListFormReviews,
   parseListSyncConflicts, parseSetExportPause, parseSyncOverview, type ImportSyncFoundationRequest,
   type SourceImportSnapshot, type SyncBaselineSnapshot, type SyncBindingSnapshot
 } from "../../shared/c2-sync-contract";
@@ -11,7 +12,8 @@ import { C1Service } from "./c1-service";
 import { firstRow, operationReceipt, parseContract, type SqlRow } from "./c1-support";
 import { APPLICATION_SCHEMA_VERSION } from "./schema";
 import { C2FormService } from "./c2-form-service";
-import { readGoogleSheet, type ComparedSheetScope } from "./c2-sheet-bridge";
+import { readGoogleSheet, type AssociatedSheetScope, type ComparedSheetScope } from "./c2-sheet-bridge";
+import { analyzePhysicalPage, scanLimitIntegrity, type PhysicalBaseline } from "./c2-physical-diagnostics";
 import { analyzeSheetPage, type SheetBaseline } from "./c2-sheet-diff";
 import { persistSheetFindings, prepareSheetFindings } from "./c2-sheet-findings";
 import { C2MemberExportService } from "./c2-member-export";
@@ -81,6 +83,9 @@ export class C2SyncService {
     if (path === "/internal/c2/get-sync-conflict") return this.getSyncConflict(raw);
     if (path === "/internal/c2/list-form-reviews") return this.listFormReviews(raw);
     if (path === "/internal/c2/check-sheet-differences") return this.checkSheetDifferences(raw);
+    if (path === "/internal/c2/check-associated-physical-differences") {
+      return this.checkAssociatedPhysicalDifferences(raw);
+    }
     if (path === "/internal/c2/export-next-member") return new C2MemberExportService(this.ctx, this.env).process(raw);
     if (path === "/internal/c2/export-next-schedule") return new C2ScheduleExportService(this.ctx, this.env).process(raw);
     if (path === "/internal/c2/export-next-associated") return new C2AssociatedExportService(this.ctx, this.env).process(raw);
@@ -451,15 +456,22 @@ export class C2SyncService {
     const bindingCurrent = !!binding && Number(binding.binding_version) === Number(season.binding_version);
     const unfinished = unfinishedExport(this.ctx.storage.sql, input.season_id);
     const requested = exportPauseRequested(this.ctx.storage.sql, input.season_id);
-    const retry = bindingCurrent ? firstRow<SqlRow>(this.ctx.storage.sql,
+    const storedRetry = bindingCurrent ? firstRow<SqlRow>(this.ctx.storage.sql,
       `SELECT failure_count,next_attempt_at_ms,last_error,updated_at,action_required FROM sync_export_retries
        WHERE season_id=? AND binding_version=?`, input.season_id, Number(season.binding_version)) : null;
     const oldestOutbox = firstRow<SqlRow>(this.ctx.storage.sql,
       `SELECT topic,created_at,due_at_ms FROM sync_outbox WHERE status='PENDING'
-       AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY created_at,rowid LIMIT 1`, input.season_id);
+       AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1`, input.season_id);
     const due = firstRow<{ next_due_ms: number | null }>(this.ctx.storage.sql,
-      `SELECT MIN(due_at_ms) AS next_due_ms FROM sync_outbox WHERE status='PENDING'
-       AND json_extract(payload_json,'$.entity.season_id')=?`, input.season_id);
+      `SELECT due_at_ms AS next_due_ms FROM sync_outbox WHERE status='PENDING'
+       AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1`, input.season_id);
+    // Older poller versions left a success-only retry row after the last event.
+    // Suppress that stale presentation without mutating recovery evidence.
+    const cleanIdleRetry = storedRetry && !unfinished &&
+      (due?.next_due_ms == null || Number(due.next_due_ms) > Date.now()) &&
+      Number(storedRetry.failure_count) === 0 && Number(storedRetry.action_required) === 0 &&
+      String(storedRetry.last_error) === "";
+    const retry = cleanIdleRetry ? null : storedRetry;
     const openConflicts = bindingCurrent ? count(
       "SELECT COUNT(*) AS count FROM sync_conflicts WHERE season_id=? AND binding_version=? AND status='OPEN'",
       input.season_id, Number(season.binding_version)) : 0;
@@ -641,6 +653,81 @@ export class C2SyncService {
       resolution: resolution_json == null ? null : JSON.parse(String(resolution_json)) };
   }
 
+  private physicalBaselines(seasonId: string, bindingVersion: number,
+    scope: AssociatedSheetScope): { rows: PhysicalBaseline[]; limited: boolean;
+      counts: Array<{ scope: AssociatedSheetScope; count: number; characters: number }> } {
+    const scopes: AssociatedSheetScope[] = scope === "SEAT_PLAN_DRAFT"
+      ? ["SEAT_PLAN_DRAFT", "SEAT_PLAN_CURRENT"] : [scope];
+    const rows: PhysicalBaseline[] = [];
+    const counts = scopes.map((part) => {
+      const tally = this.ctx.storage.sql.exec<{ count: number; characters: number }>(
+        `SELECT COUNT(*) AS count,COALESCE(SUM(LENGTH(cells_json)),0) AS characters
+         FROM sync_associated_physical_baselines
+         WHERE season_id=? AND binding_version=? AND scope=?`,
+        seasonId, bindingVersion, part).one();
+      return { scope: part, count: Number(tally.count), characters: Number(tally.characters) };
+    });
+    // Read bridge caps Google at 5,000 rows per tab / 2M characters in total. Keep B at
+    // the same character budget before materializing it into the Durable Object heap.
+    const limited = counts.some((item) => item.count > 5000) ||
+      counts.reduce((sum, item) => sum + item.characters, 0) > 2_000_000;
+    if (limited) return { rows, limited, counts };
+    for (const part of scopes) {
+      const result = this.ctx.storage.sql.exec<SqlRow>(
+        `SELECT scope,row_id,cells_json,cells_digest FROM sync_associated_physical_baselines
+         WHERE season_id=? AND binding_version=? AND scope=? ORDER BY row_id`,
+        seasonId, bindingVersion, part).toArray().map((row): PhysicalBaseline => ({
+          scope: String(row.scope) as AssociatedSheetScope, row_id: String(row.row_id),
+          cells_json: String(row.cells_json), cells_digest: String(row.cells_digest)
+        }));
+      rows.push(...result);
+    }
+    return { rows, limited, counts };
+  }
+
+  private assertPhysicalSnapshotCurrent(seasonId: string, binding: SqlRow,
+    snapshot: ReturnType<C2SyncService["physicalBaselines"]>, scope: AssociatedSheetScope): void {
+    const sql = this.ctx.storage.sql;
+    const season = firstRow<SqlRow>(sql, "SELECT binding_version FROM seasons WHERE season_id=?", seasonId);
+    const currentBinding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", seasonId);
+    if (!season || !currentBinding || Number(season.binding_version) !== Number(binding.binding_version) ||
+        canonicalJson(currentBinding) !== canonicalJson(binding) ||
+        canonicalJson(this.physicalBaselines(seasonId, Number(binding.binding_version), scope)) !==
+          canonicalJson(snapshot)) {
+      throw new ApiError("SHEET_INSPECTION_STALE",
+        "The binding or confirmed physical rows changed during inspection.", 409, true);
+    }
+  }
+
+  private async checkAssociatedPhysicalDifferences(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const input = parseContract(() => parseCheckAssociatedPhysicalDifferences(raw));
+    const coach = await this.core.authenticateSession(input.session_token);
+    const sql = this.ctx.storage.sql;
+    const season = firstRow<SqlRow>(sql, "SELECT binding_version FROM seasons WHERE season_id=?", input.season_id);
+    const binding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", input.season_id);
+    if (!season || !binding || Number(season.binding_version) !== Number(binding.binding_version)) {
+      throw new ApiError("SYNC_BINDING_NOT_FOUND", "A current Sheet binding is required.", 409);
+    }
+    const baseline = this.physicalBaselines(input.season_id, Number(binding.binding_version), input.scope);
+    let physical = scanLimitIntegrity(input.scope);
+    try {
+      const page = await readGoogleSheet(this.env, {
+        request_id: input.request_id,
+        operation_id: `c2_physical_${(await sha256Base64Url(`${input.request_id}\n${input.season_id}\n${input.scope}`)).slice(0, 32)}`,
+        season_id: input.season_id, entity_type: input.scope,
+        binding_version: Number(binding.binding_version),
+        runtime_spreadsheet_id: String(binding.runtime_spreadsheet_id)
+      });
+      physical = await analyzePhysicalPage({ season_id: input.season_id,
+        scope: input.scope, page, baselines: baseline.rows, baseline_limited: baseline.limited });
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== "SHEET_SCAN_LIMIT") throw error;
+    }
+    this.core.assertSessionCurrent(coach);
+    this.assertPhysicalSnapshotCurrent(input.season_id, binding, baseline, input.scope);
+    return { season_id: input.season_id, binding_version: Number(binding.binding_version), ...physical };
+  }
+
   private async checkSheetDifferences(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     const input = parseContract(() => parseCheckSheetDifferences(raw));
     const coach = await this.core.authenticateSession(input.session_token);
@@ -651,6 +738,10 @@ export class C2SyncService {
       throw new ApiError("SYNC_BINDING_NOT_FOUND", "A current Sheet binding is required.", 409);
     }
     const bindingVersion = Number(binding.binding_version);
+    const physicalScope = input.entity_type === "SIGNUP" || input.entity_type === "SEAT_PLAN_DRAFT"
+      ? input.entity_type : null;
+    const physicalBaseline = physicalScope ? this.physicalBaselines(input.season_id,
+      bindingVersion, physicalScope) : null;
     const page = await readGoogleSheet(this.env, {
       request_id: input.request_id,
       operation_id: `c2_sheet_${(await sha256Base64Url(`${input.request_id}\n${input.season_id}\n${input.entity_type}`)).slice(0, 32)}`,
@@ -718,6 +809,9 @@ export class C2SyncService {
         form_id: String(binding.form_id), runtime_spreadsheet_id: String(binding.runtime_spreadsheet_id),
         response_sheet_id: String(binding.response_sheet_id), binding_version: bindingVersion
       } });
+    const physicalIntegrity = physicalScope && physicalBaseline
+      ? await analyzePhysicalPage({ season_id: input.season_id, scope: physicalScope,
+        page, baselines: physicalBaseline.rows, baseline_limited: physicalBaseline.limited }) : null;
     const loadSignupVersions = (): Map<string, number> => new Map(input.entity_type === "SIGNUP"
       ? sql.exec<{ practice_id: string; signup_version: number }>(
         "SELECT practice_id, signup_version FROM practice_versions WHERE season_id=? ORDER BY practice_id",
@@ -726,6 +820,8 @@ export class C2SyncService {
     const prepared = await prepareSheetFindings({ season_id: input.season_id,
       binding_version: bindingVersion, entity_type: input.entity_type as ComparedSheetScope,
       findings: comparison.findings, cloud_rows: cloudRows, signup_versions: signupVersions });
+    const sheetDigest = `sha256_v1:${await sha256Base64Url(canonicalJson({ headers: page.headers,
+      rows: page.rows, secondary: page.secondary ?? null }))}`;
     this.core.assertSessionCurrent(coach);
     const persistence = this.ctx.storage.transactionSync(() => {
       const latestSeason = firstRow<SqlRow>(sql,
@@ -736,6 +832,8 @@ export class C2SyncService {
           canonicalJson(latestBinding) !== canonicalJson(binding)) {
         throw new ApiError("SHEET_INSPECTION_STALE", "The Sheet binding changed during inspection.", 409, true);
       }
+      if (physicalScope && physicalBaseline) this.assertPhysicalSnapshotCurrent(
+        input.season_id, binding, physicalBaseline, physicalScope);
       if (canonicalJson(loadBaselines()) !== canonicalJson(baselines) ||
           canonicalJson(loadCloudRows()) !== canonicalJson(cloudRows) ||
           canonicalJson([...loadSignupVersions()]) !== canonicalJson([...signupVersions])) {
@@ -749,10 +847,10 @@ export class C2SyncService {
       entity_type: input.entity_type, tab_name: page.tab_name, tab_id: page.tab_id,
       secondary_tab: page.secondary ? { tab_name: page.secondary.tab_name, tab_id: page.secondary.tab_id } : null,
       read_at: new Date(page.read_at_ms).toISOString(),
-      sheet_digest: `sha256_v1:${await sha256Base64Url(canonicalJson({ headers: page.headers,
-        rows: page.rows, secondary: page.secondary ?? null }))}`,
+      sheet_digest: sheetDigest,
       rows_read: page.rows.length + (page.secondary?.rows.length ?? 0),
-      conflict_records: persistence, ...comparison };
+      conflict_records: persistence, ...comparison,
+      ...(physicalIntegrity ? { physical_integrity: physicalIntegrity } : {}) };
   }
 
   private async listFormReviews(raw: Record<string, unknown>): Promise<Record<string, unknown>> {

@@ -99,6 +99,53 @@ it("pauses new batches, drains an in-flight batch, and resumes only after confir
   expect(running.body.data.export_control.status).toBe("RUNNING");
 });
 
+it("hides only historical clean idle retries in overview without deleting evidence", async () => {
+  const environment = testEnv("clean-retry-overview");
+  const token = await setup(environment);
+  const stub = environment.TEAM_STATE.getByName(environment.TEAM_ID);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,
+      failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
+      VALUES (?,1,0,?,'',?,0)`, seasonId, Date.now() - 120_000, at).toArray();
+  });
+  const overview = async (requestId: string) => (await post(environment,
+    "/internal/c2/get-sync-overview", { request_id: requestId,
+      session_token: token, season_id: seasonId })).body.data.export_control;
+  expect((await overview("ops_clean_retry_idle")).retry).toBeNull();
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    expect(sql.exec<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM sync_export_retries WHERE season_id=?", seasonId)
+      .one().count).toBe(1);
+    const requestKey = sql.exec<{ request_key: string }>(
+      "SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
+    sql.exec(`INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
+      VALUES ('out_ops_future',?,'CORE_CHANGED',?,'PENDING',?,?)`, requestKey,
+    JSON.stringify({ action: "updateMember", entity: { season_id: seasonId } }),
+    Date.now() + 600_000, at).toArray();
+  });
+  const future = await overview("ops_clean_retry_future");
+  expect(future.retry).toBeNull();
+  expect(future.oldest_pending.topic).toBe("CORE_CHANGED");
+  expect(future.next_due_at).not.toBeNull();
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("UPDATE sync_outbox SET due_at_ms=? WHERE outbox_id='out_ops_future'",
+      Date.now() - 1000).toArray();
+  });
+  expect((await overview("ops_clean_retry_due")).retry).toMatchObject({
+    failure_count: 0, action_required: false
+  });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec("UPDATE sync_outbox SET status='CONFIRMED' WHERE outbox_id='out_ops_future'").toArray();
+    sql.exec("UPDATE sync_export_retries SET failure_count=1,last_error='SERVICE_BUSY' WHERE season_id=?",
+      seasonId).toArray();
+  });
+  const failed = await overview("ops_error_retry_idle");
+  expect(failed.retry).toMatchObject({ failure_count: 1, last_error: "SERVICE_BUSY" });
+  expect(failed.integrity_hints).toContain("EXPORT_RETRYING");
+});
+
 it("pages conflict summaries and protects full B/C/G evidence", async () => {
   const environment = testEnv("conflicts");
   const token = await setup(environment);

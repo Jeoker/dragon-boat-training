@@ -9,6 +9,7 @@ export const C2_SYNC_ACTIONS = {
   "/internal/c2/get-sync-conflict": { method: "POST", authentication: "session_token", writes: false },
   "/internal/c2/list-form-reviews": { method: "POST", authentication: "session_token", writes: false },
   "/internal/c2/check-sheet-differences": { method: "POST", authentication: "session_token", writes: true },
+  "/internal/c2/check-associated-physical-differences": { method: "POST", authentication: "session_token", writes: false },
   "/internal/c2/export-next-member": { method: "POST", authentication: "transport_only", writes: true },
   "/internal/c2/export-next-schedule": { method: "POST", authentication: "transport_only", writes: true },
   "/internal/c2/export-next-associated": { method: "POST", authentication: "transport_only", writes: true },

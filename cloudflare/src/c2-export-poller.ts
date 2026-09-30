@@ -28,8 +28,9 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
        AND (EXISTS (SELECT 1 FROM sync_batches x WHERE x.season_id=b.season_id
          AND x.direction='CLOUDFLARE_TO_GOOGLE'
          AND x.status IN ('PREPARED','SENT','PARTIAL','FAILED'))
-         OR EXISTS (SELECT 1 FROM sync_outbox o WHERE o.status='PENDING'
-           AND o.due_at_ms<=? AND json_extract(o.payload_json,'$.entity.season_id')=b.season_id))
+         OR (SELECT o.due_at_ms FROM sync_outbox o WHERE o.status='PENDING'
+           AND json_extract(o.payload_json,'$.entity.season_id')=b.season_id
+           ORDER BY o.rowid LIMIT 1)<=?)
      ORDER BY COALESCE(r.next_attempt_at_ms,0), b.season_id LIMIT 4`, now, now).toArray();
   const results: Array<{ season_id: string; status: string; error_code?: string }> = [];
   for (const season of seasons) {
@@ -40,8 +41,10 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
         `SELECT topic,payload_json FROM sync_outbox WHERE outbox_id=(
            SELECT first_outbox_id FROM sync_batches WHERE batch_id=?)`, batch.batch_id) :
         firstRow<SqlRow>(sql,
-          `SELECT topic,payload_json FROM sync_outbox WHERE status='PENDING'
-           AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1`, seasonId);
+          `SELECT topic,payload_json FROM sync_outbox WHERE outbox_id=(
+             SELECT outbox_id FROM sync_outbox WHERE status='PENDING'
+             AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1)
+           AND due_at_ms<=?`, seasonId, now);
       if (!event) throw new ApiError("SYNC_OUTBOX_INVALID", "An export batch lost its source event.", 409);
       const topic = String(event.topic);
       let action: unknown;
@@ -81,13 +84,25 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
         results.push({ season_id: seasonId, status: "STALE_BINDING" });
         continue;
       }
-      const at = new Date().toISOString();
-      sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
-        VALUES (?,?,0,?,'',?,0) ON CONFLICT(season_id) DO UPDATE SET
-        binding_version=excluded.binding_version,failure_count=0,
-        next_attempt_at_ms=excluded.next_attempt_at_ms,last_error='',updated_at=excluded.updated_at,
-        action_required=0`,
-      seasonId, season.binding_version, Date.now() + 60_000, at).toArray();
+      ctx.storage.transactionSync(() => {
+        const retryAt = Date.now();
+        const unfinished = unfinishedExport(sql, seasonId);
+        const oldestOutbox = firstRow<{ due_at_ms: number }>(sql,
+          `SELECT due_at_ms FROM sync_outbox WHERE status='PENDING'
+           AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1`, seasonId);
+        const dueOutbox = oldestOutbox && Number(oldestOutbox.due_at_ms) <= retryAt;
+        if (unfinished || dueOutbox) {
+          sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
+            VALUES (?,?,0,?,'',?,0) ON CONFLICT(season_id) DO UPDATE SET
+            binding_version=excluded.binding_version,failure_count=0,
+            next_attempt_at_ms=excluded.next_attempt_at_ms,last_error='',updated_at=excluded.updated_at,
+            action_required=0`, seasonId, season.binding_version, retryAt + 60_000,
+          new Date(retryAt).toISOString()).toArray();
+        } else {
+          sql.exec("DELETE FROM sync_export_retries WHERE season_id=? AND binding_version=?",
+            seasonId, season.binding_version).toArray();
+        }
+      });
       results.push({ season_id: seasonId, status: String(result.status ?? "COMMITTED") });
     } catch (error) {
       const current = firstRow<{ binding_version: number }>(sql,

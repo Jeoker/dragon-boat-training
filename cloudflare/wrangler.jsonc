@@ -42,7 +42,7 @@
       "triggers": { "crons": [] },
       "vars": {
         "ENVIRONMENT": "staging",
-        "SERVICE_VERSION": "0.16.1-c2-associated-export",
+        "SERVICE_VERSION": "0.16.2-c2-physical-diagnostics",
         "CONTRACT_VERSION": "2026-09-19.c0",
         "BACKEND_INSTANCE": "dragon-boat-training-c2-test",
         "BACKEND_GENERATION": "cf-c2-isolated-1",
