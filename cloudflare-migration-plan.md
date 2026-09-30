@@ -211,6 +211,8 @@ C2.5 的已实现运维规则：运行时每季暂停不覆盖影子绑定的 `e
 
 物理诊断补强已进入 `c2test` 0.16.2／schema v13：旧 `check-sheet-differences` 的 `SIGNUP`、`SEAT_PLAN_DRAFT` 结果新增独立 `physical_integrity`，旧语义 B/C/G 状态及 `sync_conflicts` 写入含义不变；新 Coach 会话保护的只读 `check-associated-physical-differences` 可按需检查报名、草稿状态与船位、当前船位及全部历史 `SeatPlanRevisions` 的整行 B/G。四 scope 在独立 Google 文件的正常态远端均为 `OK`、完整覆盖、零 finding，行数／基线数为 1／21／20／1。缺 B、Google 空且 B 空、超扫描预算或无法证明覆盖时不报 `OK`；最多展示 100 条 finding，物理 finding 不持久写入冲突表。隔离 Google 的 Alpha 报名审计列 `last_request_id` 单格漂移已真实触发唯一 `CELL_CHANGED`、物理 `DRIFT`，旧语义同时保持 `OK`／零 finding 且返回 `physical_integrity=DRIFT`；独立固定批次整行 CAS 恢复原行后，四个物理 scope 及旧语义再次 `OK`，关联物理 B 23／23 未变。两条隔离桥接 receipt 及 DO 备份元数据是保留的测试副作用。**仍无定期巡检、schema v14 或受控修复，也不等于 C2.4／C2.5 整体完成。**按需诊断不能称为全时段监测；C2.4 写前物理 B 保护继续独立生效。见[物理行诊断设计与实现边界](tests/C2-PHYSICAL-DIAGNOSTICS-DESIGN.md)、[正常态隔离验收](tests/C2-PHYSICAL-DIAGNOSTICS-ISOLATED-ACCEPTANCE-2026-09-30.md)及[单格漂移／恢复验收](tests/C2-PHYSICAL-DRIFT-ISOLATED-ACCEPTANCE-2026-09-30.md)。
 
+2026-09-30 后续本地补验（尚未远端执行）：`c2-associated-export.test.ts` 从 C1 取消报名引发候补递补和系统 revision 2，验证不可变事件按报名→当前船位→正式 revision→草稿逐批写入模拟 Google；原 revision 1 保持不变，最终逻辑／物理 B、逐场游标与 outbox 一致。`c2-member-export.test.ts` 模拟 Google 已提交首名成员但丢回执，Worker 保存 `FAILED` 批次；Coach 暂停时为 `PAUSING`，沿同一 operation／batch 排空为 `PAUSED`，不重复行或抢先准备下一事件；恢复后重新比较，再确认后续成员及赛季版本。此证据只覆盖本地 DO 与模拟桥接，不替代候补递补的真实 Google 写回、并发 `SENT` 批次的远端暂停排空或其他 C2.4／C2.5 故障验收；没有因这两项测试重新部署 `c2test`、原 staging 或 production。
+
 ## C4 写入交接与回退
 
 1. 只读影子导入先盘点系统及所有赛季，导入稳定 ID、绑定、版本、成员覆盖值、当前状态、完整 revision／冻结快照、审计、已完成请求与归档索引，按记录数及规范化内容摘要对账。影子环境禁止对原 Sheet 导出和执行到期业务任务。

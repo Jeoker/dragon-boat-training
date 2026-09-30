@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, expect, it, vi } from "vitest";
-import { legacyCredentialDigest } from "../src/crypto";
+import { legacyCredentialDigest, sha256Base64Url } from "../src/crypto";
 import { TeamState } from "../src/team-state";
 import { SHEET_SCOPES, type SheetScope } from "../src/c2-sheet-bridge";
 import { SYNC_FIELD_DEFINITIONS, normalizeSyncValue } from "../../shared/c2-sync-rules";
@@ -25,9 +25,9 @@ const memberRecords = members.map((member_id, index) => ({ season_id: seasonId, 
   created_at: at, updated_at: at }));
 const practice = { season_id: seasonId, practice_id: practiceId,
   week_id: "week_associated_export_001", template_id: "", generation_key: "generation_associated_001",
-  start_at: "2026-10-07T22:00:00.000Z", end_at: "2026-10-08T00:00:00.000Z",
+  start_at: "2098-05-07T22:00:00.000Z", end_at: "2098-05-08T00:00:00.000Z",
   timezone: "America/New_York", location: "River", address: "Dock 1", map_url: "",
-  left_capacity: 1, right_capacity: 1, signup_cutoff_at: "2026-10-07T20:00:00.000Z",
+  left_capacity: 1, right_capacity: 1, signup_cutoff_at: "2098-05-07T20:00:00.000Z",
   practice_version: 1, cancelled_at: "", cancelled_by: "", schedule_published_at: at,
   schedule_published_by: coachId, created_at: at, updated_at: at };
 const capacity = (left: number, right: number) =>
@@ -102,9 +102,9 @@ async function seed(testEnv: Env, payload: Record<string, unknown>, topic = "SIG
   expect((await call(testEnv, "/internal/c1/import-core", {
     request_id: "associated_core_import_001", source_snapshot_id: "associated_core_snapshot_001",
     settings_version: 1, default_season_id: seasonId, coaches: [coach],
-    seasons: [{ season_id: seasonId, name: "Associated Season", start_date: "2026-04-01",
-      end_date: "2026-12-31", timezone: "America/New_York",
-      season_ends_at: "2027-01-01T05:00:00.000Z", status: "OPEN",
+    seasons: [{ season_id: seasonId, name: "Associated Season", start_date: "2098-03-01",
+      end_date: "2098-12-31", timezone: "America/New_York",
+      season_ends_at: "2099-01-01T05:00:00.000Z", status: "OPEN",
       binding_version: 1, season_version: 1, roster_version: 2,
       created_by: coachId, created_at: at, updated_at: at }], members: memberRecords
   }, true)).status).toBe(200);
@@ -121,7 +121,7 @@ async function seed(testEnv: Env, payload: Record<string, unknown>, topic = "SIG
   await runInDurableObject(stub, async (_instance: TeamState, context) => {
     const sql = context.storage.sql;
     sql.exec(`INSERT INTO training_weeks VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-      seasonId, practice.week_id, "2026-10-05", at, "OPENED", 1, 1, coachId, at,
+      seasonId, practice.week_id, "2098-05-05", at, "OPENED", 1, 1, coachId, at,
       at, at, at).toArray();
     sql.exec(`INSERT INTO practices VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       seasonId, practiceId, practice.week_id, null, practice.generation_key,
@@ -317,6 +317,159 @@ it("exports successive signup versions against the confirmed prior Google row", 
       WHERE entity_type='SIGNUP' AND entity_id=? AND dependency_group='SIGNUP_STATE'`,
       `${practiceId}:${members[0]}`).one();
     expect(JSON.parse(status.baseline_json)).toMatchObject({ preference: "RIGHT", status: "WAITLISTED" });
+  });
+});
+
+it("exports a waitlisted member's promotion only after the prior signup version is confirmed", async () => {
+  const testEnv = environment("waitlist-promotion");
+  const mirror = new SheetMirror();
+  const first = signup(members[0], 1);
+  const waiter = { ...signup(members[1], 2, "WAITLISTED"), preference: "LEFT" };
+  const seating = linkedSeating();
+  seating.draft_seats[1].member_id = "";
+  seating.revision.seats = [seating.draft_seats[0]];
+  seating.revision.names = [{ member_id: members[0], display_name: "First" }];
+  const stub = await seed(testEnv, signupEvent(1, [first, waiter], seating));
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec(`INSERT INTO seat_plan_draft_seats(season_id,practice_id,side,row_number,member_id,
+      seat_plan_version,updated_by,updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+    seasonId, practiceId, "LEFT", 1, members[0], 1, coachId, at).toArray();
+    sql.exec(`INSERT INTO seat_plan_revision_seats(season_id,practice_id,revision_number,side,
+      row_number,member_id) VALUES (?,?,?,?,?,?)`,
+    seasonId, practiceId, 1, "LEFT", 1, members[0]).toArray();
+    sql.exec(`INSERT INTO seat_plan_revision_names(season_id,practice_id,revision_number,
+      member_id,display_name) VALUES (?,?,?,?,?)`,
+    seasonId, practiceId, 1, members[0], "First").toArray();
+  });
+  mirror.install();
+
+  const initialBatches = await batchesThrough(testEnv, "waitlist_initial", "SEAT_PLAN_DRAFT");
+  expect(initialBatches.map((batch) => batch.entity_type)).toEqual([
+    "SIGNUP", "SEAT_PLAN_CURRENT", "SEAT_PLAN_REVISION", "SEAT_PLAN_DRAFT"]);
+  expect(await next(testEnv, "waitlist_initial_final_001")).toMatchObject({ data: {
+    status: "EVENT_CONFIRMED", signup_version: 1 } });
+  const signupColumns = SHEET_SCOPES.SIGNUP.headers;
+  const status = (memberId: string) => mirror.rows.get("SIGNUP")!.find((row) =>
+    row[signupColumns.indexOf("member_id")] === memberId)![signupColumns.indexOf("status")];
+  expect(status(members[0])).toBe("CONFIRMED");
+  expect(status(members[1])).toBe("WAITLISTED");
+  const revisionColumns = SHEET_SCOPES.SEAT_PLAN_REVISION.headers;
+  const revisionNumber = revisionColumns.indexOf("revision_number");
+  const revisionOne = [...mirror.rows.get("SEAT_PLAN_REVISION")![0]];
+  expect(revisionOne[revisionNumber]).toBe("1");
+
+  const cancellation = await call(testEnv, "/internal/c1/cancel-signup", {
+    request_id: "waitlist_promotion_cancel_001", season_id: seasonId, practice_id: practiceId,
+    member_id: members[0], practice_version: 1, signup_version: 1
+  }, true);
+  const cancellationResult = await cancellation.json() as any;
+  expect(cancellation.status, JSON.stringify(cancellationResult)).toBe(200);
+  expect(cancellationResult.data.result).toMatchObject({ signup_version: 2,
+    promoted_member_ids: [members[1]], seat_plan_version: 2, published_revision: 2 });
+  const emitted = await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    return JSON.parse(sql.exec<{ payload_json: string }>(`SELECT payload_json FROM sync_outbox
+      WHERE topic='SIGNUPS_CHANGED' AND status='PENDING'`).one().payload_json).entity;
+  }) as any;
+  expect(emitted.signup_rows).toMatchObject([
+    { member_id: members[0], status: "CANCELLED" },
+    { member_id: members[1], status: "CONFIRMED", preference: "LEFT" }
+  ]);
+  expect(emitted.seating_snapshot.revision).toMatchObject({
+    revision_number: 2, source: "SYSTEM_CANCELSIGNUP",
+    seats: [{ row_number: 1, side: "LEFT", member_id: members[1] }]
+  });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec(`UPDATE sync_outbox SET due_at_ms=?
+      WHERE topic='SIGNUPS_CHANGED' AND status='PENDING'`, Date.now() - 1000).toArray();
+  });
+  expect(await next(testEnv, "waitlist_promotion_batch_001")).toMatchObject({ data: {
+    status: "BATCH_CONFIRMED", entity_type: "SIGNUP" } });
+  expect(status(members[0])).toBe("CANCELLED");
+  expect(status(members[1])).toBe("CONFIRMED");
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    expect(sql.exec<{ signup_version: number }>("SELECT signup_version FROM sync_associated_cursors")
+      .one().signup_version).toBe(1);
+    expect(sql.exec<{ status: string }>("SELECT status FROM sync_outbox WHERE topic='SIGNUPS_CHANGED' ORDER BY rowid DESC LIMIT 1")
+      .one().status).toBe("PENDING");
+  });
+
+  const remaining = await batchesThrough(testEnv, "waitlist_promotion_step", "SEAT_PLAN_DRAFT");
+  expect(remaining.map((batch) => batch.entity_type)).toEqual([
+    "SEAT_PLAN_CURRENT", "SEAT_PLAN_REVISION", "SEAT_PLAN_DRAFT"]);
+  expect(await next(testEnv, "waitlist_promotion_final_001")).toMatchObject({ data: {
+    status: "EVENT_CONFIRMED", signup_version: 2, seat_plan_version: 2, published_revision: 2 } });
+  const seatColumns = SHEET_SCOPES.SEAT_PLAN_CURRENT.headers;
+  const left = mirror.rows.get("SEAT_PLAN_CURRENT")!.find((row) =>
+    row[seatColumns.indexOf("side")] === "LEFT")!;
+  expect(left[seatColumns.indexOf("member_id")]).toBe(members[1]);
+  const right = mirror.rows.get("SEAT_PLAN_CURRENT")!.find((row) =>
+    row[seatColumns.indexOf("side")] === "RIGHT")!;
+  expect(right[seatColumns.indexOf("member_id")]).toBe("");
+  expect(mirror.rows.get("SEAT_PLAN_CURRENT")!.every((row) =>
+    row[seatColumns.indexOf("seat_plan_version")] === "2")).toBe(true);
+  const revisions = mirror.rows.get("SEAT_PLAN_REVISION")!;
+  expect(revisions).toHaveLength(2);
+  expect(revisions.find((row) => row[revisionNumber] === "1")).toEqual(revisionOne);
+  const revisionTwo = revisions.find((row) => row[revisionNumber] === "2")!;
+  expect(revisionTwo[revisionColumns.indexOf("source")]).toBe("SYSTEM_CANCELSIGNUP");
+  expect(JSON.parse(revisionTwo[revisionColumns.indexOf("seats_json")])).toEqual([
+    { side: "LEFT", row_number: 1, member_id: members[1] }
+  ]);
+  expect(JSON.parse(revisionTwo[revisionColumns.indexOf("names_json")])).toEqual([
+    { member_id: members[1], display_name: "Second" }
+  ]);
+  const stateColumns = SHEET_SCOPES.SEAT_PLAN_DRAFT.headers;
+  const state = mirror.rows.get("SEAT_PLAN_DRAFT")!;
+  expect(state).toHaveLength(1);
+  expect(state[0][stateColumns.indexOf("seat_plan_version")]).toBe("2");
+  expect(state[0][stateColumns.indexOf("published_revision")]).toBe("2");
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    expect(sql.exec<{ signup_version: number; seat_plan_version: number; published_revision: number }>(
+      "SELECT signup_version,seat_plan_version,published_revision FROM sync_associated_cursors").one())
+      .toEqual({ signup_version: 2, seat_plan_version: 2, published_revision: 2 });
+    expect(sql.exec<{ status: string }>("SELECT status FROM sync_outbox WHERE topic='SIGNUPS_CHANGED' ORDER BY rowid DESC LIMIT 1")
+      .one().status).toBe("CONFIRMED");
+    const baseline = sql.exec<{ entity_id: string; baseline_json: string }>(`SELECT entity_id,baseline_json
+      FROM sync_baselines WHERE entity_type='SIGNUP' AND dependency_group='SIGNUP_STATE'
+      ORDER BY entity_id`).toArray();
+    expect(baseline.map((row) => [row.entity_id, JSON.parse(row.baseline_json).status])).toEqual([
+      [`${practiceId}:${members[0]}`, "CANCELLED"],
+      [`${practiceId}:${members[1]}`, "CONFIRMED"]
+    ]);
+    const draftBaseline = sql.exec<{ baseline_json: string }>(`SELECT baseline_json FROM sync_baselines
+      WHERE entity_type='SEAT_PLAN_DRAFT' AND entity_id=? AND dependency_group='SEATING_DRAFT'`,
+    practiceId).one();
+    const draft = JSON.parse(draftBaseline.baseline_json);
+    expect(draft.seats).toEqual([
+      { side: "LEFT", row_number: 1, member_id: members[1] },
+      { side: "RIGHT", row_number: 1, member_id: "" }
+    ]);
+    const versionBaseline = sql.exec<{ baseline_json: string }>(`SELECT baseline_json FROM sync_baselines
+      WHERE entity_type='SEAT_PLAN_DRAFT' AND entity_id=? AND dependency_group='SYSTEM_VERSION'`,
+    practiceId).one();
+    expect(JSON.parse(versionBaseline.baseline_json)).toMatchObject({
+      seat_plan_version: 2, published_revision: 2
+    });
+    type Physical = { scope: string; row_id: string; cells_json: string; cells_digest: string };
+    const physical = sql.exec<Physical>(`SELECT scope,row_id,cells_json,cells_digest
+      FROM sync_associated_physical_baselines WHERE season_id=? AND binding_version=1`,
+    seasonId).toArray();
+    const physicalById = new Map(physical.map((row) => [`${row.scope}:${row.row_id}`, row]));
+    expect(physical).toHaveLength(7);
+    for (const scope of ["SIGNUP", "SEAT_PLAN_CURRENT", "SEAT_PLAN_REVISION", "SEAT_PLAN_DRAFT"] as const) {
+      for (const cells of mirror.rows.get(scope)!) {
+        const rowId = scope === "SIGNUP" ? `${cells[1]}:${cells[2]}` :
+          scope === "SEAT_PLAN_CURRENT" ? `${cells[1]}:${cells[2]}:${cells[3]}` :
+            scope === "SEAT_PLAN_REVISION" ? `${cells[1]}:${cells[2]}` : cells[1];
+        const saved = physicalById.get(`${scope}:${rowId}`);
+        expect(saved?.cells_digest).toBe(`sha256_v1:${await sha256Base64Url(JSON.stringify(cells))}`);
+        expect(JSON.parse(saved!.cells_json)).toEqual(cells);
+      }
+    }
   });
 });
 

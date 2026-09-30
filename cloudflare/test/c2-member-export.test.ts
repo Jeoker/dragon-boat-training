@@ -198,6 +198,194 @@ it("exports a multi-member event one verified target at a time and survives a lo
   expect(patchCalls).toBe(5);
 });
 
+it("drains a Google-committed batch while paused without preparing the next event", async () => {
+  const environment = { ...testEnv("paused-lost-reply"), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const stub = await seed(environment);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id='out_export_test_001'",
+      JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
+        member_ids: [memberIds[0]], roster_version: 1 } })).toArray();
+    const requestKey = sql.exec<{ request_key: string }>(
+      "SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
+    sql.exec(`INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
+      VALUES ('out_export_after_pause_002',?,'MEMBERS_IMPORTED',?,'PENDING',?,?)`, requestKey,
+    JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
+      member_ids: [memberIds[1]], roster_version: 2 } }), Date.now() - 1000,
+    "2026-09-02T12:00:00.000Z").toArray();
+  });
+  const login = await call(environment, "/internal/c1/coach-login", {
+    request_id: "paused_export_login_001", coach_code: "local-test-coach-code"
+  }, true);
+  expect(login.status).toBe(200);
+  const token = (await login.json() as any).data.result.session_token as string;
+  const coachAction = async (path: string, requestId: string, extra: Record<string, unknown> = {}) =>
+    (await call(environment, path, { request_id: requestId, session_token: token,
+      season_id: seasonId, ...extra })).json() as Promise<any>;
+  const poll = async (requestId: string) =>
+    (await call(environment, "/internal/c2/poll-due-exports", { request_id: requestId }))
+      .json() as Promise<any>;
+  const exportNext = async (requestId: string) =>
+    (await call(environment, "/internal/c2/export-next-member", {
+      request_id: requestId, season_id: seasonId })).json() as Promise<any>;
+  const dueNow = () => runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("UPDATE sync_export_retries SET next_attempt_at_ms=0 WHERE season_id=?",
+      seasonId).toArray();
+  });
+  const queue = () => runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    return {
+      outbox: sql.exec<{ outbox_id: string; status: string }>(
+        "SELECT outbox_id,status FROM sync_outbox WHERE topic='MEMBERS_IMPORTED' ORDER BY rowid").toArray(),
+      batches: sql.exec<{ batch_id: string; first_outbox_id: string; status: string;
+        attempt_count: number }>(
+        "SELECT batch_id,first_outbox_id,status,attempt_count FROM sync_batches ORDER BY rowid").toArray(),
+      memberBaselines: sql.exec<{ entity_id: string; count: number }>(
+        "SELECT entity_id,COUNT(*) AS count FROM sync_baselines WHERE entity_type='MEMBER' GROUP BY entity_id ORDER BY entity_id").toArray(),
+      rosterVersion: sql.exec<{ roster_version: number }>(
+        "SELECT CAST(json_extract(baseline_json,'$.roster_version') AS INTEGER) AS roster_version FROM sync_baselines WHERE entity_type='SEASON' AND dependency_group='SYSTEM_VERSION'").one().roster_version,
+      retry: sql.exec<{ failure_count: number; action_required: number; last_error: string }>(
+        "SELECT failure_count,action_required,last_error FROM sync_export_retries WHERE season_id=?",
+        seasonId).toArray(),
+      conflicts: sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM sync_conflicts WHERE season_id=?", seasonId).one().count
+    };
+  });
+  let seasonRow = seasonCells();
+  const memberRows: string[][] = [];
+  const receipts = new Map<string, Record<string, unknown>>();
+  const committedPayloads = new Map<string, { digest: string; json: string }>();
+  const patchAttempts: Array<{ operationId: string; batchId: string; scope: string }> = [];
+  const readScopes: string[] = [];
+  let loseFirstReply = true;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const envelope = JSON.parse(String(init?.body));
+    const payload = JSON.parse(envelope.payload_json);
+    const isSeason = payload.entity_type === "SEASON" ||
+      envelope.action === "cloudflarePatchSeasonSheet";
+    if (envelope.action === "cloudflareReadSheetRecords") {
+      readScopes.push(String(payload.entity_type));
+      return Response.json({
+        ok: true, meta: { request_id: envelope.request_id }, data: {
+          protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+          season_id: seasonId, entity_type: payload.entity_type, binding_version: 1,
+          writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
+          payload_digest: envelope.payload_digest,
+          spreadsheet_id: isSeason ? "system_export_test_001" : "spreadsheet_export_test_001",
+          tab_name: isSeason ? "Seasons" : "Members", tab_id: isSeason ? "100" : "101",
+          read_at_ms: Date.now(), headers: [...SHEET_SCOPES[isSeason ? "SEASON" : "MEMBER"].headers],
+          secondary: null, rows: (isSeason ? [seasonRow] : memberRows).map((cells, index) =>
+            ({ row_number: index + 2, cells }))
+        }
+      });
+    }
+    const item = payload.items[0];
+    patchAttempts.push({ operationId: envelope.operation_id, batchId: payload.batch_id,
+      scope: isSeason ? "SEASON" : "MEMBER" });
+    let receipt = receipts.get(envelope.operation_id);
+    if (!receipt) {
+      committedPayloads.set(envelope.operation_id, {
+        digest: envelope.payload_digest, json: envelope.payload_json });
+      if (isSeason) {
+        expect(item.expected).toEqual(seasonRow);
+        seasonRow = item.target;
+      } else {
+        const index = memberRows.findIndex((row) => row[1] === item.member_id);
+        expect(item.expected).toEqual(index < 0 ? null : memberRows[index]);
+        if (index < 0) memberRows.push(item.target);
+        else memberRows[index] = item.target;
+      }
+      receipt = { status: "verified", protocol_version: envelope.protocol_version,
+        team_id: envelope.team_id, season_id: seasonId, binding_version: 1,
+        writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id,
+        payload_digest: envelope.payload_digest, spreadsheet_id: payload.spreadsheet_id,
+        tab_id: payload.tab_id,
+        [isSeason ? "verified_season_ids" : "verified_member_ids"]:
+          [isSeason ? seasonId : item.member_id], acknowledged_at: new Date().toISOString() };
+      receipts.set(envelope.operation_id, receipt);
+    } else {
+      expect({ digest: envelope.payload_digest, json: envelope.payload_json })
+        .toEqual(committedPayloads.get(envelope.operation_id));
+    }
+    if (loseFirstReply) {
+      loseFirstReply = false;
+      throw new Error("Google committed the member row, but its reply was lost");
+    }
+    return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: receipt });
+  });
+
+  expect(await exportNext("paused_export_initial_001"))
+    .toMatchObject({ error: { code: "BRIDGE_UNAVAILABLE" } });
+  expect(memberRows.map((row) => row[1])).toEqual([memberIds[0]]);
+  const beforePause = await queue();
+  expect(beforePause.batches).toHaveLength(1);
+  expect(beforePause.batches[0]).toMatchObject({ first_outbox_id: "out_export_test_001",
+    status: "FAILED", attempt_count: 1 });
+  expect(beforePause.memberBaselines).toEqual([]);
+  expect(beforePause.rosterVersion).toBe(0);
+  expect(beforePause.outbox.map((row) => row.status)).toEqual(["PENDING", "PENDING"]);
+  expect(beforePause.conflicts).toBe(0);
+  expect(readScopes).toEqual(["MEMBER"]);
+
+  const pause = await coachAction("/internal/c2/set-export-pause", "paused_export_pause_001",
+    { paused: true });
+  expect(pause.data.result).toMatchObject({ status: "PAUSING",
+    unfinished_batch_id: beforePause.batches[0].batch_id });
+  expect(await coachAction("/internal/c2/set-export-pause", "paused_export_resume_early_001",
+    { paused: false })).toMatchObject({ error: { code: "SYNC_EXPORT_DRAINING" } });
+  expect((await coachAction("/internal/c2/get-sync-overview", "paused_export_overview_001"))
+    .data.export_control.status).toBe("PAUSING");
+
+  const drain = await poll("paused_export_poll_drain_001");
+  expect(drain.data.results).toEqual([{ season_id: seasonId, status: "BATCH_CONFIRMED" }]);
+  expect(patchAttempts.slice(0, 2).map((attempt) => attempt.operationId))
+    .toEqual([patchAttempts[0].operationId, patchAttempts[0].operationId]);
+  expect(patchAttempts.slice(0, 2).map((attempt) => attempt.batchId))
+    .toEqual([beforePause.batches[0].batch_id, beforePause.batches[0].batch_id]);
+  expect(readScopes).toEqual(["MEMBER"]);
+  expect(memberRows.map((row) => row[1])).toEqual([memberIds[0]]);
+  const drained = await queue();
+  expect(drained.batches).toHaveLength(1);
+  expect(drained.batches[0]).toMatchObject({ status: "CONFIRMED", attempt_count: 2 });
+  expect(drained.memberBaselines).toEqual([{ entity_id: memberIds[0], count: 6 }]);
+  expect(drained.rosterVersion).toBe(0);
+  expect(drained.outbox.map((row) => row.status)).toEqual(["PENDING", "PENDING"]);
+  expect(drained.retry).toEqual([{ failure_count: 0, action_required: 0, last_error: "" }]);
+  expect(drained.conflicts).toBe(0);
+  expect((await coachAction("/internal/c2/get-sync-overview", "paused_export_overview_002"))
+    .data.export_control.status).toBe("PAUSED");
+  await dueNow();
+  expect((await poll("paused_export_poll_while_paused_002")).data.polled).toBe(0);
+  expect((await queue()).batches).toHaveLength(1);
+  expect(patchAttempts).toHaveLength(2);
+  expect(readScopes).toEqual(["MEMBER"]);
+
+  expect(await coachAction("/internal/c2/set-export-pause", "paused_export_resume_002",
+    { paused: false })).toMatchObject({ data: { result: {
+      status: "RUNNING", next_batch_requires_fresh_comparison: true } } });
+  expect((await poll("paused_export_poll_after_resume_003")).data.results)
+    .toEqual([{ season_id: seasonId, status: "EVENT_CONFIRMED" }]);
+  expect(readScopes).toEqual(["MEMBER", "SEASON"]);
+  expect(seasonRow[SHEET_SCOPES.SEASON.headers.indexOf("roster_version")]).toBe("1");
+  expect((await queue()).outbox.map((row) => row.status)).toEqual(["CONFIRMED", "PENDING"]);
+  await dueNow();
+  expect((await poll("paused_export_poll_next_event_004")).data.results)
+    .toEqual([{ season_id: seasonId, status: "BATCH_CONFIRMED" }]);
+  expect(readScopes).toEqual(["MEMBER", "SEASON", "MEMBER"]);
+  expect(memberRows.map((row) => row[1])).toEqual(memberIds);
+  await dueNow();
+  expect((await poll("paused_export_poll_next_season_005")).data.results)
+    .toEqual([{ season_id: seasonId, status: "EVENT_CONFIRMED" }]);
+  const complete = await queue();
+  expect(complete.outbox.map((row) => row.status)).toEqual(["CONFIRMED", "CONFIRMED"]);
+  expect(complete.batches.map((batch) => batch.status)).toEqual([
+    "CONFIRMED", "CONFIRMED", "CONFIRMED", "CONFIRMED"]);
+  expect(complete.memberBaselines).toEqual(memberIds.map((entity_id) => ({ entity_id, count: 6 })));
+  expect(complete.rosterVersion).toBe(2);
+  expect(complete.retry).toEqual([]);
+  expect(complete.conflicts).toBe(0);
+});
+
 it("keeps member export disabled in production", async () => {
   const environment = { ...testEnv("production"), ENVIRONMENT: "production" } as Env;
   const result = await call(environment, "/internal/c2/export-next-member",
