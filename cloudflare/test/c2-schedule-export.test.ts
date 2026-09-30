@@ -128,6 +128,84 @@ afterEach(() => {
     String((seasonRecord as Record<string, unknown>)[header] ?? ""))];
 });
 
+it("keeps retryable Google failures in durable backoff after many attempts", async () => {
+  const environment = { ...testEnv("poll-retry"), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const stub = await seed(environment);
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const request = JSON.parse(String(init?.body));
+    return Response.json({ ok: false, meta: { request_id: request.request_id },
+      error: { code: "SERVICE_BUSY", message: "Temporary Google quota", retryable: true } });
+  });
+  const poll = async (request_id: string) => (await call(environment,
+    "/internal/c2/poll-due-exports", { request_id })).json() as Promise<any>;
+  const first = await poll("schedule_poll_retry_001");
+  expect(first.data.results).toEqual([{ season_id: seasonId,
+    status: "RETRY_REQUIRED", error_code: "SERVICE_BUSY" }]);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec(
+      "UPDATE sync_export_retries SET failure_count=7,next_attempt_at_ms=0 WHERE season_id=?",
+      seasonId).toArray();
+  });
+  const eighth = await poll("schedule_poll_retry_008");
+  expect(eighth.data.results).toEqual([{ season_id: seasonId,
+    status: "RETRY_REQUIRED", error_code: "SERVICE_BUSY" }]);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec<{ failure_count: number; action_required: number; next_attempt_at_ms: number }>(
+      "SELECT failure_count,action_required,next_attempt_at_ms FROM sync_export_retries WHERE season_id=?",
+      seasonId).one()).toMatchObject({ failure_count: 8, action_required: 0 });
+    expect(context.storage.sql.exec<{ next_attempt_at_ms: number }>(
+      "SELECT next_attempt_at_ms FROM sync_export_retries WHERE season_id=?", seasonId).one()
+      .next_attempt_at_ms).toBeGreaterThan(Date.now());
+    expect(context.storage.sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id='out_schedule_test_001'").one().status)
+      .toBe("PENDING");
+  });
+  expect((await poll("schedule_poll_retry_cooling")).data.polled).toBe(0);
+});
+
+it("halts a Google reference conflict until a Coach re-arms the corrected season", async () => {
+  const environment = { ...testEnv("poll-conflict"), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const stub = await seed(environment);
+  mockSheetBridge("SERVICE_BUSY");
+  const poll = async (request_id: string) => (await call(environment,
+    "/internal/c2/poll-due-exports", { request_id })).json() as Promise<any>;
+  const dueNow = () => runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec(
+      "UPDATE sync_export_retries SET next_attempt_at_ms=0 WHERE season_id=?", seasonId).toArray();
+  });
+  expect((await poll("schedule_conflict_poll_001")).data.results[0].status).toBe("RETRY_REQUIRED");
+  await dueNow();
+  expect((await poll("schedule_conflict_poll_002")).data.results[0].status).toBe("BATCH_CONFIRMED");
+  await dueNow();
+  expect((await poll("schedule_conflict_poll_003")).data.results[0].status).toBe("BATCH_CONFIRMED");
+  const locationIndex = SHEET_SCOPES.SCHEDULE_TEMPLATE.headers.indexOf("location");
+  rows.SCHEDULE_TEMPLATE[0][locationIndex] = "Manual Google edit";
+  await dueNow();
+  expect((await poll("schedule_conflict_poll_004")).data.results).toEqual([{
+    season_id: seasonId, status: "ACTION_REQUIRED", error_code: "SYNC_REFERENCE_NEEDS_REVIEW" }]);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec<{ action_required: number }>(
+      "SELECT action_required FROM sync_export_retries WHERE season_id=?", seasonId).one()
+      .action_required).toBe(1);
+    expect(context.storage.sql.exec<{ status: string }>(
+      "SELECT status FROM sync_outbox WHERE outbox_id='out_schedule_test_001'").one().status)
+      .toBe("PENDING");
+  });
+  expect((await poll("schedule_conflict_poll_005")).data.polled).toBe(0);
+  rows.SCHEDULE_TEMPLATE[0][locationIndex] = "River";
+  const login = await call(environment, "/internal/c1/coach-login", {
+    request_id: "schedule_conflict_login_001", coach_code: "local-test-coach-code"
+  }, true);
+  const token = (await login.json() as any).data.result.session_token;
+  const retry = await call(environment, "/internal/c2/retry-export", {
+    request_id: "schedule_conflict_rearm_001", session_token: token, season_id: seasonId
+  });
+  expect((await retry.json() as any).data.result).toMatchObject({
+    previous_error: "SYNC_REFERENCE_NEEDS_REVIEW", unfinished_batch_id: null,
+    next_batch_requires_fresh_comparison: true });
+  expect((await poll("schedule_conflict_poll_006")).data.results[0].status).toBe("BATCH_CONFIRMED");
+});
+
 function mockSheetBridge(firstPatchFault: "LOST_REPLY" | "SERVICE_BUSY") {
   const receipts = new Map<string, Record<string, unknown>>();
   let injectFault = true;

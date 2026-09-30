@@ -4,7 +4,7 @@
 
 > 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。仓库拆分本身不等同于 Cloudflare 迁移或新的生产功能验收；后续状态按下方各日期记录及“当前基线”判断。
 
-> Cloudflare 迁移现状：2026-09-30。C0、C1、C2.2 和 C2.3 阶段门槛已通过。专用 `c2test` 为 Worker `0.14.0-c2-operations`／schema v11，10 名虚构成员、97 组基线，零开放冲突、未完成批次和 outbox。独立 Google 的模板、两周及两场训练已写回；out-of-band 模板修改阻断／恢复、训练行部分写入及赛季已写后丢回执的**受控故障**均已真实验收，最终四类排期／赛季 B/C/G 零差异。两场训练仍为私有草稿，前后私有备份均已校验下载，隔离 Google Web App 已恢复干净 v12。`c2test` 只开启显式排期导出，**自动轮询仍关闭**。真实配额耗尽、多行 Worker 合并、报名／排座写回、C2.5 远端运维及生产切换均未通过；原 staging 最近核验为 C2.2／schema v8，正式 Apps Script／Sheets 及 Pages 未切换。见[排期故障隔离验收](tests/C2-SCHEDULE-FAULT-ISOLATED-2026-09-30.md)、[排期冲突隔离验收](tests/C2-SCHEDULE-CONFLICT-ISOLATED-2026-09-30.md)和[C2.5 本地记录](tests/C2-EXPORT-OPERATIONS-LOCAL-2026-09-29.md)。
+> Cloudflare 迁移现状：2026-09-30。C0、C1、C2.2 和 C2.3 阶段门槛已通过。专用 `c2test` 仍为 Worker `0.14.0-c2-operations`／schema v11，10 名虚构成员、97 组基线，零开放冲突、未完成批次和 outbox。独立 Google 的模板、两周及两场训练已写回；out-of-band 模板修改阻断／恢复、训练行部分写入及赛季已写后丢回执的**受控故障**均已真实验收，最终四类排期／赛季 B/C/G 零差异。两场训练仍为私有草稿，前后私有备份均已校验下载，隔离 Google Web App 已恢复干净 v12。`c2test` 只开启显式排期导出，**自动轮询仍关闭**。本地候选代码已升至 `0.15.0-c2-export-action-required`／schema v12，新增永久错误停轮询、Coach 显式重试和备份覆盖运维状态；**尚未部署**。真实配额耗尽、多行 Worker 合并、报名／排座写回、C2.5 远端运维及生产切换均未通过；原 staging 最近核验为 C2.2／schema v8，正式 Apps Script／Sheets 及 Pages 未切换。见[排期故障隔离验收](tests/C2-SCHEDULE-FAULT-ISOLATED-2026-09-30.md)、[排期冲突隔离验收](tests/C2-SCHEDULE-CONFLICT-ISOLATED-2026-09-30.md)和[C2.5 本地续篇](tests/C2-EXPORT-ACTION-REQUIRED-LOCAL-2026-09-30.md)。
 
 > 2026-09-27 系统级复核快照：当时正式三页、只读 API、Coach 真实登录／受保护读取／退出通过；正式三场测试训练均已结束，故未重新执行正式报名写入。**该快照记录了后续 C2.4 接续前**隔离赛季的 `BASELINE_INCOMPLETE` 和七个待处理 outbox；接续后的状态见下方及赛季版本验收。该系统复核不等于 Cloudflare 端到端或生产切换通过。验收开始时线上 HTML 与本地构建不一致。详见[系统级验收快照](tests/SYSTEM-LEVEL-ACCEPTANCE-2026-09-27.md)。
 
@@ -41,7 +41,7 @@
 - C2 最近代码复审与技术债清理：修复成员导出跨 `binding_version` 误认已确认队员，抽取成员／赛季批次状态和摘要核验骨架及通用回执校验；旧请求不得重发 `SUPERSEDED` 批次或已停止待处理的 outbox，受控导入路径不再带着未完成批次提升绑定版本。独立 `c2test` 已核验名单版本 11、Google 两行 `PARTIAL` 同批恢复与回执重放，见[整体审查](tests/C2-RECENT-CODE-REVIEW-2026-09-27.md)。
 - C2.4 成员回执丢失与排期同步基础：独立 Google 的“已写后空响应”故障注入已使 Worker 沿原批次恢复；Web App 随后恢复 v12 清洁构建，名单版本 12、`Seasons`／`Members` 曾零差异。模板／周次同步实体和迁移最初仅在本地 schema v10 验证，现已随 v11 升级到专用 `c2test`。见[当时验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)和[本轮升级记录](tests/C2-SCHEDULE-ISOLATED-ACCEPTANCE-2026-09-29.md)。
 - C2.4 排期 Worker 导出：`PRACTICE` B/C/G 使用 Google 原始列，旧格式或缺组 B 阻断目标投影。`export-next-schedule` 按模板→周次→训练逐行确认，最后核验赛季行捕获的 `season_version` 并同事务确认 B 与 outbox；写前核对绑定、基线、前值和引用。专用 `c2test` 的基本跨表写回及 out-of-band Google 模板改动阻断／恢复已[远端核验](tests/C2-SCHEDULE-CONFLICT-ISOLATED-2026-09-30.md)；训练行单元格中断及赛季回执丢失沿原批次恢复也已[隔离验收](tests/C2-SCHEDULE-FAULT-ISOLATED-2026-09-30.md)。本地另有写前 `SERVICE_BUSY` 测试；这不等于真实配额耗尽、随机网络断包或极窄人工竞态。多行 Worker 合并未验收；原 staging／生产及自动导出仍关闭。
-- C2.5 导出运维：schema v11 已有独立运行时暂停／恢复、未完成批次排空、Coach 冲突摘要分页及 B/C/G 详情、积压和退避概览、十分钟入口的 SQLite 持久重试，且已随源代码部署到专用 `c2test`。这些运维行为仍只通过本地测试，远端真实暂停恢复及配额验收未进行；同季单实体冲突仍可能挡住后续独立事件。自动导出在所有配置关闭。2026-09-29 Node **193／193**、Workers／DO **135／135**，Cloudflare 类型检查和三页构建通过；Wrangler 日志目录 `EPERM` 不影响测试退出码。见[C2.5 本地记录](tests/C2-EXPORT-OPERATIONS-LOCAL-2026-09-29.md)。
+- C2.5 导出运维：schema v11 的每季暂停／恢复、未完成批次排空、Coach 冲突摘要分页与 B/C/G 详情、积压概览及持久退避已随 `0.14` 部署到专用 `c2test`，行为仅本地测试。候选 schema v12 增加非重试错误的 `ACTION_REQUIRED` 持久停止及 Coach 显式 `retry-export`；重试不会删除旧批次／outbox，未完成批次继续沿原批次核验，新批次重读 Google。私有备份现覆盖暂停和重试表。**v12 未远端部署或验收**；真实暂停恢复、配额及同季独立实体进展仍待验证，自动导出在所有配置关闭。见[本地续篇](tests/C2-EXPORT-ACTION-REQUIRED-LOCAL-2026-09-30.md)。
 - 当前跟踪文件不包含 Script ID、私有 Spreadsheet ID、Coach Code、会话令牌或服务端 secret。早期测试夹具曾复用实际 Coach Code，普通提交不会清除 Git 历史，因此下一次管理后端部署前必须轮换该 Code。
 
 ## 运行中 Apps Script 的写入与恢复约束
@@ -78,7 +78,7 @@
 | C2.2 Form 来源导入 | 隔离 Form 的分页、通知、十分钟补扫、桥接故障恢复、人工核查与跨部署持久化通过；并发提交由本地强制竞态测试覆盖。原 staging v6→v8 保留 C1 数据与待同步 outbox；生产未切换。见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md) |
 | C2.3 Sheet 读取与差异 | 五类登记 Sheet 的真实只读读取、B/C/G 人工改名与恢复、持久诊断幂等通过；异常结构和关联依赖由本地测试覆盖。验收当时 `c2test` 为 schema v9；当前已升级 v11。仍没有 Google 人工修改的自动业务导入。见[C2.3 验收](tests/C2-SHEET-DIFF-ACCEPTANCE.md) |
 | C2.4 成员及排期导出切片 | 独立 Google 已核验 10 名成员、名单版本 12、两行 `PARTIAL` 及成员丢回执恢复。排期模板、两周、两场训练和赛季回执逐步写回；out-of-band 模板改动被阻断并可恢复，训练行单格部分写入和赛季已写后丢回执也沿原批次恢复，四类 B/C/G 零差异，私有草稿未公开，导出后零积压。真实配额耗尽、多行合并、报名／排座仍未验收，C2.4 整体未通过；原 staging／生产未启用。见[排期故障验收](tests/C2-SCHEDULE-FAULT-ISOLATED-2026-09-30.md)、[排期冲突验收](tests/C2-SCHEDULE-CONFLICT-ISOLATED-2026-09-30.md)及[成员故障验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md) |
-| C2.5 运维切片 | schema v11 的每季暂停、批次排空、恢复门槛、Coach 冲突列表／详情、积压提示和 SQLite 持久退避已本地测试并部署到专用 `c2test`；**自动轮询保持关闭，运维行为尚无远端实证**。同季单实体冲突仍可能阻塞后续独立记录，C2.5 未通过完整验收。见[本地记录](tests/C2-EXPORT-OPERATIONS-LOCAL-2026-09-29.md) |
+| C2.5 运维切片 | schema v11 的每季暂停、批次排空、恢复门槛、Coach 冲突列表／详情、积压提示和持久退避已本地测试并部署到专用 `c2test`。候选 v12 又在本地实现非重试错误停轮询、Coach 显式重试及运维状态备份，尚未部署。**自动轮询保持关闭，运维行为尚无远端实证**。同季单实体冲突仍可能阻塞后续独立记录，C2.5 未通过完整验收。见[本地续篇](tests/C2-EXPORT-ACTION-REQUIRED-LOCAL-2026-09-30.md) |
 
 完整 P3 场景、版本和验证层次见[P3 验收报告](tests/P3-ACCEPTANCE.md)。[P2](tests/live-p2-acceptance.mjs)和[P3](tests/live-p3-acceptance.mjs)真实脚本均为显式手动运行，不随 `npm test` 执行，不修改真实训练时间。运行限制见[后端说明](backend/README.md#验证边界)。
 
@@ -101,7 +101,7 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 
 ## 未完成范围与下一步
 
-1. **继续 C2.4，再补齐 C2.5 运维**：专用 `c2test` 的排期跨表链路、out-of-band 模板改动阻断／恢复、受控行内部分写入及已写后丢回执均已真实通过。下一步实现报名／座位关联写回及多行合并，并用可重试的服务不可用响应覆盖配额类边界；不通过耗尽真实 Google 配额制造故障。C2.5 随后验证真实暂停中批次排空、恢复前重比与持久退避；自动轮询对永久冲突的无限重试应先改为持久的需人工处理状态，再设计同季单实体冲突不阻塞独立记录的安全顺序。报名／座位关联写回须先核验成员和训练前置关系；多行 payload 按实际字符长度拆批，旧无快照事件不能从当前行推测，只有 Google 核验后才能推进基线和 outbox。排期事件以外的 `season_version` 变化仍须单独设计。不得连接生产 Pages／Google 文件或改变 Apps Script 写入归属。见[排期故障验收](tests/C2-SCHEDULE-FAULT-ISOLATED-2026-09-30.md)及[Cloudflare 迁移计划](cloudflare-migration-plan.md#c2-可执行工作清单)。
+1. **继续 C2.4，再补齐 C2.5 运维**：专用 `c2test` 的排期跨表链路、out-of-band 模板改动阻断／恢复、受控行内部分写入及已写后丢回执均已真实通过。下一步实现报名／座位关联写回及多行合并，并用可重试的服务不可用响应覆盖配额类边界；不通过耗尽真实 Google 配额制造故障。C2.5 的永久错误停轮询与 Coach 显式重试已有本地实现，须先在隔离环境备份并验收，再验证真实暂停中批次排空、恢复前重比与持久退避；同季单实体冲突不阻塞独立记录的安全顺序仍未设计完成。报名／座位关联写回须先核验成员和训练前置关系；多行 payload 按实际字符长度拆批，旧无快照事件不能从当前行推测，只有 Google 核验后才能推进基线和 outbox。排期事件以外的 `season_version` 变化仍须单独设计。不得连接生产 Pages／Google 文件或改变 Apps Script 写入归属。见[排期故障验收](tests/C2-SCHEDULE-FAULT-ISOLATED-2026-09-30.md)及[Cloudflare 迁移计划](cloudflare-migration-plan.md#c2-可执行工作清单)。
 2. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
 3. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
 4. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。

@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 11;
+export const APPLICATION_SCHEMA_VERSION = 12;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -545,6 +545,14 @@ function applyC2ExportOperationsSchema(sql: SqlStorage): void {
   `).toArray();
 }
 
+function applyC2ExportActionRequiredSchema(sql: SqlStorage): void {
+  const columns = sql.exec<{ name: string }>("PRAGMA table_info(sync_export_retries)").toArray();
+  if (!columns.some((column) => column.name === "action_required")) {
+    sql.exec(`ALTER TABLE sync_export_retries ADD COLUMN action_required INTEGER NOT NULL DEFAULT 0
+      CHECK (action_required IN (0, 1));`).toArray();
+  }
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -566,6 +574,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 9) applyC2SheetInspectionSchema(sql);
     if (currentVersion < 10) applyC2ScheduleEntitySchema(sql);
     if (currentVersion < 11) applyC2ExportOperationsSchema(sql);
+    if (currentVersion < 12) applyC2ExportActionRequiredSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

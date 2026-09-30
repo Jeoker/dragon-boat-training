@@ -75,6 +75,7 @@ export class C2SyncService {
     if (path === "/internal/c2/import-sync-foundation") return this.importFoundation(raw);
     if (path === "/internal/c2/get-sync-overview") return this.getOverview(raw);
     if (path === "/internal/c2/set-export-pause") return this.setExportPause(raw);
+    if (path === "/internal/c2/retry-export") return this.retryExport(raw);
     if (path === "/internal/c2/list-sync-conflicts") return this.listSyncConflicts(raw);
     if (path === "/internal/c2/get-sync-conflict") return this.getSyncConflict(raw);
     if (path === "/internal/c2/list-form-reviews") return this.listFormReviews(raw);
@@ -449,7 +450,7 @@ export class C2SyncService {
     const unfinished = unfinishedExport(this.ctx.storage.sql, input.season_id);
     const requested = exportPauseRequested(this.ctx.storage.sql, input.season_id);
     const retry = bindingCurrent ? firstRow<SqlRow>(this.ctx.storage.sql,
-      `SELECT failure_count,next_attempt_at_ms,last_error,updated_at FROM sync_export_retries
+      `SELECT failure_count,next_attempt_at_ms,last_error,updated_at,action_required FROM sync_export_retries
        WHERE season_id=? AND binding_version=?`, input.season_id, Number(season.binding_version)) : null;
     const oldestOutbox = firstRow<SqlRow>(this.ctx.storage.sql,
       `SELECT topic,created_at,due_at_ms FROM sync_outbox WHERE status='PENDING'
@@ -473,10 +474,12 @@ export class C2SyncService {
     if (oldestOutbox) hints.push("PENDING_EXPORT");
     if (openConflicts) hints.push("OPEN_CONFLICTS");
     if (sourceReviews) hints.push("SOURCE_REVIEW_REQUIRED");
-    if (retry && Number(retry.failure_count) > 0) hints.push("EXPORT_RETRYING");
+    if (retry && Number(retry.action_required) === 1) hints.push("EXPORT_ACTION_REQUIRED");
+    else if (retry && Number(retry.failure_count) > 0) hints.push("EXPORT_RETRYING");
     const exportStatus = !bindingCurrent ? "UNAVAILABLE" : Number(binding.export_paused) === 1
       ? unfinished ? "BLOCKED" : "SOURCE_PAUSED"
-      : requested ? unfinished ? "PAUSING" : "PAUSED" : "RUNNING";
+      : requested ? unfinished ? "PAUSING" : "PAUSED"
+        : Number(retry?.action_required ?? 0) === 1 ? "ACTION_REQUIRED" : "RUNNING";
     return {
       season_id: input.season_id,
       binding: binding ? bindingComparable(binding) : null,
@@ -485,7 +488,8 @@ export class C2SyncService {
         source_paused: Number(binding?.export_paused ?? 0) === 1,
         unfinished_batch: unfinished,
         retry: retry ? { failure_count: Number(retry.failure_count),
-          next_attempt_at: Number(retry.next_attempt_at_ms) > 0
+          action_required: Number(retry.action_required) === 1,
+          next_attempt_at: Number(retry.action_required) === 0 && Number(retry.next_attempt_at_ms) > 0
             ? new Date(Number(retry.next_attempt_at_ms)).toISOString() : null,
           last_error: String(retry.last_error), updated_at: String(retry.updated_at) } : null,
         oldest_pending: oldestOutbox ? { topic: String(oldestOutbox.topic),
@@ -542,14 +546,56 @@ export class C2SyncService {
           "UPDATE sync_export_retries SET next_attempt_at_ms=0,updated_at=? WHERE season_id=? AND binding_version=?",
           at, input.season_id, Number(binding.binding_version)).toArray();
       }
+      const halted = firstRow<{ action_required: number }>(this.ctx.storage.sql,
+        `SELECT action_required FROM sync_export_retries WHERE season_id=? AND binding_version=?`,
+        input.season_id, Number(binding.binding_version));
       const result = { operation: operationReceipt("setExportPause", input.request_id, at),
         result: { season_id: input.season_id, status: Number(binding.export_paused) === 1
           ? unfinished ? "BLOCKED" : "SOURCE_PAUSED"
-          : input.paused ? unfinished ? "PAUSING" : "PAUSED" : "RUNNING",
+          : input.paused ? unfinished ? "PAUSING" : "PAUSED"
+            : Number(halted?.action_required ?? 0) === 1 ? "ACTION_REQUIRED" : "RUNNING",
           unfinished_batch_id: unfinished?.batch_id ?? null,
           // The next new batch must run its normal fresh B/C/G preflight; no old patch is released.
-          next_batch_requires_fresh_comparison: !input.paused } };
+          next_batch_requires_fresh_comparison: !input.paused && !unfinished } };
       this.core.recordRequest(identity, coach.coach_id, "setExportPause", input.request_id,
+        result, result.result, at);
+      return result;
+    });
+  }
+
+  private async retryExport(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const input = parseContract(() => parseSyncOverview(raw));
+    const coach = await this.core.authenticateSession(input.session_token);
+    const identity = await this.core.createRequestIdentity(coach.coach_id, "retryExport",
+      input.request_id, { season_id: input.season_id });
+    const replay = this.core.replayRequest(identity.requestKey, identity.payloadDigest);
+    if (replay) return replay;
+    const at = new Date().toISOString();
+    return this.ctx.storage.transactionSync(() => {
+      this.core.assertSessionCurrent(coach);
+      const binding = firstRow<SqlRow>(this.ctx.storage.sql,
+        `SELECT b.binding_version FROM sync_bindings b JOIN seasons s
+         ON s.season_id=b.season_id AND s.binding_version=b.binding_version
+         WHERE b.season_id=?`, input.season_id);
+      if (!binding) throw new ApiError("SYNC_BINDING_NOT_FOUND", "A current Sheet binding is required.", 409);
+      const previous = firstRow<SqlRow>(this.ctx.storage.sql,
+        `SELECT last_error FROM sync_export_retries
+         WHERE season_id=? AND binding_version=? AND action_required=1`,
+        input.season_id, Number(binding.binding_version));
+      if (!previous) throw new ApiError("SYNC_EXPORT_ACTION_NOT_REQUIRED",
+        "There is no halted export to retry.", 409);
+      const unfinished = unfinishedExport(this.ctx.storage.sql, input.season_id);
+      this.ctx.storage.sql.exec(
+        `UPDATE sync_export_retries SET action_required=0,failure_count=0,
+         next_attempt_at_ms=0,last_error='',updated_at=?
+         WHERE season_id=? AND binding_version=? AND action_required=1`,
+        at, input.season_id, Number(binding.binding_version)).toArray();
+      const result = { operation: operationReceipt("retryExport", input.request_id, at),
+        result: { season_id: input.season_id, rearmed: true,
+          previous_error: String(previous.last_error),
+          unfinished_batch_id: unfinished?.batch_id ?? null,
+          next_batch_requires_fresh_comparison: !unfinished } };
+      this.core.recordRequest(identity, coach.coach_id, "retryExport", input.request_id,
         result, result.result, at);
       return result;
     });

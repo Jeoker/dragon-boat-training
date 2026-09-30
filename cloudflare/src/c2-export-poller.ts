@@ -18,7 +18,8 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
      LEFT JOIN sync_export_controls c ON c.season_id=b.season_id
      LEFT JOIN sync_export_retries r ON r.season_id=b.season_id
        AND r.binding_version=b.binding_version
-     WHERE b.export_paused=0 AND COALESCE(r.next_attempt_at_ms,0)<=?
+     WHERE b.export_paused=0 AND COALESCE(r.action_required,0)=0
+       AND COALESCE(r.next_attempt_at_ms,0)<=?
        AND (COALESCE(c.pause_requested,0)=0 OR EXISTS (
          SELECT 1 FROM sync_batches x WHERE x.season_id=b.season_id
          AND x.direction='CLOUDFLARE_TO_GOOGLE'
@@ -66,10 +67,11 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
         continue;
       }
       const at = new Date().toISOString();
-      sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at)
-        VALUES (?,?,0,?,'',?) ON CONFLICT(season_id) DO UPDATE SET
+      sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
+        VALUES (?,?,0,?,'',?,0) ON CONFLICT(season_id) DO UPDATE SET
         binding_version=excluded.binding_version,failure_count=0,
-        next_attempt_at_ms=excluded.next_attempt_at_ms,last_error='',updated_at=excluded.updated_at`,
+        next_attempt_at_ms=excluded.next_attempt_at_ms,last_error='',updated_at=excluded.updated_at,
+        action_required=0`,
       seasonId, season.binding_version, Date.now() + 60_000, at).toArray();
       results.push({ season_id: seasonId, status: String(result.status ?? "COMMITTED") });
     } catch (error) {
@@ -91,14 +93,17 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
       const failures = Number(previous?.failure_count ?? 0) + 1;
       const delay = Math.min(21_600_000, 600_000 * 2 ** Math.min(failures - 1, 6));
       const errorCode = error instanceof ApiError ? error.code : "INTERNAL_ERROR";
-      sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at)
-        VALUES (?,?,?,?,?,?) ON CONFLICT(season_id) DO UPDATE SET
+      const actionRequired = error instanceof ApiError && !error.retryable;
+      sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
+        VALUES (?,?,?,?,?,?,?) ON CONFLICT(season_id) DO UPDATE SET
         binding_version=excluded.binding_version,failure_count=excluded.failure_count,
         next_attempt_at_ms=excluded.next_attempt_at_ms,
-        last_error=excluded.last_error,updated_at=excluded.updated_at`,
-      seasonId, season.binding_version, failures, Date.now() + delay, errorCode,
-      new Date().toISOString()).toArray();
-      results.push({ season_id: seasonId, status: "RETRY_REQUIRED", error_code: errorCode });
+        last_error=excluded.last_error,updated_at=excluded.updated_at,
+        action_required=excluded.action_required`,
+      seasonId, season.binding_version, failures, actionRequired ? 0 : Date.now() + delay,
+      errorCode, new Date().toISOString(), actionRequired ? 1 : 0).toArray();
+      results.push({ season_id: seasonId,
+        status: actionRequired ? "ACTION_REQUIRED" : "RETRY_REQUIRED", error_code: errorCode });
     }
   }
   return { polled: results.length, results };

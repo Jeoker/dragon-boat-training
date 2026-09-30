@@ -10,7 +10,7 @@
   },
   "vars": {
     "ENVIRONMENT": "staging",
-    "SERVICE_VERSION": "0.14.0-c2-operations",
+    "SERVICE_VERSION": "0.15.0-c2-export-action-required",
     "CONTRACT_VERSION": "2026-09-19.c0",
     "BACKEND_INSTANCE": "dragon-boat-training-staging",
     "BACKEND_GENERATION": "cf-c2-staging-4",
@@ -41,7 +41,7 @@
       "triggers": { "crons": [] },
       "vars": {
         "ENVIRONMENT": "staging",
-        "SERVICE_VERSION": "0.14.0-c2-operations",
+        "SERVICE_VERSION": "0.15.0-c2-export-action-required",
         "CONTRACT_VERSION": "2026-09-19.c0",
         "BACKEND_INSTANCE": "dragon-boat-training-c2-test",
         "BACKEND_GENERATION": "cf-c2-isolated-1",
