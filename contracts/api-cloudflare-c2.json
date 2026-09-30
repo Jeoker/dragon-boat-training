@@ -1,7 +1,7 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C2.4 schedule fault recovery passed isolated Google acceptance; C2.5 operator retry is local-only and automatic export remains disabled",
+  "status": "C2.4 schedule fault recovery passed isolated Google acceptance; C2.5 v12 deployed to c2test with no-fault controls acceptance, while halted export recovery remains local-only and automatic export remains disabled",
   "contract_version": "2026-09-30.c2.5-operator-retry",
   "service_version": "0.15.0-c2-export-action-required",
   "transport_gate": "C2 routes are absent in production. Local or staging diagnostic routes require C2_TEST_KEY; the Form notification instead verifies a fresh Google bridge HMAC, team and writer epoch before reaching the DO. This gate is independent from the Coach session required by management reads.",
@@ -36,7 +36,7 @@
       "method": "POST", "authentication": "session_token", "writes": true,
       "request": ["request_id", "session_token", "season_id"],
       "response_result": ["season_id", "rearmed", "previous_error", "unfinished_batch_id", "next_batch_requires_fresh_comparison"],
-      "notes": "Coach-only explicit re-arm after a non-retryable export failure. Does not itself write Google or erase a batch/outbox; the next poll reuses any unfinished batch, while a new batch performs a fresh B/C/G comparison. Local implementation only; not enabled remotely."
+      "notes": "Coach-only explicit re-arm after a non-retryable export failure. Does not itself write Google or erase a batch/outbox; the next poll reuses any unfinished batch, while a new batch performs a fresh B/C/G comparison. Deployed to isolated c2test; only rejection when no halt exists has remote acceptance. Actual halted-state recovery remains local-test evidence."
     },
     "/internal/c2/list-sync-conflicts": {
       "method": "POST", "authentication": "session_token", "writes": false,

@@ -1,4 +1,5 @@
-// Read-only preflight for the disposable C2 Worker and Google test spreadsheet.
+// Isolated preflight for the disposable C2 Worker and Google test spreadsheet.
+// It may record read-only difference diagnostics and an optional private backup in the DO.
 // It never prepares an export batch, changes a Sheet row or deploys either service.
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
@@ -50,7 +51,7 @@ const digest = (value) => `sha256_v1:${createHash("sha256").update(value).digest
 async function api(path, key, payload) {
   const response = await fetch(new URL(path, base), {
     method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-    body: JSON.stringify({ request_id: requestId("api"), ...payload }), signal: AbortSignal.timeout(20_000)
+    body: JSON.stringify({ request_id: requestId("api"), ...payload }), signal: AbortSignal.timeout(45_000)
   });
   const body = await response.json();
   assert.equal(body.meta?.backend_instance, "dragon-boat-training-c2-test");
@@ -115,8 +116,17 @@ const token = login.result.session_token;
 try {
   const overview = await api("/internal/c2/get-sync-overview", c2Key,
     { session_token: token, season_id: seasonId });
+  const operations = await api("/internal/c1/get-operations", c1Key, { session_token: token });
+  assert.equal(operations.counts.jobs_pending, 0);
+  assert.equal(operations.counts.outbox_pending, 0);
   assert.equal(overview.binding_current, true);
   assert.equal(overview.counts.pending_batches, 0);
+  assert.equal(overview.counts.open_conflicts, 0);
+  assert.equal(overview.counts.baselines, 97);
+  assert.equal(overview.export_control.status, "RUNNING");
+  assert.equal(overview.export_control.pause_requested, false);
+  assert.equal(overview.export_control.retry, null,
+    "An existing export retry/halt must be recorded separately before a schema upgrade.");
   const publicSchedule = await publicRead("/internal/c1/public-schedule");
   const publicRoster = await publicRead("/internal/c1/public-roster");
   assert.equal(publicSchedule.practices.length, 0,
@@ -127,6 +137,19 @@ try {
   for (const entityType of Object.keys(scopes)) {
     sheets[entityType] = await inspectGoogle(entityType, bindingVersion);
   }
+  const differences = {};
+  for (const entityType of ["SEASON", "MEMBER", ...Object.keys(scopes)]) {
+    console.error(`Checking isolated ${entityType} B/C/G`);
+    const checked = await api("/internal/c2/check-sheet-differences", c2Key,
+      { session_token: token, season_id: seasonId, entity_type: entityType });
+    assert.equal(checked.status, "OK", `${entityType} inspection status`);
+    assert.equal(checked.findings_count, 0, `${entityType} B/C/G difference`);
+    assert.equal(checked.truncated, false);
+    differences[entityType] = { rows: checked.rows_read, findings: 0 };
+  }
+  const afterInspection = await api("/internal/c2/get-sync-overview", c2Key,
+    { session_token: token, season_id: seasonId });
+  assert.equal(afterInspection.counts.open_conflicts, 0);
   let backup = null;
   if (process.argv.includes("--capture-isolated-backup")) {
     assert.equal(overview.counts.pending_outbox, 0);
@@ -134,6 +157,11 @@ try {
       "All three schedule tabs must pass before capturing the migration backup.");
     const result = await api("/internal/c1/create-backup-snapshot", c1Key, { session_token: token });
     const manifest = result.result.manifest;
+    if (overview.schema_version >= 12) {
+      const tables = new Set(manifest.tables.map((table) => table.name));
+      assert.ok(tables.has("sync_export_controls") && tables.has("sync_export_retries"),
+        "The v12 private backup must include export operating state.");
+    }
     const verified = await api("/internal/c1/verify-backup-snapshot", c1Key,
       { session_token: token, snapshot_id: manifest.snapshot_id,
         content_digest: manifest.content_digest });
@@ -154,8 +182,16 @@ try {
   }
   console.log(JSON.stringify({ service_version: health.meta.service_version,
     schema_version: overview.schema_version, binding_version: bindingVersion,
-    pending_outbox: overview.counts.pending_outbox, public_practices: 0,
-    roster_members: publicRoster.members.length, sheets, backup }));
+    pending_outbox: overview.counts.pending_outbox, pending_jobs: operations.counts.jobs_pending,
+    open_conflicts: 0,
+    baselines: overview.counts.baselines, export_status: overview.export_control.status,
+    export_retry: overview.export_control.retry, public_practices: 0,
+    roster_members: publicRoster.members.length, sheets, differences, backup }));
 } finally {
-  await api("/internal/c1/coach-logout", c1Key, { session_token: token });
+  try {
+    await api("/internal/c1/coach-logout", c1Key, { session_token: token });
+  } catch (error) {
+    console.error("Isolated preflight Coach logout requires inspection.");
+    throw error;
+  }
 }
