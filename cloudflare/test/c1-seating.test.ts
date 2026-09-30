@@ -153,6 +153,7 @@ describe("C1.4 seating migration slice", () => {
         expect(events).toHaveLength(3);
         expect(events.every((event: any) => event.snapshot_schema === 1 &&
           event.practice_version === 2 && event.signup_version === 1)).toBe(true);
+        expect(events.map((event: any) => event.published_revision)).toEqual([0, 1, 1]);
         expect(events[0].seating_snapshot).toMatchObject({
           state: { seat_plan_version: 1, published_revision: 0,
             coach_member_id: fixture.members[1], steerer_member_id: fixture.members[1] },

@@ -4,6 +4,7 @@ import { firstRow, type SqlRow } from "./c1-support";
 import { unfinishedExport } from "./c2-export-control";
 import { C2MemberExportService } from "./c2-member-export";
 import { C2ScheduleExportService } from "./c2-schedule-export";
+import { C2AssociatedExportService } from "./c2-associated-export";
 
 export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
   const requestId = requireRequestId(raw);
@@ -43,21 +44,35 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
            AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1`, seasonId);
       if (!event) throw new ApiError("SYNC_OUTBOX_INVALID", "An export batch lost its source event.", 409);
       const topic = String(event.topic);
-      const action = (JSON.parse(String(event.payload_json)) as { action?: unknown }).action;
+      let action: unknown;
+      try { action = (JSON.parse(String(event.payload_json)) as { action?: unknown }).action; }
+      catch { throw new ApiError("SYNC_OUTBOX_INVALID", "The oldest export event is invalid JSON.", 409); }
       const member = topic === "MEMBERS_IMPORTED" || topic === "CORE_CHANGED" && action === "updateMember";
       const schedule = topic === "SCHEDULE_CHANGED";
-      if (!member && !schedule) throw new ApiError("SYNC_OUTBOX_BLOCKED",
+      const associated = topic === "SIGNUPS_CHANGED" || topic === "SEATING_CHANGED";
+      if (!member && !schedule && !associated) throw new ApiError("SYNC_OUTBOX_BLOCKED",
         "The oldest event has no enabled exporter.", 409);
       if (member && env.C2_MEMBER_EXPORT_ENABLED !== "true" ||
-          schedule && env.C2_SCHEDULE_EXPORT_ENABLED !== "true") {
+          schedule && env.C2_SCHEDULE_EXPORT_ENABLED !== "true" ||
+          associated && env.C2_ASSOCIATED_EXPORT_ENABLED !== "true") {
         throw new ApiError("EXPORT_HANDLER_DISABLED", "The required export handler is disabled.", 409);
       }
-      const exportRequestId = `c2_${await sha256Base64Url(`${requestId}\n${seasonId}`)}`;
-      const result = member
-        ? await new C2MemberExportService(ctx, env).process({ request_id: exportRequestId,
-          season_id: seasonId })
-        : await new C2ScheduleExportService(ctx, env).process({ request_id: exportRequestId,
-          season_id: seasonId });
+      // One associated event can contain a full boat. Drain a bounded number of
+      // four-row batches in one poll; every call needs its own idempotency key.
+      // Stop at the event boundary so a subsequent event gets a fresh preflight.
+      let result: Record<string, unknown> = { status: "IDLE" };
+      const callLimit = associated ? 8 : 1;
+      for (let index = 0; index < callLimit; index += 1) {
+        const exportRequestId = `c2_${await sha256Base64Url(`${requestId}\n${seasonId}\n${index}`)}`;
+        result = member
+          ? await new C2MemberExportService(ctx, env).process({ request_id: exportRequestId,
+            season_id: seasonId })
+          : schedule ? await new C2ScheduleExportService(ctx, env).process({ request_id: exportRequestId,
+            season_id: seasonId })
+          : await new C2AssociatedExportService(ctx, env).process({ request_id: exportRequestId,
+            season_id: seasonId });
+        if (!associated || result.status !== "BATCH_CONFIRMED") break;
+      }
       const current = firstRow<{ binding_version: number }>(sql,
         `SELECT b.binding_version FROM sync_bindings b JOIN seasons s
          ON s.season_id=b.season_id AND s.binding_version=b.binding_version

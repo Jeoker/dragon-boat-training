@@ -8,7 +8,8 @@ function cloudflareReadSheetRecords_(request) {
     COACH: "Coaches", SEASON: "Seasons", MEMBER: "Members",
     SIGNUP: "SignupsCurrent", PRACTICE: "Practices",
     SCHEDULE_TEMPLATE: "ScheduleTemplates", TRAINING_WEEK: "TrainingWeeks",
-    SEAT_PLAN_DRAFT: "SeatPlanState"
+    SEAT_PLAN_DRAFT: "SeatPlanState",
+    SEAT_PLAN_CURRENT: "SeatPlanCurrent", SEAT_PLAN_REVISION: "SeatPlanRevisions"
   };
   if (!Object.prototype.hasOwnProperty.call(tabNames, entityType)) {
     throw dragonBoatRequestError_("BRIDGE_PAYLOAD_INVALID", "The Sheet inspection scope is invalid.");

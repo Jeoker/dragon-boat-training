@@ -12,7 +12,9 @@ test("every production action and HTTP method matches the executable route regis
     "cloudflareBridgeProbe", "cloudflareReadFormResponses", "cloudflareReadSheetRecords",
     "cloudflarePatchMemberSheet", "cloudflarePatchSeasonSheet",
     "cloudflarePatchScheduleTemplateSheet", "cloudflarePatchTrainingWeekSheet",
-    "cloudflarePatchPracticeSheet"
+    "cloudflarePatchPracticeSheet", "cloudflarePatchSignupSheet",
+    "cloudflarePatchSeatPlanStateSheet", "cloudflarePatchSeatPlanCurrentSheet",
+    "cloudflarePatchSeatPlanRevisionSheet"
   ].includes(name)).sort(),
     Object.keys(contract.actions).sort());
   for (const [name, definition] of Object.entries(contract.actions)) {
@@ -97,7 +99,8 @@ test("the C2 manifest lists every error raised directly by its business services
   const sources = await Promise.all([
     "../cloudflare/src/c2-sync-service.ts", "../cloudflare/src/c2-form-service.ts",
     "../cloudflare/src/c2-member-export.ts", "../cloudflare/src/c2-schedule-export.ts",
-    "../cloudflare/src/c2-schedule-projection.ts", "../cloudflare/src/c2-sheet-bridge.ts",
+    "../cloudflare/src/c2-schedule-projection.ts", "../cloudflare/src/c2-associated-export.ts",
+    "../cloudflare/src/c2-associated-projection.ts", "../cloudflare/src/c2-sheet-bridge.ts",
     "../cloudflare/src/c2-form-bridge.ts", "../cloudflare/src/c2-sheet-diff.ts"
   ].map((file) => readFile(new URL(file, import.meta.url), "utf8")));
   const raised = new Set(sources.flatMap((source) =>

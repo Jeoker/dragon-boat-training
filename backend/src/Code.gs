@@ -95,6 +95,18 @@ function dragonBoatRoutes_() {
   if (typeof cloudflarePatchPracticeSheet_ === "function") {
     add("cloudflarePatchPracticeSheet", "POST", function (r) { return cloudflarePatchPracticeSheet_(r); });
   }
+  if (typeof cloudflarePatchSignupSheet_ === "function") {
+    add("cloudflarePatchSignupSheet", "POST", function (r) { return cloudflarePatchSignupSheet_(r); });
+  }
+  if (typeof cloudflarePatchSeatPlanStateSheet_ === "function") {
+    add("cloudflarePatchSeatPlanStateSheet", "POST", function (r) { return cloudflarePatchSeatPlanStateSheet_(r); });
+  }
+  if (typeof cloudflarePatchSeatPlanCurrentSheet_ === "function") {
+    add("cloudflarePatchSeatPlanCurrentSheet", "POST", function (r) { return cloudflarePatchSeatPlanCurrentSheet_(r); });
+  }
+  if (typeof cloudflarePatchSeatPlanRevisionSheet_ === "function") {
+    add("cloudflarePatchSeatPlanRevisionSheet", "POST", function (r) { return cloudflarePatchSeatPlanRevisionSheet_(r); });
+  }
   add("getSeasonManagement", "POST", function (r) { return withDragonBoatScriptLock_(function () { return getSeasonManagement_(r); }); });
   add("createSeason", "POST", function (r) { return createSeason_(r); });
   add("validateSeasonBinding", "POST", function (r) { return validateSeasonBindingAction_(r); });

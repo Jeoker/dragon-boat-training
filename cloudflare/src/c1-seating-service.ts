@@ -650,6 +650,7 @@ export class C1SeatingService {
           seat_plan_version: nextVersion }, at);
       this.core.enqueueChange(identity, "SEATING_CHANGED", "saveSeatPlanDraft",
         { season_id: input.season_id, practice_id: input.practice_id, seat_plan_version: nextVersion,
+          published_revision: state.published_revision,
           snapshot_schema: 1, practice_version: Number(current.practice_version),
           signup_version: Number(current.signup_version),
           seating_snapshot: seatingExportSnapshot(this.ctx.storage.sql, current, true, false) }, at);

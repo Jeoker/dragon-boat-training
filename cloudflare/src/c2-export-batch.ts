@@ -61,9 +61,9 @@ export function assertSentBatch(batch: ExportBatch | null): void {
 
 // Call only inside the same transaction that advances the corresponding baselines.
 export function confirmExportReceipt(sql: SqlStorage, batch: ExportBatch, receipt: unknown,
-  at: string, completion: "BATCH" | "EVENT"): void {
-  sql.exec("UPDATE sync_batch_items SET status='VERIFIED',receipt_json=?,updated_at=? WHERE batch_id=? AND item_index=0",
-    JSON.stringify(receipt), at, batch.batch_id).toArray();
+  at: string, completion: "BATCH" | "EVENT", itemCount = 1): void {
+  sql.exec("UPDATE sync_batch_items SET status='VERIFIED',receipt_json=?,updated_at=? WHERE batch_id=? AND item_index<?",
+    JSON.stringify(receipt), at, batch.batch_id, itemCount).toArray();
   sql.exec("UPDATE sync_batches SET status='CONFIRMED',last_error='',updated_at=?,completed_at=? WHERE batch_id=? AND status='SENT'",
     at, at, batch.batch_id).toArray();
   sql.exec("DELETE FROM sync_export_retries WHERE season_id=? AND binding_version=?",

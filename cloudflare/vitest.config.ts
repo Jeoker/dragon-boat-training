@@ -17,6 +17,7 @@ export default defineConfig({
           GOOGLE_BRIDGE_SECRET: "local-test-bridge-secret",
           C2_MEMBER_EXPORT_ENABLED: "true",
           C2_SCHEDULE_EXPORT_ENABLED: "true",
+          C2_ASSOCIATED_EXPORT_ENABLED: "true",
           C2_EXPORT_POLL_ENABLED: "true"
         }
       }

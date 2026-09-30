@@ -148,7 +148,7 @@ it("halts a permanent unsupported event until a Coach explicitly retries it", as
     const key = sql.exec<{ request_key: string }>(
       "SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
     sql.exec(`INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
-      VALUES ('out_ops_unsupported',?,'SIGNUPS_CHANGED',?,'PENDING',?,?)`, key,
+      VALUES ('out_ops_unsupported',?,'HISTORY_FROZEN',?,'PENDING',?,?)`, key,
     JSON.stringify({ action: "changeSignup", entity: { season_id: seasonId } }),
     Date.now() - 1_000, at).toArray();
     sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at)

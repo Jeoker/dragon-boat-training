@@ -1,4 +1,4 @@
-export const APPLICATION_SCHEMA_VERSION = 12;
+export const APPLICATION_SCHEMA_VERSION = 13;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -553,6 +553,29 @@ function applyC2ExportActionRequiredSchema(sql: SqlStorage): void {
   }
 }
 
+function applyC2AssociatedExportSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS sync_associated_cursors (
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      practice_id TEXT NOT NULL, signup_version INTEGER NOT NULL DEFAULT 0,
+      seat_plan_version INTEGER NOT NULL DEFAULT 0,
+      published_revision INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, binding_version, practice_id),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE TABLE IF NOT EXISTS sync_associated_physical_baselines (
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      scope TEXT NOT NULL CHECK (scope IN
+        ('SIGNUP', 'SEAT_PLAN_DRAFT', 'SEAT_PLAN_CURRENT', 'SEAT_PLAN_REVISION')),
+      row_id TEXT NOT NULL, cells_json TEXT NOT NULL CHECK (json_valid(cells_json)),
+      cells_digest TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, binding_version, scope, row_id),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+  `).toArray();
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -575,6 +598,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 10) applyC2ScheduleEntitySchema(sql);
     if (currentVersion < 11) applyC2ExportOperationsSchema(sql);
     if (currentVersion < 12) applyC2ExportActionRequiredSchema(sql);
+    if (currentVersion < 13) applyC2AssociatedExportSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

@@ -107,7 +107,8 @@ export const SYNC_FIELD_DEFINITIONS: Record<SyncEntityType, readonly SyncFieldDe
       allowed_values: ["CONFIRMED", "WAITLISTED", "CANCELLED"] },
     { field: "queue_at", dependency_group: "SIGNUP_QUEUE", kind: "INSTANT", google_policy: "REJECT" },
     { field: "queue_sequence", dependency_group: "SIGNUP_QUEUE", kind: "INTEGER", google_policy: "REJECT" },
-    ...version(["signup_version"])
+    // SignupsCurrent has no version column. Per-practice export order is tracked
+    // by sync_associated_cursors only after every linked Sheet part is verified.
   ],
   PRACTICE: [
     ...identity(["season_id", "week_id", "practice_id"]),

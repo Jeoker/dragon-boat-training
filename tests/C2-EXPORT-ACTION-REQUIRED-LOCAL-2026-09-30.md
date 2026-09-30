@@ -1,6 +1,6 @@
 # C2.5 永久错误停止与显式重试：本地切片
 
-日期：2026-09-30。此报告是部署前的本地实现快照：当时专用 `c2test` 仍运行 `0.14.0-c2-operations`／schema v11。后续 `0.15.0-c2-export-action-required`／schema v12 已升级到专用环境，真实无故障运维验收见[隔离记录](C2-EXPORT-CONTROLS-ISOLATED-2026-09-30.md)；原 staging 与生产未升级，所有部署配置的自动导出仍关闭。不要把此处的本地模拟故障记作真实 Google 配额或远端有故障运维验收。
+日期：2026-09-30。此报告是部署前的本地实现快照：当时专用 `c2test` 仍运行 `0.14.0-c2-operations`／schema v11。后续 `0.15.0-c2-export-action-required`／schema v12 已升级到专用环境，无故障运维验收见[当时隔离记录](C2-EXPORT-CONTROLS-ISOLATED-2026-09-30.md)。再后续的 Worker `0.16.1`／schema v13 已真实验收受控 Google 行冲突触发的停轮询与显式重试，见[故障隔离验收](C2-ACTION-REQUIRED-ISOLATED-ACCEPTANCE-2026-09-30.md)；原 staging 与生产未升级，专用环境已恢复轮询关闭且无 cron。不要把此处的本地模拟故障记作真实 Google 配额验收。
 
 ## 行为与边界
 

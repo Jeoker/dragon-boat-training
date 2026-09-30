@@ -10,7 +10,7 @@
   },
   "vars": {
     "ENVIRONMENT": "staging",
-    "SERVICE_VERSION": "0.15.0-c2-export-action-required",
+    "SERVICE_VERSION": "0.16.0-c2-associated-export",
     "CONTRACT_VERSION": "2026-09-19.c0",
     "BACKEND_INSTANCE": "dragon-boat-training-staging",
     "BACKEND_GENERATION": "cf-c2-staging-4",
@@ -19,6 +19,7 @@
     "C2_FORM_POLL_ENABLED": "false",
     "C2_MEMBER_EXPORT_ENABLED": "false",
     "C2_SCHEDULE_EXPORT_ENABLED": "false",
+    "C2_ASSOCIATED_EXPORT_ENABLED": "false",
     "C2_EXPORT_POLL_ENABLED": "false"
   },
   "durable_objects": {
@@ -41,7 +42,7 @@
       "triggers": { "crons": [] },
       "vars": {
         "ENVIRONMENT": "staging",
-        "SERVICE_VERSION": "0.15.0-c2-export-action-required",
+        "SERVICE_VERSION": "0.16.1-c2-associated-export",
         "CONTRACT_VERSION": "2026-09-19.c0",
         "BACKEND_INSTANCE": "dragon-boat-training-c2-test",
         "BACKEND_GENERATION": "cf-c2-isolated-1",
@@ -50,6 +51,7 @@
         "C2_FORM_POLL_ENABLED": "false",
         "C2_MEMBER_EXPORT_ENABLED": "true",
         "C2_SCHEDULE_EXPORT_ENABLED": "true",
+        "C2_ASSOCIATED_EXPORT_ENABLED": "true",
         "C2_EXPORT_POLL_ENABLED": "false"
       },
       "durable_objects": {
@@ -72,6 +74,7 @@
         "C2_FORM_POLL_ENABLED": "false",
         "C2_MEMBER_EXPORT_ENABLED": "false",
         "C2_SCHEDULE_EXPORT_ENABLED": "false",
+        "C2_ASSOCIATED_EXPORT_ENABLED": "false",
         "C2_EXPORT_POLL_ENABLED": "false"
       },
       "durable_objects": {

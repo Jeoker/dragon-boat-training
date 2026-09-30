@@ -16,6 +16,7 @@ import { analyzeSheetPage, type SheetBaseline } from "./c2-sheet-diff";
 import { persistSheetFindings, prepareSheetFindings } from "./c2-sheet-findings";
 import { C2MemberExportService } from "./c2-member-export";
 import { C2ScheduleExportService } from "./c2-schedule-export";
+import { C2AssociatedExportService } from "./c2-associated-export";
 import { assertNoUnfinishedExportBeforeRebinding } from "./sync-binding-guard";
 import { exportPauseRequested, unfinishedExport } from "./c2-export-control";
 import { pollDueExports } from "./c2-export-poller";
@@ -82,6 +83,7 @@ export class C2SyncService {
     if (path === "/internal/c2/check-sheet-differences") return this.checkSheetDifferences(raw);
     if (path === "/internal/c2/export-next-member") return new C2MemberExportService(this.ctx, this.env).process(raw);
     if (path === "/internal/c2/export-next-schedule") return new C2ScheduleExportService(this.ctx, this.env).process(raw);
+    if (path === "/internal/c2/export-next-associated") return new C2AssociatedExportService(this.ctx, this.env).process(raw);
     if (path === "/internal/c2/poll-due-exports") return pollDueExports(this.ctx, this.env, raw);
     if (path === "/internal/c2/pull-form-responses") return new C2FormService(this.ctx, this.env).pull(raw);
     if (path === "/internal/c2/form-submit-notification") return this.formSubmitNotification(raw);

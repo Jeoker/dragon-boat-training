@@ -20,6 +20,45 @@ function cloudflarePatchPracticeSheet_(request) {
   return cloudflarePatchBoundRows_(request, "PRACTICE");
 }
 
+function cloudflarePatchSignupSheet_(request) {
+  return cloudflarePatchBoundRows_(request, "SIGNUP");
+}
+
+function cloudflarePatchSeatPlanStateSheet_(request) {
+  return cloudflarePatchBoundRows_(request, "SEAT_PLAN_DRAFT");
+}
+
+function cloudflarePatchSeatPlanCurrentSheet_(request) {
+  return cloudflarePatchBoundRows_(request, "SEAT_PLAN_CURRENT");
+}
+
+function cloudflarePatchSeatPlanRevisionSheet_(request) {
+  return cloudflarePatchBoundRows_(request, "SEAT_PLAN_REVISION");
+}
+
+function bridgePatchRowKey_(scope, cells) {
+  var indexes = {
+    SEASON: [0], MEMBER: [1], SCHEDULE_TEMPLATE: [1], TRAINING_WEEK: [1],
+    PRACTICE: [1], SIGNUP: [1, 2], SEAT_PLAN_DRAFT: [1],
+    SEAT_PLAN_CURRENT: [1, 2, 3], SEAT_PLAN_REVISION: [1, 2]
+  }[scope];
+  return indexes.map(function (index) { return cells[index]; }).join(":");
+}
+
+function bridgePatchValidKey_(scope, cells) {
+  var key = bridgePatchRowKey_(scope, cells);
+  if (scope === "SEAT_PLAN_CURRENT") {
+    return /^[A-Za-z0-9_-]{8,128}:[1-9][0-9]{0,3}:(LEFT|RIGHT)$/.test(key);
+  }
+  if (scope === "SEAT_PLAN_REVISION") {
+    return /^[A-Za-z0-9_-]{8,128}:[1-9][0-9]{0,9}$/.test(key);
+  }
+  if (scope === "SIGNUP") {
+    return /^[A-Za-z0-9_-]{8,128}:[A-Za-z0-9_-]{8,128}$/.test(key);
+  }
+  return /^[A-Za-z0-9_-]{8,128}$/.test(key);
+}
+
 function cloudflarePatchBoundRows_(request, scope) {
   var verified = verifyBridgeEnvelope_(request, null);
   var input = verified.payload;
@@ -32,12 +71,17 @@ function cloudflarePatchBoundRows_(request, scope) {
     PRACTICE: { idKey: "practice_id", tabName: "Practices" }
   };
   var scheduleScope = scheduleScopes[scope] || null;
-  var idKey = seasonScope ? "season_id" : scheduleScope ? scheduleScope.idKey : "member_id";
-  var tabName = seasonScope ? "Seasons" : scheduleScope ? scheduleScope.tabName : "Members";
+  var associatedTabs = {
+    SIGNUP: "SignupsCurrent", SEAT_PLAN_DRAFT: "SeatPlanState",
+    SEAT_PLAN_CURRENT: "SeatPlanCurrent", SEAT_PLAN_REVISION: "SeatPlanRevisions"
+  };
+  var associatedScope = Object.prototype.hasOwnProperty.call(associatedTabs, scope);
+  var idKey = associatedScope ? "row_id" : seasonScope ? "season_id" : scheduleScope ? scheduleScope.idKey : "member_id";
+  var tabName = seasonScope ? "Seasons" : associatedScope ? associatedTabs[scope] :
+    scheduleScope ? scheduleScope.tabName : "Members";
   var headers = seasonScope ? DRAGON_BOAT_SHEET_HEADERS_.Seasons : DRAGON_BOAT_RUNTIME_SHEET_HEADERS_[tabName];
-  var identityColumn = seasonScope ? 0 : 1;
   if (!/^[A-Za-z0-9_-]+$/.test(batchId) || batchId !== verified.operation_id ||
-      (scheduleScope && input.entity_type !== scope) ||
+      ((scheduleScope || associatedScope) && input.entity_type !== scope) ||
       !Array.isArray(input.items) || input.items.length < 1 ||
       input.items.length > (seasonScope ? 1 : 4)) {
     throw dragonBoatRequestError_("BRIDGE_PAYLOAD_INVALID", "The row patch batch is invalid.");
@@ -61,6 +105,7 @@ function cloudflarePatchBoundRows_(request, scope) {
     throw dragonBoatRequestError_("SHEET_SCAN_LIMIT", "The patch tab exceeds the bounded scan size.");
   }
   var seen = Object.create(null);
+  var seenRevisionIds = Object.create(null);
   var seasonMutable = {
     name: true, start_date: true, end_date: true, timezone: true,
     season_ends_at: true, status: true, season_version: true,
@@ -69,18 +114,28 @@ function cloudflarePatchBoundRows_(request, scope) {
   input.items.forEach(function (item) {
     var id = item && item[idKey];
     if (!item || typeof item !== "object" || Array.isArray(item) ||
-        typeof id !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(id) ||
+        typeof id !== "string" || id.length > 260 ||
         (seasonScope && id !== seasonId) || seen[id] ||
         !Array.isArray(item.target) || item.target.length !== headers.length ||
         item.expected !== null && (!Array.isArray(item.expected) || item.expected.length !== headers.length) ||
-        (seasonScope && item.expected === null)) {
+        (seasonScope && item.expected === null) ||
+        (scope === "SEAT_PLAN_REVISION" && item.expected !== null)) {
       throw dragonBoatRequestError_("BRIDGE_PAYLOAD_INVALID", "A row patch item is invalid.");
     }
     seen[id] = true;
+    if (scope === "SEAT_PLAN_REVISION") {
+      var revisionId = item.target[3];
+      if (typeof revisionId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(revisionId) ||
+          seenRevisionIds[revisionId]) {
+        throw dragonBoatRequestError_("BRIDGE_PAYLOAD_INVALID", "A revision ID is invalid or repeated.");
+      }
+      seenRevisionIds[revisionId] = true;
+    }
     [item.target].concat(item.expected === null ? [] : [item.expected]).forEach(function (cells) {
       if (cells.some(function (cell) { return typeof cell !== "string" || cell.length > 10000 ||
           cell.charAt(0) === "="; }) ||
-          cells[0] !== seasonId || cells[identityColumn] !== id) {
+          cells[0] !== seasonId || !bridgePatchValidKey_(scope, cells) ||
+          bridgePatchRowKey_(scope, cells) !== id) {
         throw dragonBoatRequestError_("BRIDGE_PAYLOAD_INVALID", "A row patch value is invalid.");
       }
     });
@@ -141,12 +196,22 @@ function cloudflarePatchBoundRows_(request, scope) {
       });
     });
     var positions = Object.create(null);
+    var revisionOwners = Object.create(null);
     rows.forEach(function (cells, index) {
+      var rowId = bridgePatchRowKey_(scope, cells);
       if ((!seasonScope && cells[0] !== seasonId) ||
-          !/^[A-Za-z0-9_-]{8,128}$/.test(cells[identityColumn]) || positions[cells[identityColumn]]) {
+          !bridgePatchValidKey_(scope, cells) || positions[rowId]) {
         throw dragonBoatRequestError_("SHEET_PATCH_STRUCTURE", "The patch tab has invalid or duplicate IDs.");
       }
-      positions[cells[identityColumn]] = index + 2;
+      if (scope === "SEAT_PLAN_REVISION") {
+        var existingRevisionId = cells[3];
+        if (!/^[A-Za-z0-9_-]{8,128}$/.test(existingRevisionId) ||
+            revisionOwners[existingRevisionId]) {
+          throw dragonBoatRequestError_("SHEET_PATCH_STRUCTURE", "The revision tab has duplicate IDs.");
+        }
+        revisionOwners[existingRevisionId] = rowId;
+      }
+      positions[rowId] = index + 2;
     });
     if (completedReceipt) {
       input.items.forEach(function (item) {
@@ -161,6 +226,10 @@ function cloudflarePatchBoundRows_(request, scope) {
     var verifiedIds = [];
     input.items.forEach(function (item) {
       var id = item[idKey];
+      if (scope === "SEAT_PLAN_REVISION" && revisionOwners[item.target[3]] &&
+          revisionOwners[item.target[3]] !== id) {
+        throw dragonBoatRequestError_("SHEET_PATCH_CONFLICT", "The revision ID belongs to another row.");
+      }
       var rowNumber = positions[id] || 0;
       var current = rowNumber ? tab.getRange(rowNumber, 1, 1, headers.length).getDisplayValues()[0] : null;
       if (item.expected === null) {
@@ -174,6 +243,7 @@ function cloudflarePatchBoundRows_(request, scope) {
           rowNumber = tab.getLastRow() + 1;
           tab.getRange(rowNumber, 1, 1, headers.length).setNumberFormat("@").setValues([item.target]);
           positions[id] = rowNumber;
+          if (scope === "SEAT_PLAN_REVISION") revisionOwners[item.target[3]] = id;
         }
       } else {
         if (!current) throw dragonBoatRequestError_("SHEET_PATCH_CONFLICT", "The row was removed.");
@@ -205,8 +275,9 @@ function cloudflarePatchBoundRows_(request, scope) {
       spreadsheet_id: spreadsheet.getId(), tab_id: String(tab.getSheetId()),
       acknowledged_at: new Date().toISOString()
     };
-    result[seasonScope ? "verified_season_ids" : scheduleScope ? "verified_row_ids" : "verified_member_ids"] = verifiedIds;
-    if (scheduleScope) result.entity_type = scope;
+    result[seasonScope ? "verified_season_ids" : scheduleScope || associatedScope ?
+      "verified_row_ids" : "verified_member_ids"] = verifiedIds;
+    if (scheduleScope || associatedScope) result.entity_type = scope;
     receipts.getRange(receiptRow, 6, 1, 3).setValues([[
       "VERIFIED", JSON.stringify(result), result.acknowledged_at
     ]]);

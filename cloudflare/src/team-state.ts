@@ -164,7 +164,8 @@ export class TeamState extends DurableObject<Env> {
             url.pathname !== "/internal/c2/retry-export" &&
             url.pathname !== "/internal/c2/poll-due-exports" &&
             url.pathname !== "/internal/c2/export-next-member" &&
-            url.pathname !== "/internal/c2/export-next-schedule") {
+            url.pathname !== "/internal/c2/export-next-schedule" &&
+            url.pathname !== "/internal/c2/export-next-associated") {
           await this.repairScheduledWork();
         }
         else await this.ensureNextAlarm();
