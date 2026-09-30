@@ -1,6 +1,6 @@
 # C2.5 导出运维本地切片
 
-日期：2026-09-29。此记录只覆盖当前源码的本地 Worker／Durable Object 行为。没有部署 schema v11、没有启用远端十分钟导出，也没有执行新的真实 Google 写入。远端 `c2test` 仍为 Worker `0.12.0-c2-season-export`／schema v9；原 staging 和生产写入归属未变。C2.4 排期写回尚未独立 Google 验收。
+日期：2026-09-29。这是当日历史快照，只覆盖当时源码的本地 Worker／Durable Object 行为；远端后续升级及验收以[当前进度](../CURRENT-STATUS.md)为准。当日尚未部署 schema v11、启用远端十分钟导出或执行新的真实 Google 写入；当时远端 `c2test` 为 Worker `0.12.0-c2-season-export`／schema v9，C2.4 排期写回尚未独立 Google 验收。原 staging 和生产写入归属未变。
 
 ## 已实现
 
