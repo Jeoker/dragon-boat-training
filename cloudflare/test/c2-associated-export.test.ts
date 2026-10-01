@@ -184,6 +184,7 @@ class SheetMirror {
   patchSizes: number[] = [];
   loseFirstReply = false;
   partialFirstSeatBeforeLoss = false;
+  beforeRead: ((scope: SheetScope) => void) | null = null;
   constructor(leftCapacity = 1, rightCapacity = 1) {
     for (const scope of Object.keys(SHEET_SCOPES) as SheetScope[]) this.rows.set(scope, []);
     this.rows.set("PRACTICE", [cells("PRACTICE", capacity(leftCapacity, rightCapacity))]);
@@ -196,6 +197,7 @@ class SheetMirror {
       const payload = JSON.parse(envelope.payload_json);
       if (envelope.action === "cloudflareReadSheetRecords") {
         const scope = payload.entity_type as SheetScope;
+        this.beforeRead?.(scope);
         return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
           protocol_version: envelope.protocol_version, team_id: envelope.team_id,
           season_id: seasonId, entity_type: scope, binding_version: 1,
@@ -247,6 +249,146 @@ class SheetMirror {
 }
 
 afterEach(() => vi.restoreAllMocks());
+
+async function preflightEvidence(stub: ReturnType<Env["TEAM_STATE"]["getByName"]>) {
+  return runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    return {
+      outbox: sql.exec("SELECT * FROM sync_outbox ORDER BY outbox_id").toArray(),
+      baselines: sql.exec("SELECT * FROM sync_baselines ORDER BY entity_type,entity_id,dependency_group").toArray(),
+      physical: sql.exec("SELECT * FROM sync_associated_physical_baselines ORDER BY scope,row_id").toArray(),
+      cursors: sql.exec("SELECT * FROM sync_associated_cursors ORDER BY practice_id").toArray(),
+      batches: sql.exec("SELECT * FROM sync_batches ORDER BY batch_id").toArray()
+    };
+  });
+}
+
+it.each(["PRACTICE", "MEMBER"] as const)(
+  "rejects a known %s reference conflict before preparing and resumes the same event after repair", async (scope) => {
+    const testEnv = environment(`early-${scope.toLowerCase()}-preflight`);
+    const mirror = new SheetMirror();
+    const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+    const row = mirror.rows.get(scope)![0];
+    const index = (SHEET_SCOPES[scope].headers as readonly string[])
+      .indexOf(scope === "PRACTICE" ? "location" : "display_name_override");
+    const original = row[index];
+    row[index] = "Manual conflicting edit";
+    const beforeGoogle = JSON.stringify([...mirror.rows]);
+    const before = await preflightEvidence(stub);
+    mirror.install();
+    expect(await next(testEnv, `associated_early_${scope}_001`)).toMatchObject({
+      error: { code: "SYNC_REFERENCE_NEEDS_REVIEW" } });
+    expect(mirror.writes).toBe(0);
+    expect(JSON.stringify([...mirror.rows])).toBe(beforeGoogle);
+    expect(await preflightEvidence(stub)).toEqual(before);
+
+    row[index] = original;
+    expect(await next(testEnv, `associated_early_${scope}_002`)).toMatchObject({ data: {
+      status: "BATCH_CONFIRMED", entity_type: "SIGNUP" } });
+    expect(await next(testEnv, `associated_early_${scope}_003`)).toMatchObject({ data: {
+      status: "EVENT_CONFIRMED", outbox_id: "out_associated_001", signup_version: 1 } });
+    expect(mirror.writes).toBe(1);
+    expect(mirror.rows.get("SIGNUP")).toHaveLength(1);
+    expect(mirror.rows.get("SIGNUP")![0]).toEqual(cells("SIGNUP", signup(members[0], 1)));
+    const completed = await preflightEvidence(stub);
+    expect(completed.outbox[0]).toMatchObject({ outbox_id: "out_associated_001", status: "CONFIRMED" });
+    expect(completed.cursors).toMatchObject([{ signup_version: 1, seat_plan_version: 0, published_revision: 0 }]);
+    const baseline = completed.baselines.find((row) => row.entity_type === "SIGNUP" &&
+      row.dependency_group === "SIGNUP_STATE")!;
+    expect(JSON.parse(String(baseline.baseline_json))).toEqual({ preference: "LEFT", status: "CONFIRMED" });
+    expect(JSON.parse(String(completed.physical[0].cells_json))).toEqual(mirror.rows.get("SIGNUP")![0]);
+  });
+
+it("rejects an unbaselined draft seat before creating a batch", async () => {
+  const testEnv = environment("early-draft-preflight");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, draftOnlyEvent(), "SEATING_CHANGED");
+  mirror.rows.set("SEAT_PLAN_CURRENT", [cells("SEAT_PLAN_CURRENT", {
+    season_id: seasonId, practice_id: practiceId, row_number: 2, side: "LEFT",
+    member_id: members[0], seat_plan_version: 1, updated_by: coachId, updated_at: at
+  })]);
+  const beforeGoogle = JSON.stringify([...mirror.rows]);
+  const before = await preflightEvidence(stub);
+  mirror.install();
+  expect(await next(testEnv, "associated_early_draft_001")).toMatchObject({
+    error: { code: "SYNC_ASSOCIATED_NEEDS_REVIEW" } });
+  expect(mirror.writes).toBe(0);
+  expect(JSON.stringify([...mirror.rows])).toBe(beforeGoogle);
+  expect(await preflightEvidence(stub)).toEqual(before);
+  mirror.rows.set("SEAT_PLAN_CURRENT", []);
+  await batchesThrough(testEnv, "associated_early_draft_resume", "SEAT_PLAN_DRAFT");
+  expect(await next(testEnv, "associated_early_draft_final_001")).toMatchObject({ data: {
+    status: "EVENT_CONFIRMED", outbox_id: "out_associated_001", seat_plan_version: 1 } });
+  const completed = await preflightEvidence(stub);
+  expect(completed.outbox[0]).toMatchObject({ status: "CONFIRMED" });
+  expect(completed.cursors).toMatchObject([{ signup_version: 0, seat_plan_version: 1, published_revision: 0 }]);
+  const seats = mirror.rows.get("SEAT_PLAN_CURRENT")!;
+  expect(seats.find((row) => row[2] === "1" && row[3] === "LEFT")![4]).toBe(members[0]);
+  for (const row of completed.physical) {
+    expect(mirror.rows.get(row.scope as SheetScope)).toContainEqual(JSON.parse(String(row.cells_json)));
+  }
+});
+
+it("rechecks references before sending when Google changes after the early preflight", async () => {
+  const testEnv = environment("reference-preflight-race");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  const before = await preflightEvidence(stub);
+  let referenceReads = 0;
+  const location = SHEET_SCOPES.PRACTICE.headers.indexOf("location");
+  mirror.beforeRead = (scope) => {
+    if (scope === "PRACTICE" && ++referenceReads === 2) {
+      mirror.rows.get("PRACTICE")![0][location] = "Concurrent manual edit";
+    }
+  };
+  mirror.install();
+  expect(await next(testEnv, "associated_reference_race_001")).toMatchObject({
+    error: { code: "SYNC_REFERENCE_NEEDS_REVIEW" } });
+  expect(referenceReads).toBe(2);
+  expect(mirror.writes).toBe(0);
+  expect(mirror.rows.get("SIGNUP")).toEqual([]);
+  const after = await preflightEvidence(stub);
+  expect({ ...after, batches: [] }).toEqual(before);
+  expect(after.batches).toHaveLength(1);
+  expect(after.batches[0]).toMatchObject({ status: "PREPARED", attempt_count: 0 });
+  const batchId = after.batches[0].batch_id;
+  mirror.beforeRead = null;
+  mirror.rows.get("PRACTICE")![0][location] = practice.location;
+  expect(await next(testEnv, "associated_reference_race_002")).toMatchObject({ data: {
+    status: "BATCH_CONFIRMED", batch_id: batchId } });
+  expect(await next(testEnv, "associated_reference_race_003")).toMatchObject({ data: {
+    status: "EVENT_CONFIRMED", outbox_id: "out_associated_001" } });
+  expect(mirror.writes).toBe(1);
+});
+
+it("rechecks the draft before sending when a new Google seat appears during preparation", async () => {
+  const testEnv = environment("draft-preflight-race");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, draftOnlyEvent(), "SEATING_CHANGED");
+  const before = await preflightEvidence(stub);
+  let seatReads = 0;
+  const manualSeat = cells("SEAT_PLAN_CURRENT", { season_id: seasonId, practice_id: practiceId,
+    row_number: 2, side: "LEFT", member_id: members[0], seat_plan_version: 1,
+    updated_by: coachId, updated_at: at });
+  mirror.beforeRead = (scope) => {
+    // Early draft inspection, target inspection, then the preserved send-time inspection.
+    if (scope === "SEAT_PLAN_CURRENT" && ++seatReads === 3) {
+      mirror.rows.get("SEAT_PLAN_CURRENT")!.push(manualSeat);
+    }
+  };
+  mirror.install();
+  expect(await next(testEnv, "associated_draft_race_001")).toMatchObject({
+    error: { code: "SYNC_ASSOCIATED_NEEDS_REVIEW" } });
+  expect(seatReads).toBe(3);
+  expect(mirror.writes).toBe(0);
+  expect(mirror.rows.get("SEAT_PLAN_CURRENT")).toEqual([manualSeat]);
+  const after = await preflightEvidence(stub);
+  expect({ ...after, batches: [] }).toEqual(before);
+  expect(after.batches).toHaveLength(1);
+  expect(after.batches[0]).toMatchObject({ status: "PREPARED", attempt_count: 0 });
+  expect(mirror.rows.get("SEAT_PLAN_REVISION")).toEqual([]);
+  expect(mirror.rows.get("SEAT_PLAN_DRAFT")).toEqual([]);
+});
 
 async function enqueue(stub: ReturnType<Env["TEAM_STATE"]["getByName"]>,
     topic: string, payload: Record<string, unknown>, outboxId: string,

@@ -356,6 +356,9 @@ export class C2AssociatedExportService {
     binding: SqlRow, requestId: string, batchId: string, identity: Identity): Promise<Record<string, unknown>> {
     const sql = this.ctx.storage.sql;
     const scope = stages[0].entity_type;
+    // Reject known reference/draft conflicts before persisting an unfinished batch.
+    // send() repeats this inspection so a change during preparation still stops the write.
+    await this.assertStagePreflight(outbox, event, binding, requestId, scope);
     const page = await this.readRows(outbox, binding, requestId, scope, stages[0].row_id);
     const stored: StoredTarget[] = [];
     for (const stage of stages) {
@@ -565,6 +568,17 @@ export class C2AssociatedExportService {
     }
   }
 
+  private async assertStagePreflight(outbox: OutboxEvent, event: AssociatedEvent, binding: SqlRow,
+    requestId: string, scope: AssociatedStage["entity_type"]): Promise<void> {
+    const confirmed = confirmedStages(this.ctx.storage.sql, outbox.outbox_id, Number(binding.binding_version));
+    if (confirmed.size === 0) await this.assertReferences(outbox, event, binding, requestId);
+    if (event.seating && scope !== "SIGNUP" &&
+        ![...confirmed.keys()].some((key) => key.startsWith("SEAT_PLAN_"))) {
+      await this.assertDraftBeforeWrite(outbox, event, binding, requestId,
+        event.seating.draft_seats === null);
+    }
+  }
+
   private async send(batch: ExportBatch, requestId: string, identity: Identity): Promise<Record<string, unknown>> {
     const sql = this.ctx.storage.sql;
     const saved = sql.exec<SqlRow>(
@@ -619,13 +633,7 @@ export class C2AssociatedExportService {
     // A prior send may already have written some or all target cells before losing its reply.
     // Reuse its immutable operation ID; the bridge receipt owns recovery of that batch.
     if (batch.status === "PREPARED") {
-      const confirmed = confirmedStages(sql, outbox.outbox_id, Number(batch.binding_version));
-      if (confirmed.size === 0) await this.assertReferences(outbox, event, binding, requestId);
-      if (event.seating && scope !== "SIGNUP" &&
-          ![...confirmed.keys()].some((key) => key.startsWith("SEAT_PLAN_"))) {
-        await this.assertDraftBeforeWrite(outbox, event, binding, requestId,
-          event.seating.draft_seats === null);
-      }
+      await this.assertStagePreflight(outbox, event, binding, requestId, scope);
     }
     if (beginExportSend(this.ctx, batch)) return this.remember(identity, requestId, result);
     let receipt: AssociatedPatchReceipt;
