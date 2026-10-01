@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { PHASES, assertPhase, assertEventAnchor, assertLaneProgress, assertOriginalRows, assertGoogleUnchanged,
+import { PHASES, assertPhase, assertEventAnchor, assertOriginalRows, assertGoogleUnchanged,
   journalCall, singleRowCas, reverseCas, assertCasReceipt, expectedGoogleRows, readScopeDefinitions, canonical,
   assertBackupDownload, assertMigrationPreserved, assertBatchReceipt, assertPendingBlock, fixtureTimings,
   saveKnownExport, pendingExportEvidence, clearExportEvidence, assertUsageRefresh, assertUpgradeReference, assertApiCorrelation,

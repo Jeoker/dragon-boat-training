@@ -1,5 +1,7 @@
 # C2.6 Coach 人工来源审核纯模型 - 本地验收
 
+> 历史范围说明：本文保留人工映射模型切片的验收数字。其后 plan-only 私有人审入口已完成本地实现，见 C2-SOURCE-PLAN-REVIEW-ADAPTER-LOCAL-ACCEPTANCE.md；仍无真实认证或持久审核。 最新状态见[CURRENT-STATUS](../CURRENT-STATUS.md)。
+
 日期：2026-10-01。用户已接受 HUMAN_ATTESTED 人工关联政策，supervisor在[已审设计](C2-SOURCE-MAPPING-REVIEW-DESIGN.md)后授权此本地纯模型切片。已有 source pure 为 `8fed6a9`，业务持久计划为 `13e8fc0`；本切片不改变其格式或行为。本地仍schema15／backup50表，远端已验收基线仍0.17／schema14／47表，没有部署或远端操作。
 
 ## 实际实现范围

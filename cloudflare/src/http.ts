@@ -33,7 +33,7 @@ export async function readJsonObject(request: Request): Promise<Record<string, u
   return value as Record<string, unknown>;
 }
 
-export function apiMeta(env: Env, requestId: string | null = null, contractVersion: string = env.CONTRACT_VERSION): Record<string, unknown> {
+function apiMeta(env: Env, requestId: string | null = null, contractVersion: string = env.CONTRACT_VERSION): Record<string, unknown> {
   return {
     contract_version: contractVersion,
     service_version: env.SERVICE_VERSION,

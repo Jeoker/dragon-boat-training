@@ -23,7 +23,7 @@
 - `src/Setup.gs`：一次性初始化及新增／重置个人 Coach Code。
 - `src/FormBridge.gs`：C2.2 只读 Form 回答分页桥接，仅纳入完整后端构建；不进入独立 C0 探针。
 - `src/SheetBridge.gs`：C2.3 签名只读 Sheet 桥接，按当前赛季绑定读取登记 Tab 的显示值、稳定行号和数字 Tab ID；本地源码还覆盖排期模板／周次及仅返回 ID 的 Coach 引用读取。缺少或超出界限的 Tab 返回错误，不修复、不写入。只纳入完整后端构建，不进入独立 C0 探针。
-- `src/BoundRowPatchBridge.gs`：C2.4 有界行补丁。成员、赛季名单版本及排期三表已在独立 Google 文件验收；报名、排座草稿、当前船位和不可变正式 revision 四个 scope 已部署至隔离 Apps Script version 14。Alpha 单行报名、20 格草稿五批船位与一批状态、正式 revision 1 及其状态回执已真实确认；最终七个受支持 scope B/C/G 零差异。所有补丁共用签名、绑定／前值检查、最多四行／payload 预算、私有 `BridgeExportReceipts` 及重放后目标行复核。赛季补丁不能新建赛季行或改写 Google 的 Form／Spreadsheet 绑定列。此为核心四表隔离链路验收，不涵盖候补或关联部分写入远端故障；只进入完整后端构建，不进入 C0 探针，生产未部署。
+- `src/BoundRowPatchBridge.gs`：C2.4 有界行补丁。成员、赛季名单版本及排期三表已在独立 Google 文件验收；报名、排座草稿、当前船位和不可变正式 revision 四个 scope 已部署至隔离 Apps Script version 14。Alpha 单行报名、20 格草稿五批船位与一批状态、正式 revision 1 及其状态回执已真实确认；最终七个受支持 scope B/C/G 零差异。所有补丁共用签名、绑定／前值检查、最多四行／payload 预算、私有 `BridgeExportReceipts` 及重放后目标行复核。赛季补丁不能新建赛季行或改写 Google 的 Form／Spreadsheet 绑定列。上述 Alpha 结果是核心四表历史切片；后续候补、关联受控故障及独立训练已分别隔离验收，最新范围见[当前进度](../CURRENT-STATUS.md)；只进入完整后端构建，不进入 C0 探针，生产未部署。
 - `src/FormNotify.gs`：C2.2 可安装的 Google Forms 提交触发器及签名 Cloudflare 通知。只在 Cloudflare 拥有写入权的赛季显式安装；现有生产赛季继续使用旧 Spreadsheet 提交触发器，不能并装或把独立 `c2test` 通知地址写入生产项目。当前仅在独立 C2 测试项目安装一个 Form 触发器，并已通过真实 responder 页面提交验收。
 - `src/appsscript.json`：V8 运行时配置。
 - `.clasp.json.example`：测试项目配置示例；真实 Script ID 不提交仓库。
@@ -39,6 +39,8 @@
 报名与排座沿用同一 `Settings` 报名版本、服务器入队顺序和 `SystemRequests` 恢复协议。取消、换侧和自动递补在一次持锁事务中同步报名、草稿及必要的系统正式 revision；未发布草稿不会混入公开版本。提交顺序和恢复约束见[后端规格](../google-sheets-backend-spec.md#会话与写入一致性)。
 
 正式座位角色使用固定的公开与管理投影入口。公开 `practice` 只返回 Coach／Steerer 的显示姓名；经 Coach session 保护的 seating workspace 才附带角色 `member_id`，供“从正式版重置草稿”恢复内部选择。普通 revision 与冻结快照遵守同一隔离规则。
+
+来源归档的 capture-time 完整内容、固定 cutoff 和人工映射政策是 C2.6 目标；当前 `ArchiveActions.gs` 不因此具备来源完整性、可信映射或跨源一致性保证。年度业务冻结／历史归档与完整 Form／responseSheet 来源归档是不同范围。
 
 ## 第一次测试部署
 
@@ -72,7 +74,7 @@ C2.4 隔离补丁在私有系统 Spreadsheet 使用 `BridgeExportReceipts`，它
 
 共享 secret 不出现在请求正文、源码、`wrangler.jsonc`、日志或验收报告中。C0 只验证签名、时间窗、nonce、操作幂等、归属和 Content Service 重定向；Form／Sheet 分段读写、正式回执表及同步恢复属于 C2。生产 Apps Script 在 C4 写入交接前仍是唯一业务后端，不能因为桥接探针存在就关闭旧逻辑。
 
-C2.2 的完整后端源码注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。`cloudflareReadSheetRecords` 允许赛季、成员、报名、训练、模板、周次、排座草稿、当前船位、正式 revision 和 Coach ID 等固定范围；最后一种只返回 ID，不返回凭据摘要。其余范围返回显示单元格供 Worker 检验结构与 B/C/G。主附表合计最多 100,000 个单元格、2,000,000 个字符，单格最多 10,000 字符；超限拒绝整次检查。独立 C2 测试 Web App 已部署 version 14，关联四表最初均为空；最终 Alpha 唯一报名、20 个当前船位、一条状态及一条正式 revision 已依序写入，四表行数 1／1／20／1，七个受支持 B/C/G scope 零差异。隔离 system `Coaches` 一条虚构、inactive、无 Code 的引用只由一次性 fixture 在测试项目 HEAD 补入，不是可用登录账户。正式生产 Apps Script 和 Google 文件未连接新后端；候补及关联部分写入故障仍待远端验收。最新部署边界见[当前进度](../CURRENT-STATUS.md)。
+C2.2 的完整后端源码注册 `cloudflareReadFormResponses`：读取当前赛季绑定 Form 的稳定回答 ID、时间和已映射姓名，核对 Form 目的地，并返回有界分页。`cloudflareReadSheetRecords` 允许赛季、成员、报名、训练、模板、周次、排座草稿、当前船位、正式 revision 和 Coach ID 等固定范围；最后一种只返回 ID，不返回凭据摘要。其余范围返回显示单元格供 Worker 检验结构与 B/C/G。主附表合计最多 100,000 个单元格、2,000,000 个字符，单格最多 10,000 字符；超限拒绝整次检查。2026-09-30 核心关联链路历史验收时，独立 C2 测试 Web App 为 version 14，关联四表最初均为空；当时 Alpha 唯一报名、20 个当前船位、一条状态及一条正式 revision 已依序写入，四表行数 1／1／20／1，七个受支持 B/C/G scope 零差异。隔离 system `Coaches` 一条虚构、inactive、无 Code 的引用只由一次性 fixture 在测试项目 HEAD 补入，不是可用登录账户。正式生产 Apps Script 和 Google 文件未连接新后端；后续候补及关联受控故障已隔离验收，最新范围见[当前进度](../CURRENT-STATUS.md)。
 
 本地使用 clasp 时，把 `.clasp.json.example` 复制为 `.clasp.json` 并替换测试 Script ID；`rootDir` 已指向 `src`。真实 `.clasp.json`、Code、会话令牌和 Spreadsheet ID 不提交仓库。
 
@@ -84,7 +86,7 @@ C2.2 的完整后端源码注册 `cloudflareReadFormResponses`：读取当前赛
 
 ## 验证边界
 
-根目录 `npm test` 覆盖 P0／P1 基线、P2 业务边界、未知结果重试、写后故障恢复、持锁 `flush` 顺序、请求内缓存隔离，P3 草稿隔离、角色互斥、手动与系统 revision、报名联动、版本冲突、最终更正及精确冻结边界，P4 的取消过滤、单场／整季快照、年度文件复用、公开字段隔离、更正说明和归档中断恢复，以及 P5 的两秒合并保存、审计与历史分页、有界读取、公开缓存、紧凑索引、批量写入及分批归档续跑。周生成的计划恢复已有专项回归，其他 P1 写入路径不能据此视为已通过全部中断测试。
+根目录 `npm test` 覆盖 P0／P1 基线、P2 业务边界、未知结果重试、写后故障恢复、持锁 `flush` 顺序、请求内缓存隔离，P3 草稿隔离、角色与桨位互斥、手动与系统 revision、报名联动、版本冲突、最终更正及精确冻结边界，P4 的取消过滤、单场／整季快照、年度文件复用、公开字段隔离、更正说明和归档中断恢复，以及 P5 的两秒合并保存、审计与历史分页、有界读取、公开缓存、紧凑索引、批量写入及分批归档续跑。周生成的计划恢复已有专项回归，其他 P1 写入路径不能据此视为已通过全部中断测试。
 
 最新真实 Google／Pages 验收和测试数据收尾记录见[当前进度](../CURRENT-STATUS.md)、[P1 管理补齐验收](../tests/P1-MANAGEMENT-ACCEPTANCE.md)及[P3 验收报告](../tests/P3-ACCEPTANCE.md)。继续写入前必须重新核对当前服务器状态，不把历史清理记录当作持续不变的状态。
 
@@ -94,4 +96,4 @@ C2.2 的完整后端源码注册 `cloudflareReadFormResponses`：读取当前赛
 
 [live-p21-timing.mjs](../tests/live-p21-timing.mjs) 对同一测试赛季首场及固定虚构队员执行两轮报名、换侧、取消，再改名并恢复、退出。仅通过运行时环境设置 `DBT_API_URL`、`DBT_COACH_CODE`，显式传入 `--write-test-data`；`--optimized` 使用当前视图及合并读取，默认模式模拟原请求链。可用 `DBT_TIMING_REPORT` 将去除身份信息的报告写入被忽略的 `.build/`。报告测量 API 请求链耗时、次数和响应字节数，不等同于浏览器渲染耗时或锁占用时间。失败会记录清理未完成，必须核对原请求与测试队员状态，不能直接重新整轮运行或清空表格。
 
-[live-p3-acceptance.mjs](../tests/live-p3-acceptance.mjs) 只允许文档约定的隔离测试赛季、22 名虚构成员、三场已发布训练及初始空报名、空角色、空正式座位和空草稿状态。运行同时要求 `DBT_API_URL`、`DBT_COACH_CODE` 及 `--write-test-data`，验证草稿隔离、角色互斥、错侧确认、手动／系统 revision、取消递补和换侧清位。每次重试复用原 `request_id` 和完整参数；若无法确认写入结果或测试数据归属发生变化，立即停止自动清理并要求人工核对。2026-09-04 的 Version 10 真实运行以退出码 0 完成，最终返回 `ok=true`；本轮有效报名全部取消，空角色和空座位正式版已发布，会话已撤销，完整边界见 [P3 验收报告](../tests/P3-ACCEPTANCE.md)。
+[live-p3-acceptance.mjs](../tests/live-p3-acceptance.mjs) 只允许文档约定的隔离测试赛季、22 名虚构成员、三场已发布训练及初始空报名、空角色、空正式座位和空草稿状态。运行同时要求 `DBT_API_URL`、`DBT_COACH_CODE` 及 `--write-test-data`，验证草稿隔离、角色与桨位互斥、错侧确认、手动／系统 revision、取消递补和换侧清位。每次重试复用原 `request_id` 和完整参数；若无法确认写入结果或测试数据归属发生变化，立即停止自动清理并要求人工核对。2026-09-04 的 Version 10 真实运行以退出码 0 完成，最终返回 `ok=true`；本轮有效报名全部取消，空角色和空座位正式版已发布，会话已撤销，完整边界见 [P3 验收报告](../tests/P3-ACCEPTANCE.md)。

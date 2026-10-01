@@ -18,7 +18,8 @@ function moduleUrl(url) {
   modules.set(key,result); return result;
 }
 const contract = await import(moduleUrl(new URL("../shared/c2-archive-contract.ts",import.meta.url)));
-const { createArchivePlan, InMemoryArchivePlans } = await import(moduleUrl(new URL("../shared/c2-archive-projection.ts",import.meta.url)));
+const { ContractValidationError } = await import(moduleUrl(new URL("../shared/c1-contract.ts",import.meta.url)));
+const { createArchivePlan } = await import(moduleUrl(new URL("../shared/c2-archive-projection.ts",import.meta.url)));
 const { C1HistoryService } = await import(moduleUrl(new URL("../cloudflare/src/c1-history-service.ts",import.meta.url)));
 const { auditSnapshotOracle, C1SeatingService, seatingMode } = await import(moduleUrl(new URL("../cloudflare/src/c1-seating-service.ts",import.meta.url)));
 const { auditPracticeOracle } = await import(moduleUrl(new URL("../cloudflare/src/c1-schedule-service.ts",import.meta.url)));
@@ -59,6 +60,63 @@ function fixture() {
 }
 function records(plan) { return plan.chunks.flatMap(chunk=>JSON.parse(chunk.payload_text).records); }
 function rejected(mutate) { const input=fixture();mutate(input);assert.throws(()=>createArchivePlan(input)); }
+
+// Independent pre-change canonical recipe for ordinary JSON; no new serializer
+// or builder is used to calculate these expected bytes.
+function ordinaryCanonical(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(ordinaryCanonical).join(",")}]`;
+  return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${ordinaryCanonical(value[key])}`).join(",")}}`;
+}
+
+test("archive meters a fixed descriptor copy without invoking getters or hidden toJSON",()=>{
+  const input=fixture(), original=createArchivePlan(input).canonical_text;
+  assert.equal(createArchivePlan(Object.assign(Object.create(null),input)).canonical_text,original);
+  input.private_extension={fraction:1.5};assert.equal(createArchivePlan(input).canonical_text,original);
+  let calls=0;
+  const accessor=fixture();Object.defineProperty(accessor,"request_id",{enumerable:true,get(){calls++;throw new Error("PRIVATE_TEST_BODY");}});
+  assert.throws(()=>createArchivePlan(accessor),error=>error.message==="Archive input is incomplete or inconsistent."&&error.field==="json_descriptor");
+  assert.equal(calls,0);
+  const hidden=fixture();hidden.ignored="x".repeat(contract.ARCHIVE_LIMITS.input_bytes+1);
+  hidden.toJSON=()=>{calls++;return {};};assert.throws(()=>createArchivePlan(hidden));assert.equal(calls,0);
+  delete hidden.toJSON;assert.throws(()=>createArchivePlan(hidden),error=>error.field==="input_bytes");
+});
+
+test("public archive canonical rejects sparse, extended, accessor, cyclic and overdeep objects",()=>{
+  const sparse=[,1],extended=[1];extended.private_extension=1;
+  const cyclic={};cyclic.self=cyclic;
+  let deep=null;for(let index=0;index<contract.ARCHIVE_LIMITS.depth+2;index++)deep={value:deep};
+  let calls=0;const accessor={};Object.defineProperty(accessor,"value",{enumerable:true,get(){calls++;return 1;}});
+  const nonenumerable={};Object.defineProperty(nonenumerable,"value",{value:1});
+  const symbol={};symbol[Symbol("private")]=1;
+  for(const value of [sparse,extended,cyclic,deep,accessor,nonenumerable,symbol,{toJSON(){calls++;return 1;}}])
+    assert.throws(()=>contract.archiveCanonical(value),error=>error.message==="Archive input is incomplete or inconsistent.");
+  assert.equal(calls,0);
+  const huge=new Array(contract.ARCHIVE_LIMITS.input_bytes+1);assert.throws(()=>createArchivePlan(huge),error=>error.field==="input_bytes");
+});
+
+test("archive reflection failures redact even forged contract errors and thrown hostile proxies",()=>{
+  const thrownProxy=new Proxy({},{getPrototypeOf(){throw new Error("PRIVATE_SECONDARY_BODY");}});
+  for(const thrown of [new Error("PRIVATE_TEST_BODY"),new ContractValidationError("PRIVATE_TEST_BODY","PRIVATE_FIELD"),thrownProxy]) {
+    for(const trap of ["getPrototypeOf","ownKeys","getOwnPropertyDescriptor"]) {
+      const value=new Proxy(fixture(),{[trap](){throw thrown;}});
+      for(const operation of [()=>contract.archiveCanonical(value),()=>createArchivePlan(value)])
+        assert.throws(operation,error=>error.message==="Archive input is incomplete or inconsistent."&&error.field==="json");
+    }
+  }
+});
+
+test("ordinary canonical bytes and complete escaped SQL-row comparisons remain compatible",()=>{
+  const input=fixture(),plan=createArchivePlan(input);
+  assert.equal(contract.archiveCanonical(input),ordinaryCanonical(input));
+  assert.equal(contract.archiveCanonical(JSON.parse(plan.canonical_text)),plan.canonical_text);
+  for(const chunk of plan.chunks)assert.equal(ordinaryCanonical(JSON.parse(chunk.payload_text)),chunk.payload_text);
+  const text=ordinaryCanonical({text:"\u0000\\\"".repeat(190000)});
+  assert.ok(contract.utf8Bytes(text)<contract.ARCHIVE_LIMITS.total_bytes);
+  const row={canonical_plan_text:text,metadata_text:text,capture_proof_text:text,manifest_text:text};
+  const expected=ordinaryCanonical(row);assert.ok(contract.utf8Bytes(expected)>contract.ARCHIVE_LIMITS.total_bytes);
+  assert.equal(contract.archiveCanonical(row),expected);
+});
 
 test("practice plan derives local calendar year and never claims private Google or source verification",()=>{
   const plan=createArchivePlan(fixture());assert.equal(plan.archive_year,2025);assert.equal(plan.state,"LOCAL_PLAN_ONLY");
@@ -133,15 +191,6 @@ test("Unicode budgets reject lone surrogates and oversized input instead of cons
     details:{season_id:sid,practice_id:pid,note:"中".repeat(1000),promoted_member_ids:Array(100).fill("中".repeat(1000))}});
   assert.throws(()=>createArchivePlan(input));
 });
-test("in-memory same request restores exact plan, detects changed payload and immutable snapshot identity, and returns detached values",()=>{
-  const store=new InMemoryArchivePlans(),input=fixture(),first=store.prepare(input),original=first.canonical_text;
-  first.chunks[0].payload_text="mutated";assert.equal(store.prepare(input).canonical_text,original);
-  const changed=clone(input);changed.members[0].source_display_name="changed";assert.throws(()=>store.prepare(changed));
-  changed.request_id="annual_other_request";assert.throws(()=>store.prepare(changed));
-  const second=clone(input);second.request_id="annual_other_request";assert.equal(store.prepare(second).metadata_text,store.prepare(input).metadata_text);
-  const bad=clone(input);bad.snapshot_id="annual_broken_snapshot";bad.revisions=[];assert.throws(()=>store.prepare(bad));
-  assert.equal(store.prepare(input).canonical_text,original);
-});
 test("single practice can freeze while another published practice is still in its future window",()=>{
   const input=fixture(),other=clone(input.practices[0]);other.practice_id="practice_future_01";other.start_at="2026-02-01T01:00:00.000Z";other.end_at="2026-02-01T02:00:00.000Z";
   input.season.end_date="2026-02-02";input.season.season_ends_at="2026-02-03T05:00:00.000Z";
@@ -167,7 +216,7 @@ test("DST calendar routing follows explicit season timezone, and unsupported or 
   assert.equal(createArchivePlan(input).archive_year,2026);
   rejected(input=>input.season_timezone="Mars/Local");rejected(input=>input.season_timezone="UTC");
 });
-test("a record larger than a UTF8 chunk fails the whole prepare and leaves no poisoned replay",()=>{
+test("a record larger than a UTF8 chunk fails the whole plan",()=>{
   const input=fixture(),rev=input.revisions[0];input.practices[0].left_capacity=50;input.practices[0].right_capacity=50;
   input.members=[];rev.names=[];rev.seats=[];input.draft_seats=[];
   for(let index=0;index<100;index++){const id=`member_${String(index).padStart(3,"0")}_${"x".repeat(117)}`;
@@ -175,16 +224,12 @@ test("a record larger than a UTF8 chunk fails the whole prepare and leaves no po
     const seat={side:index<50?"LEFT":"RIGHT",row_number:index%50+1,member_id:id};rev.seats.push(seat);input.draft_seats.push({...seat,season_id:sid,practice_id:pid,seat_plan_version:1});}
   input.signups[0].member_id=input.members[0].member_id;input.audits=[];
   input.frozen_practices[0].snapshot.seat_plan.seats=rev.seats.map(seat=>({side:seat.side,row_number:seat.row_number,display_name:"中".repeat(120)}));
-  const store=new InMemoryArchivePlans();assert.throws(()=>store.prepare(input),error=>error.field==="record_bytes");
-  assert.equal(store.prepare(fixture()).state,"LOCAL_PLAN_ONLY");
+  assert.throws(()=>createArchivePlan(input),error=>error.field==="record_bytes");
+  assert.equal(createArchivePlan(fixture()).state,"LOCAL_PLAN_ONLY");
 });
-test("more than 5000 records and memory request capacity reject atomically; original replay still works",()=>{
+test("more than 5000 records reject the whole plan",()=>{
   const large=fixture();for(let index=0;index<5000;index++)large.members.push({...large.members[0],member_id:`member_large_${String(index).padStart(5,"0")}`});
   assert.throws(()=>createArchivePlan(large),error=>error.field==="records");
-  const store=new InMemoryArchivePlans(),input=fixture();for(let index=0;index<contract.ARCHIVE_LIMITS.memory_requests;index++){
-    input.request_id=`request_memory_${String(index).padStart(3,"0")}`;store.prepare(input);}
-  input.request_id="request_memory_excess";assert.throws(()=>store.prepare(input),error=>error.field==="memory_budget");
-  input.request_id="request_memory_000";assert.equal(store.prepare(input).state,"LOCAL_PLAN_ONLY");
 });
 test("real C1 permits the same member as Coach and Steerer, while either role intersecting a seat remains invalid",()=>{
   const input=fixture(),roleId="member_dual_role_01",rev=input.revisions[0];
@@ -198,17 +243,6 @@ test("real C1 permits the same member as Coach and Steerer, while either role in
   assert.deepEqual(actual.seat_plan.coach,{display_name:"双角色冻结姓名"});assert.deepEqual(actual.seat_plan.steerer,actual.seat_plan.coach);
   const bad=clone(input);bad.revisions[0].coach_member_id=memberId;assert.throws(()=>createArchivePlan(bad),error=>error.field==="role_overlap");
   bad.revisions[0].coach_member_id=roleId;bad.revisions[0].steerer_member_id=memberId;assert.throws(()=>createArchivePlan(bad),error=>error.field==="role_overlap");
-});
-test("cumulative UTF8 memory budget is independent of request-count cap and retains all prior exact replays",()=>{
-  const input=fixture();for(let index=0;index<400;index++)input.members.push({...input.members[0],
-    member_id:`member_budget_${String(index).padStart(4,"0")}`,source_display_name:"中".repeat(120)});
-  const store=new InMemoryArchivePlans();let stopped=0;
-  for(let index=0;index<contract.ARCHIVE_LIMITS.memory_requests;index++){
-    input.request_id=`request_bytes_${String(index).padStart(3,"0")}`;
-    try {store.prepare(input);}catch(error){assert.equal(error.field,"memory_budget");stopped=index;break;}
-  }
-  assert.ok(stopped>0 && stopped<contract.ARCHIVE_LIMITS.memory_requests);
-  input.request_id="request_bytes_000";assert.equal(store.prepare(input).state,"LOCAL_PLAN_ONLY");
 });
 test("actual C1 seating and schedule audit projections pass finite nested whitelists; credentials in any nested object stop",()=>{
   const input=fixture(),rev=input.revisions[0],state=input.seating_states[0];

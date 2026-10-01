@@ -223,7 +223,7 @@ test("actual overlay bridge writes only the first signup before fault and return
       binding_version: `${season}:1`, writer_epoch: 0, operation_id: request.operation_id,
       payload_digest: request.payload_digest, payload: JSON.parse(request.payload_json) }),
     dragonBoatSuccess_: data => ({ ok: true, data }),
-    dragonBoatError_: (code,message,retryable) => ({ ok: false, error: { code, retryable } })
+    dragonBoatError_: (code, _message, retryable) => ({ ok: false, error: { code, retryable } })
   });
   const requestFor = (spec, action) => ({ action, request_id: spec.request_id, operation_id: spec.batch_id,
     payload_digest: "synthetic_payload_digest", payload_json: JSON.stringify({ season_id: season,

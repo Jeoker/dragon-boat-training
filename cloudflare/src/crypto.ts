@@ -31,7 +31,7 @@ export async function hmacSha256Base64Url(value: string, secret: string): Promis
   return base64Url(await crypto.subtle.sign("HMAC", key, encoder.encode(value)));
 }
 
-export function legacyJson(value: unknown): string {
+function legacyJson(value: unknown): string {
   return JSON.stringify(value ?? {});
 }
 

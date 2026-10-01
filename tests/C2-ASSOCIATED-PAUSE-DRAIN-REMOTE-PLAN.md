@@ -1,5 +1,7 @@
 # C2 关联故障现场的暂停及原批次排空验收
 
+> 历史范围说明：下文“当前／待执行／未部署”指该切片形成时的状态。后续实际执行已完成，见[隔离实际验收](C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md)；今天的部署状态见[CURRENT-STATUS](../CURRENT-STATUS.md)。本文不授权重新运行旧脚本，不替代实际验收报告。
+
 > 2026-09-30。仅用于受审 fault-plan 指定的隔离取消事件首个 SIGNUP 批次。此文是执行计划，当前未执行远端暂停／排空验收。主 runner、fault inspector 的职责与 `RUNNING` 门槛保持不变。
 
 ## 1. 执行前提

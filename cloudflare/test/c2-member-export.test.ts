@@ -87,6 +87,62 @@ async function seed(testEnvironment: Env) {
 
 afterEach(() => vi.restoreAllMocks());
 
+it("preserves a Coach rearm row when an older one-call member poll succeeds", async () => {
+  const environment = { ...testEnv("poll-rearm-success"), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const stub = await seed(environment);
+  const login = await (await call(environment, "/internal/c1/coach-login", {
+    request_id: "successful_poll_login_001", coach_code: "local-test-coach-code" }, true)).json() as any;
+  let entered = false, released = false, writes = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const envelope = JSON.parse(String(init?.body)), payload = JSON.parse(envelope.payload_json);
+    if (envelope.action === "cloudflareReadSheetRecords") return Response.json({
+      ok: true, meta: { request_id: envelope.request_id }, data: {
+        protocol_version: envelope.protocol_version, team_id: envelope.team_id, season_id: seasonId,
+        entity_type: "MEMBER", binding_version: 1, writer_epoch: envelope.writer_epoch,
+        operation_id: envelope.operation_id, payload_digest: envelope.payload_digest,
+        spreadsheet_id: "spreadsheet_export_test_001", tab_name: "Members", tab_id: "101",
+        read_at_ms: Date.now(), headers: [...SHEET_SCOPES.MEMBER.headers], secondary: null, rows: []
+      } });
+    expect(envelope.action).toBe("cloudflarePatchMemberSheet");
+    writes++;
+    entered = true;
+    while (!released) await new Promise(resolve => setTimeout(resolve, 1));
+    return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
+      status: "verified", protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+      season_id: seasonId, binding_version: 1, writer_epoch: envelope.writer_epoch,
+      operation_id: envelope.operation_id, payload_digest: envelope.payload_digest,
+      spreadsheet_id: payload.spreadsheet_id, tab_id: payload.tab_id,
+      verified_member_ids: payload.items.map((item: { member_id: string }) => item.member_id),
+      acknowledged_at: new Date().toISOString()
+    } });
+  });
+  const pending = (async () => (await call(environment, "/internal/c2/poll-due-exports", {
+    request_id: "successful_member_poll_001" })).json())();
+  let rearmed: unknown;
+  try {
+    for (let count = 0; count < 200 && !entered; count++) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(entered).toBe(true);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(`INSERT INTO sync_export_retries VALUES (?,1,2,0,'SHEET_PATCH_CONFLICT',?,1)`,
+        seasonId, "2026-10-01T01:00:00.000Z").toArray();
+    });
+    const retry = await (await call(environment, "/internal/c2/retry-export", {
+      request_id: "successful_poll_rearm_001", session_token: login.data.result.session_token, season_id: seasonId })).json() as any;
+    expect(retry).toMatchObject({ data: { result: { rearmed: true } } });
+    rearmed = await runInDurableObject(stub, async (_instance: TeamState, context) =>
+      context.storage.sql.exec("SELECT * FROM sync_export_retries").one());
+  } finally { released = true; }
+  expect(await pending).toMatchObject({ data: { results: [{ status: "BATCH_CONFIRMED" }] } });
+  expect(writes).toBe(1);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec("SELECT * FROM sync_export_retries").one()).toEqual(rearmed);
+    expect(context.storage.sql.exec<{ status: string }>("SELECT status FROM sync_batches").one().status).toBe("CONFIRMED");
+    expect(context.storage.sql.exec<{ status: string }>("SELECT status FROM sync_outbox WHERE outbox_id='out_export_test_001'").one().status).toBe("PENDING");
+  });
+  await call(environment, "/internal/c1/coach-logout", {
+    request_id: "successful_poll_logout_001", session_token: login.data.result.session_token }, true);
+});
+
 it("exports a multi-member event one verified target at a time and survives a lost reply", async () => {
   const environment = testEnv("lost-reply");
   const stub = await seed(environment);

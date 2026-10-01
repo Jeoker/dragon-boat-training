@@ -22,7 +22,7 @@ export function planBoundedText(value: unknown, bytes: number, code = "PLAN_BYTE
   return value;
 }
 
-export function planDigest(value: unknown): string {
+function planDigest(value: unknown): string {
   const text = sourceText(value as SourceJson, 43, 43);
   sourceAssert(/^[A-Za-z0-9_-]{43}$/u.test(text), "PLAN_DIGEST_INVALID");
   return text;

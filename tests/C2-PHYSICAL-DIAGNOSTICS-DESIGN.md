@@ -16,10 +16,10 @@ C2.3 的 `check-sheet-differences` 比较业务字段的 B/C/G；它不会完整
 
 ## 巡检、边界与门槛
 
-当前只实现按需手动全量 revision 扫描；四个关联 scope 的正常态和隔离 Google 单格审计列漂移／精确恢复均已远端验收。定期版须先设计显式开关和独立的 schema v14 小表，按赛季、绑定、scope 保存最近一次**完整**扫描时间、覆盖、状态和摘要；目前没有这张表、定时任务或自动巡检。定时器不能把局部扫描、上一次的 `OK` 或未覆盖的新 revision 伪装成当前全量正常。
+当前只实现按需手动全量 revision 扫描；四个关联 scope 的正常态和隔离 Google 单格审计列漂移／精确恢复均已远端验收。定期版须先设计显式开关和独立的巡检状态小表及另审 schema 迁移（不沿用历史提案的 v14 编号），按赛季、绑定、scope 保存最近一次**完整**扫描时间、覆盖、状态和摘要；目前没有这张表、定时任务或自动巡检。定时器不能把局部扫描、上一次的 `OK` 或未覆盖的新 revision 伪装成当前全量正常。
 
 当前 Google 桥接单次整表读取上限为每表 5,000 行、总计 100,000 单元格／2,000,000 字符；`SEAT_PLAN_DRAFT` 同时读取两表。DO 在物化物理 B 前也先按每表 5,000 行、B 内容总长度 2,000,000 字符做有界检查，超过预算返回 `INCOMPLETE`。大表、Apps Script 执行时间及 Google 配额是主要成本。若将来需要分块，必须设计跨页的一致性或保守重扫，不能单靠可变物理行号翻页后报告全量 `OK`。只读扫描没有加入导出热路径的每次批次写入，也不默认高频运行。
 
 测试门槛：仅改单个审计列时语义仍可 `NO_CHANGE`，但物理诊断为 `DRIFT`；历史 revision 的改值、删除、额外行、重复／改 ID 和缺物理 B 都可见；所有四个 scope 的正确行仍为 `OK`；绑定或预算内 B 并发变化报 stale；坏表头、超限与部分覆盖绝不报 `OK`；重复检查稳定、不会写 Google、业务表、基线或冲突表。隔离真实 Google 验收应分别记录扫描耗时、行数和配额迹象。
 
-**状态：首个按需诊断切片已实现并部署到专用 `c2test` 0.16.2／schema v13。** 四个 scope 的正常态只读远端验收为 `OK`、完整覆盖、零 finding，`rows_read=baselines_checked` 分别为 1、21、20、1。隔离 Google Alpha 报名的 `last_request_id` 审计列仅改一格时，新物理检查报告唯一 `CELL_CHANGED`／`DRIFT`；旧语义仍 `OK`／零 finding，其附带 `physical_integrity` 为 `DRIFT`。独立整行 CAS 恢复后四 scope 物理及旧语义再次 `OK`，关联物理 B 23／23 未变。此状态不表示定期任务、v14 迁移、物理 finding 入库、自动修复、完整 C2.4／C2.5 或生产切换已完成。详见[正常态隔离验收](C2-PHYSICAL-DIAGNOSTICS-ISOLATED-ACCEPTANCE-2026-09-30.md)及[单格漂移／恢复验收](C2-PHYSICAL-DRIFT-ISOLATED-ACCEPTANCE-2026-09-30.md)。
+**2026-09-30 历史状态：首个按需诊断切片已实现并部署到专用 `c2test` 0.16.2／schema v13。** 四个 scope 的正常态只读远端验收为 `OK`、完整覆盖、零 finding，`rows_read=baselines_checked` 分别为 1、21、20、1。隔离 Google Alpha 报名的 `last_request_id` 审计列仅改一格时，新物理检查报告唯一 `CELL_CHANGED`／`DRIFT`；旧语义仍 `OK`／零 finding，其附带 `physical_integrity` 为 `DRIFT`。独立整行 CAS 恢复后四 scope 物理及旧语义再次 `OK`，关联物理 B 23／23 未变。该历史切片不表示定期巡检迁移、物理 finding 入库、自动修复、完整 C2.4／C2.5 或生产切换已完成。详见[正常态隔离验收](C2-PHYSICAL-DIAGNOSTICS-ISOLATED-ACCEPTANCE-2026-09-30.md)及[单格漂移／恢复验收](C2-PHYSICAL-DRIFT-ISOLATED-ACCEPTANCE-2026-09-30.md)。

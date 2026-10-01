@@ -75,7 +75,7 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
   const results: Array<{ season_id: string; status: string; error_code?: string }> = [];
   for (const season of seasons) {
     const seasonId = season.season_id;
-    const observedRetry = JSON.stringify(firstRow<SqlRow>(sql,
+    let observedRetry = JSON.stringify(firstRow<SqlRow>(sql,
       "SELECT * FROM sync_export_retries WHERE season_id=? AND binding_version=?", seasonId, season.binding_version));
     try {
       const selected = selectExportLane(sql, seasonId, now);
@@ -145,7 +145,11 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
           result = { season_id: seasonId, status: "ORIGINAL_EVENT_UNAVAILABLE", outbox_id: event.outbox_id };
           break;
         }
-        if (!stepCompleted && !stepConfirmed) attemptedWork = true;
+        if (!stepCompleted && !stepConfirmed) {
+          attemptedWork = true;
+          observedRetry = JSON.stringify(firstRow<SqlRow>(sql,
+            "SELECT * FROM sync_export_retries WHERE season_id=? AND binding_version=?", seasonId, season.binding_version));
+        }
         result = member
           ? await new C2MemberExportService(ctx, env).process({ request_id: exportRequestId,
             season_id: seasonId })
@@ -180,8 +184,10 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
            WHERE i.season_id=? AND o.status='PENDING' AND o.due_at_ms<=? LIMIT 1`, seasonId, retryAt));
         const concurrentFailure = firstRow<SqlRow>(sql,
           "SELECT * FROM sync_export_retries WHERE season_id=? AND binding_version=?", seasonId, season.binding_version);
-        if ((Number(concurrentFailure?.failure_count ?? 0) > 0 || Number(concurrentFailure?.action_required ?? 0)) &&
-            JSON.stringify(concurrentFailure) !== observedRetry) return;
+        // A Coach rearm is also a newer decision, even though its counters are zero.
+        // Confirmation may have deleted our own observed retry; it cannot overwrite
+        // a different row left by another request while Google was awaited.
+        if (concurrentFailure && JSON.stringify(concurrentFailure) !== observedRetry) return;
         if (unfinished || dueOutbox) {
           sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
             VALUES (?,?,0,?,'',?,0) ON CONFLICT(season_id) DO UPDATE SET
@@ -212,23 +218,30 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
         results.push({ season_id: seasonId, status: "PAUSED" });
         continue;
       }
-      const previous = firstRow<{ failure_count: number }>(sql,
-        "SELECT failure_count FROM sync_export_retries WHERE season_id=? AND binding_version=?",
-        seasonId, season.binding_version);
-      const failures = Number(previous?.failure_count ?? 0) + 1;
-      const delay = Math.min(21_600_000, 600_000 * 2 ** Math.min(failures - 1, 6));
-      const errorCode = error instanceof ApiError ? error.code : "INTERNAL_ERROR";
-      const actionRequired = error instanceof ApiError && !error.retryable;
-      sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
-        VALUES (?,?,?,?,?,?,?) ON CONFLICT(season_id) DO UPDATE SET
-        binding_version=excluded.binding_version,failure_count=excluded.failure_count,
-        next_attempt_at_ms=excluded.next_attempt_at_ms,
-        last_error=excluded.last_error,updated_at=excluded.updated_at,
-        action_required=excluded.action_required`,
-      seasonId, season.binding_version, failures, actionRequired ? 0 : Date.now() + delay,
-      errorCode, new Date().toISOString(), actionRequired ? 1 : 0).toArray();
-      results.push({ season_id: seasonId,
-        status: actionRequired ? "ACTION_REQUIRED" : "RETRY_REQUIRED", error_code: errorCode });
+      const outcome = ctx.storage.transactionSync(() => {
+        const previous = firstRow<SqlRow>(sql,
+          "SELECT * FROM sync_export_retries WHERE season_id=? AND binding_version=?", seasonId, season.binding_version);
+        if (JSON.stringify(previous) !== observedRetry) {
+          return Number(previous?.action_required ?? 0) === 1
+            ? { season_id: seasonId, status: "ACTION_REQUIRED", error_code: String(previous!.last_error) }
+            : { season_id: seasonId, status: "ORIGINAL_EVENT_UNAVAILABLE" };
+        }
+        const failures = Number(previous?.failure_count ?? 0) + 1;
+        const delay = Math.min(21_600_000, 600_000 * 2 ** Math.min(failures - 1, 6));
+        const errorCode = error instanceof ApiError ? error.code : "INTERNAL_ERROR";
+        const actionRequired = error instanceof ApiError && !error.retryable;
+        sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
+          VALUES (?,?,?,?,?,?,?) ON CONFLICT(season_id) DO UPDATE SET
+          binding_version=excluded.binding_version,failure_count=excluded.failure_count,
+          next_attempt_at_ms=excluded.next_attempt_at_ms,
+          last_error=excluded.last_error,updated_at=excluded.updated_at,
+          action_required=excluded.action_required`,
+        seasonId, season.binding_version, failures, actionRequired ? 0 : Date.now() + delay,
+        errorCode, new Date().toISOString(), actionRequired ? 1 : 0).toArray();
+        return { season_id: seasonId,
+          status: actionRequired ? "ACTION_REQUIRED" : "RETRY_REQUIRED", error_code: errorCode };
+      });
+      results.push(outcome);
     }
   }
   return remember({ polled: results.length, results });

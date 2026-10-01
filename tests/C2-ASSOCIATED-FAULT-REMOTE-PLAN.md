@@ -1,5 +1,7 @@
 # C2 关联四表受控故障隔离验收计划
 
+> 历史范围说明：下文“当前／待执行／未部署”指该切片形成时的状态。后续实际执行已完成，见[隔离实际验收](C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md)；今天的部署状态见[CURRENT-STATUS](../CURRENT-STATUS.md)。本文不授权重新运行旧脚本，不替代实际验收报告。
+
 > 2026-09-30。本文描述待执行步骤，不是通过记录。生成器和 inspector 不部署、不导出、不修复业务行；故障 hook 仅存在被 Git 忽略的隔离 overlay。真实验收须由 supervisor 逐步执行并独立审核。
 
 ## 1. 固定范围与工具

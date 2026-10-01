@@ -197,23 +197,3 @@ export function createArchivePlan(value: unknown): ArchivePlan {
   const canonical_text=archiveCanonical(base); archiveAssert(utf8Bytes(canonical_text)<=ARCHIVE_LIMITS.total_bytes,"total_bytes");
   return {...base,format:ARCHIVE_FORMAT,canonical_text};
 }
-
-// Exact texts, not invented crypto or durable storage. Returning clones prevents mutation of replay state.
-export class InMemoryArchivePlans {
-  private readonly requests = new Map<string, string>();
-  private readonly snapshots = new Map<string, string>();
-  private bytes = 0;
-  prepare(value: unknown): ArchivePlan {
-    const plan=createArchivePlan(value), key=archiveCanonical([JSON.parse(plan.metadata_text).team_id,plan.request_id]);
-    const original=this.requests.get(key); archiveAssert(!original || original===plan.canonical_text,"IDEMPOTENCY_CONFLICT");
-    const snapshotKey=archiveCanonical([JSON.parse(plan.metadata_text).team_id,plan.snapshot_id]);
-    const snapshotText=archiveCanonical({metadata_text:plan.metadata_text,chunks:plan.chunks,record_count:plan.record_count});
-    archiveAssert(!this.snapshots.has(snapshotKey) || this.snapshots.get(snapshotKey)===snapshotText,"SNAPSHOT_CONFLICT");
-    const extra=(original ? 0 : utf8Bytes(key)+utf8Bytes(plan.canonical_text))+
-      (this.snapshots.has(snapshotKey) ? 0 : utf8Bytes(snapshotKey)+utf8Bytes(snapshotText));
-    archiveAssert((original || this.requests.size<ARCHIVE_LIMITS.memory_requests) && this.bytes+extra<=ARCHIVE_LIMITS.memory_bytes,"memory_budget");
-    this.requests.set(key,plan.canonical_text);this.snapshots.set(snapshotKey,snapshotText);
-    this.bytes+=extra;
-    return { ...JSON.parse(plan.canonical_text), canonical_text:plan.canonical_text } as ArchivePlan;
-  }
-}

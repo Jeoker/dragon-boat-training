@@ -303,40 +303,55 @@ describe("C1.2 schedule migration slice", () => {
 
   it("opens a scheduled week from a durable job and records one immutable operation", async () => {
     const fixture = await setupWeek("due");
-    const openAt = new Date(Date.now() + 150).toISOString();
+    const openAt = new Date(Date.now() + 3_600_000).toISOString();
     const scheduled = await ok(await call("/internal/c1/confirm-training-week", {
       request_id: "confirm_due_week_001", session_token: fixture.token, season_id: fixture.seasonId,
       week_id: fixture.week.week_id, week_version: fixture.week.week_version, open_at: openAt
     }, "POST", fixture.testEnv));
     expect(scheduled.result.week.status).toBe("SCHEDULED");
     expect((await publicSchedule(fixture.testEnv, fixture.seasonId, "public_due_hidden_001")).practices).toEqual([]);
-    await new Promise((resolve) => setTimeout(resolve, 220));
     const stub = fixture.testEnv.TEAM_STATE.getByName(fixture.testEnv.TEAM_ID);
+    // A forced early platform alarm must not publish the still-future week.
     await runDurableObjectAlarm(stub);
-    const visible = await publicSchedule(fixture.testEnv, fixture.seasonId, "public_due_visible_001");
-    expect(visible.weeks[0].status).toBe("OPENED");
-    expect(visible.weeks[0].confirmed_version).toBe(scheduled.result.week.confirmed_version);
-    expect(visible.weeks[0].confirmed_at).toBe(scheduled.result.week.confirmed_at);
-    expect(visible.weeks[0].scheduled_open_at).toBe(scheduled.result.week.scheduled_open_at);
-    expect(visible.weeks[0].published_at).toBeTruthy();
-    expect(visible.practices).toHaveLength(2);
-    await runDurableObjectAlarm(stub);
+    expect((await publicSchedule(fixture.testEnv, fixture.seasonId, "public_due_still_hidden_001")).practices).toEqual([]);
     await runInDurableObject(stub, async (_instance: TeamState, context) => {
-      const scheduleEvents = context.storage.sql.exec<{ payload_json: string }>(
-        "SELECT payload_json FROM sync_outbox WHERE topic='SCHEDULE_CHANGED' ORDER BY rowid"
-      ).toArray().map((row) => JSON.parse(row.payload_json));
-      const confirmation = scheduleEvents.find((event: any) => event.action === "confirmTrainingWeek").entity;
-      const opening = scheduleEvents.find((event: any) => event.action === "publishTrainingWeek").entity;
-      expect(confirmation.week.status).toBe("SCHEDULED");
-      expect(confirmation.practices).toEqual([]);
-      expect(opening.week.status).toBe("OPENED");
-      expect(opening.practices).toHaveLength(2);
-      expect(opening.practices.every((row: any) => row.schedule_published_at !== null)).toBe(true);
-      expect(context.storage.sql.exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM system_requests WHERE action='publishTrainingWeek'").one().count).toBe(1);
-      expect(context.storage.sql.exec<{ status: string }>(
-        "SELECT status FROM scheduled_jobs WHERE job_type='OPEN_TRAINING_WEEK'").one().status).toBe("COMPLETED");
+      const job = context.storage.sql.exec<{ status: string; due_at_ms: number; attempt_count: number }>(
+        "SELECT status,due_at_ms,attempt_count FROM scheduled_jobs WHERE job_type='OPEN_TRAINING_WEEK'").one();
+      expect(job).toEqual({ status: "PENDING", due_at_ms: Date.parse(openAt), attempt_count: 0 });
     });
+    const OriginalDate = Date, dueAt = OriginalDate.parse(openAt);
+    globalThis.Date = class extends OriginalDate {
+      constructor(value?: string | number) { super(value === undefined ? dueAt : value); }
+      static now() { return dueAt; }
+    } as DateConstructor;
+    try {
+      await runDurableObjectAlarm(stub);
+      const visible = await publicSchedule(fixture.testEnv, fixture.seasonId, "public_due_visible_001");
+      expect(visible.weeks[0].status).toBe("OPENED");
+      expect(visible.weeks[0].confirmed_version).toBe(scheduled.result.week.confirmed_version);
+      expect(visible.weeks[0].confirmed_at).toBe(scheduled.result.week.confirmed_at);
+      expect(visible.weeks[0].scheduled_open_at).toBe(scheduled.result.week.scheduled_open_at);
+      expect(visible.weeks[0].published_at).toBeTruthy();
+      expect(Date.parse(visible.weeks[0].published_at)).toBeGreaterThanOrEqual(Date.parse(openAt));
+      expect(visible.practices).toHaveLength(2);
+      await runDurableObjectAlarm(stub);
+      await runInDurableObject(stub, async (_instance: TeamState, context) => {
+        const scheduleEvents = context.storage.sql.exec<{ payload_json: string }>(
+          "SELECT payload_json FROM sync_outbox WHERE topic='SCHEDULE_CHANGED' ORDER BY rowid"
+        ).toArray().map((row) => JSON.parse(row.payload_json));
+        const confirmation = scheduleEvents.find((event: any) => event.action === "confirmTrainingWeek").entity;
+        const opening = scheduleEvents.find((event: any) => event.action === "publishTrainingWeek").entity;
+        expect(confirmation.week.status).toBe("SCHEDULED");
+        expect(confirmation.practices).toEqual([]);
+        expect(opening.week.status).toBe("OPENED");
+        expect(opening.practices).toHaveLength(2);
+        expect(opening.practices.every((row: any) => row.schedule_published_at !== null)).toBe(true);
+        expect(context.storage.sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM system_requests WHERE action='publishTrainingWeek'").one().count).toBe(1);
+        expect(context.storage.sql.exec<{ status: string }>(
+          "SELECT status FROM scheduled_jobs WHERE job_type='OPEN_TRAINING_WEEK'").one().status).toBe("COMPLETED");
+      });
+    } finally { globalThis.Date = OriginalDate; }
   });
 
   it("invalidates a scheduled opening after an edit and lets the stale job finish as a no-op", async () => {

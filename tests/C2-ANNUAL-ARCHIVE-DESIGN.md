@@ -1,15 +1,17 @@
 # C2.6 年度私有归档设计 - 第一切片
 
+> 历史范围说明：本文第一切片及末尾实施顺序是历史设计，内存 exact-plan store 已在2026-10-01整体审核中移除；实际持久重放由 schema15 service 承担。后续本地预览及 schema15／50表持久计划已完成，见 C2-ANNUAL-STORAGE-LOCAL-ACCEPTANCE.md；远端仍 schema14，来源读取／认证／Google 年度输出未接线。 最新状态见[CURRENT-STATUS](../CURRENT-STATUS.md)。
+
 状态：2026-09-30，设计经 supervisor 与独立审核通过，已授权并完成纯 DTO／确定性投影／内存 exact-plan 第一切片，见 [本地验收](C2-ANNUAL-ARCHIVE-LOCAL-ACCEPTANCE.md)。没有 SQL 持久 adapter、schema 迁移、receipt 验证或年度远端验收结果。当前独立训练通道验收使用的 v14 源码、C1 行为、Worker 配置和 Google 文件均不由本切片改动。
 
 ## 1. 权威要求与当前缺口
 
 以下要求已经在项目文档决定，不重新向用户询问：
 
-- [迁移计划](../cloudflare-migration-plan.md)第 44 行和 C2.6 表项（第 186 行）：冻结以 DO 状态和服务器时间为准，不等待 Google；整季私有归档回执未核验时保持待完成；公开历史只读已核验的安全投影。年度业务档案必须可从冻结 DO 快照复算，原始回答另有来源清单、数量和摘要。
-- [后端规格](../google-sheets-backend-spec.md)第 217–228 行：训练年度按训练开始日期在赛季时区的日历年确定；整季年度按赛季结束日期年份确定。年度文件由部署账号自动创建并复用、保持私有。文件和 Tab 使用稳定身份，名称仅供识别；未知创建结果不得按名称另建。
-- 同一规格第 220、224、228 行及 [项目总览](../PROJECT-OVERVIEW.md)第 17、63 行：取消训练不进入档案或公开历史；未发布草稿只进私有档案，不阻塞有效训练完成；24 小时最终更正边界不因任务延迟改变；迟到回答不改变已经固定的档案。私有失败维持 `COMPLETED`；公开发布可以单独恢复。
-- [迁移计划](../cloudflare-migration-plan.md)第 188、235–237 行：本地通过先于独立 Google 验收，C2.6 前不能宣布 C2 完成；年度档案不等于数据库备份或恢复。本切片不扩大到生产、cron 或 restore。
+- [迁移计划](../cloudflare-migration-plan.md)的“Google 双向同步协议”及 C2.6 表项：冻结以 DO 状态和服务器时间为准，不等待 Google；整季私有归档回执未核验时保持待完成；公开历史只读已核验的安全投影。年度业务档案必须可从冻结 DO 快照复算，原始回答另有来源清单、数量和摘要。
+- [后端规格](../google-sheets-backend-spec.md)的“归档与公开历史”章节：训练年度按训练开始日期在赛季时区的日历年确定；整季年度按赛季结束日期年份确定。年度文件由部署账号自动创建并复用、保持私有。文件和 Tab 使用稳定身份，名称仅供识别；未知创建结果不得按名称另建。
+- 同一规格的归档规则及 [项目总览](../PROJECT-OVERVIEW.md)的取消／历史原则：取消训练不进入档案或公开历史；未发布草稿只进私有档案，不阻塞有效训练完成；24 小时最终更正边界不因任务延迟改变；迟到回答不改变已经固定的档案。私有失败维持 `COMPLETED`；公开发布可以单独恢复。
+- [迁移计划](../cloudflare-migration-plan.md)的 C2 阶段门槛及“备份、保留与恢复”章节：本地通过先于独立 Google 验收，C2.6 前不能宣布 C2 完成；年度档案不等于数据库备份或恢复。本切片不扩大到生产、cron 或 restore。
 
 现有实现可以支持本地冻结，但不是 C2.6 完整年度导出：
 
@@ -109,14 +111,14 @@
 
 ## 7. 本地验收矩阵
 
-| 场景 | 第一切片证据 |
+| 场景 | 本地约束／后续门槛 |
 |---|---|
 | 到期／取消／草稿 | 未到24h拒绝；已取消训练及相关内容排除；有效训练的取消报名／cancelSignup审计保留；未发布明确结果；私有草稿不冒充正式结果 |
 | 固定姓名和版本 | 改最新成员名不改变原正式／冻结名字；旧 revision 保留；缺引用、重复稳定键拒绝 |
 | 年度路由 | 跨年季、训练 UTC 与赛季本地年不同、DST日期；practice年与season年分别正确 |
 | 确定性 | 输入顺序变化不改规范内容／digest；captured_at固定；Unicode和空类别；同稳定键不同内容停止 |
-| 原请求恢复 | 同ID原计划重放；不同参数冲突；摘要前后中断保留原text；未知外部状态不能 READY／verified |
-| 业务与来源门槛 | business verified/source pending不能public eligible；空来源也需完整manifest；缺块、错ID、错digest拒绝 |
+| 原请求恢复 | 历史内存模型已被 schema15 持久 service 取代，见存储验收；Google 外部未知状态与 receipt 恢复仍属后续门槛 |
+| 业务与来源门槛 | 当前结果恒 LOCAL_PLAN_ONLY／SOURCE_NOT_YET_VERIFIED，不模拟 Google receipt；未来 business verified/source pending 仍不能 public eligible，完整来源 manifest／receipt 另行验收 |
 | 私有／公开边界 | 敏感字段不进入公开 DTO；成员凭据、session和完整backup不进入年度业务投影 |
 | 存储授权后的测试 | additive迁移保留原C1/v14数据；计划／块／receipt非空backup覆盖；capture资源不足不产生伪完整快照；无网络、无alarm、无旧outbox消费 |
 
@@ -130,4 +132,4 @@
 
 supervisor 在开发前需要审定内部 DTO 与计划模型；在后续接合前需要审定：一致捕获的资源边界、原始来源固定／修改检测协议、Google未知创建结果的真实技术能力，以及旧 C1／导入历史兼容与 verified evidence 迁移。若可靠实现必须改变既定产品语义（例如取消自动建文件、减少完整原始回答范围或提前公开），再提交具体证据给用户确认，不由工具静默降级。
 
-下一步：两名独立 reviewer 交叉审核本地第一切片的代码和证据；通过后由 supervisor 审定后续一致捕获／持久 adapter 的范围。本文自身不授权 schema／runtime 接合或远端执行。
+当时实施顺序为两名独立 reviewer 审核第一切片，再审定一致捕获／持久 adapter。后续本地预览和持久计划已按独立授权完成，见[持久计划验收](C2-ANNUAL-STORAGE-LOCAL-ACCEPTANCE.md)；当前下一步是真实来源、私有存储及接线的技术与验收门槛。本文自身不授权 schema／runtime 接合或远端执行。

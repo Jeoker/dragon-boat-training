@@ -79,8 +79,13 @@ export function sourceObject(value:SourceJson):SourceObject {
   sourceAssert(Object.getOwnPropertySymbols(value).length===0&&Object.values(descriptors).every(entry=>entry.enumerable&&Object.hasOwn(entry,"value")),"INVALID_JSON_VALUE");return value;
 }
 export function sourceArray(value:SourceJson):SourceJson[] { sourceAssert(Array.isArray(value),"ARRAY_REQUIRED");return value; }
-export function sourceText(value:SourceJson,min=0,max:number=SOURCE_LIMITS.record_bytes):string { sourceAssert(typeof value==="string","STRING_REQUIRED");unicode(value);
-  sourceAssert(value.length>=min&&sourceBytes(value)<=max,"STRING_BOUNDS");return value; }
+export function sourceText(value:SourceJson,min=0,max:number=SOURCE_LIMITS.record_bytes):string {
+  sourceAssert(typeof value==="string","STRING_REQUIRED");
+  // UTF8 bytes are never fewer than UTF16 code units. Reject clearly oversized
+  // dependency strings before scanning Unicode or allocating an encoded copy.
+  sourceAssert(value.length>=min&&value.length<=max,"STRING_BOUNDS");
+  unicode(value);sourceAssert(sourceBytes(value)<=max,"STRING_BOUNDS");return value;
+}
 export function sourceInteger(value:SourceJson,min=0,max=Number.MAX_SAFE_INTEGER):number {
   sourceAssert(typeof value==="number"&&Number.isSafeInteger(value)&&value>=min&&value<=max,"INTEGER_BOUNDS");return value;
 }
@@ -114,9 +119,30 @@ export interface ParsedSourceInput {
 }
 
 export function sourcePinnedContext(value: unknown): SourcePinnedContext {
-  const row = sourceObject(value as SourceJson);
-  exactSourceKeys(row, ["source_operation_id", "team_id", "season_id", "binding_version", "backend_generation",
-    "writer_epoch", "form_id", "spreadsheet_id", "sheet_id", "season_ends_at"]);
+  const fields = ["source_operation_id", "team_id", "season_id", "binding_version", "backend_generation",
+    "writer_epoch", "form_id", "spreadsheet_id", "sheet_id", "season_ends_at"];
+  sourceAssert(value !== null && typeof value === "object", "OBJECT_REQUIRED");
+  let prototype: object | null, keys: PropertyKey[], array: boolean;
+  try {
+    array = Array.isArray(value);
+    prototype = Object.getPrototypeOf(value);
+    keys = Reflect.ownKeys(value);
+  } catch { throw new SourceModelError("INVALID_JSON_VALUE"); }
+  sourceAssert(!array && prototype === Object.prototype, "OBJECT_REQUIRED");
+  sourceAssert(keys.length <= fields.length && keys.every(key => typeof key === "string" && fields.includes(key)),
+    "UNEXPECTED_INPUT_FIELD");
+  const row: SourceObject = {};
+  for (const key of keys as string[]) {
+    let descriptor: PropertyDescriptor | undefined;
+    try { descriptor = Object.getOwnPropertyDescriptor(value, key); }
+    catch { throw new SourceModelError("INVALID_JSON_VALUE"); }
+    sourceAssert(descriptor && descriptor.enumerable && Object.hasOwn(descriptor, "value"), "INVALID_JSON_VALUE");
+    const entry = descriptor.value;
+    // A fixed primitive copy prevents getter/toJSON execution and a second read
+    // of mutable caller properties. Bound strings before UTF8 allocation below.
+    sourceAssert(typeof entry !== "string" || entry.length <= 512, "STRING_BOUNDS");
+    row[key] = entry;
+  }
   const pinned = {
     source_operation_id: sourceText(row.source_operation_id, 1, 512),
     team_id: sourceText(row.team_id, 1, 512),

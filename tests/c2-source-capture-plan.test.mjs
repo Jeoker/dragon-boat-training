@@ -9,7 +9,7 @@ function moduleUrl(url){if(modules.has(url.href))return modules.get(url.href);
   code=code.replace(/(from\s+["'])(\.[^"']+)(["'])/gu,(_,start,path,end)=>start+moduleUrl(new URL(path.endsWith(".ts")?path:`${path}.ts`,url))+end);
   const result=`data:text/javascript;base64,${Buffer.from(`${code}\n//# sourceURL=${url.href}`).toString("base64")}`;modules.set(url.href,result);return result;
 }
-const {parseSourceJson,sourceCanonical,sourceInstant,SourceModelError,SOURCE_LIMITS}=await import(moduleUrl(new URL("../shared/c2-source-capture-contract.ts",import.meta.url)));
+const {parseSourceJson,sourceCanonical,sourceInstant,sourceText,SourceModelError,SOURCE_LIMITS}=await import(moduleUrl(new URL("../shared/c2-source-capture-contract.ts",import.meta.url)));
 const {buildLocalSourcePlan,SOURCE_NAMESPACES}=await import(moduleUrl(new URL("../shared/c2-source-capture-projection.ts",import.meta.url)));
 const clone=value=>structuredClone(value);
 const pinned={source_operation_id:"local_source_operation",team_id:"local_team",season_id:"local_season",binding_version:1,backend_generation:"local_generation",writer_epoch:0,
@@ -33,6 +33,27 @@ const plan=(value=fixture(),context=pinned)=>buildLocalSourcePlan(JSON.stringify
 function rows(artifact,namespace){return artifact.chunks.filter(chunk=>chunk.namespace===namespace).flatMap(chunk=>JSON.parse(chunk.payload_text).records);}
 const codes=artifact=>rows(artifact,"GAP_LEDGER").map(row=>row.code);
 function rejects(fn,code){assert.throws(fn,error=>error instanceof SourceModelError&&error.code===code&&error.message==="Source input is unsupported or inconsistent.");}
+
+test("pinned source context is copied without executing accessors and redacts reflection failures",()=>{
+  const raw=JSON.stringify(fixture());let calls=0;
+  const accessor={...pinned};Object.defineProperty(accessor,"team_id",{enumerable:true,get(){calls++;throw new Error("PRIVATE_TEST_BODY");}});
+  rejects(()=>buildLocalSourcePlan(raw,accessor),"INVALID_JSON_VALUE");assert.equal(calls,0);
+  const thrownProxy=new Proxy({},{getPrototypeOf(){throw new Error("PRIVATE_SECONDARY_BODY");}});
+  for(const thrown of [new Error("PRIVATE_TEST_BODY"),new SourceModelError("PRIVATE_CODE"),thrownProxy])
+    for(const trap of ["getPrototypeOf","ownKeys","getOwnPropertyDescriptor"])
+      rejects(()=>buildLocalSourcePlan(raw,new Proxy(pinned,{[trap](){throw thrown;}})),"INVALID_JSON_VALUE");
+  const revoked=Proxy.revocable({...pinned},{});revoked.revoke();rejects(()=>buildLocalSourcePlan(raw,revoked.proxy),"INVALID_JSON_VALUE");
+  rejects(()=>buildLocalSourcePlan(raw,{...pinned,team_id:"x".repeat(2_000_001)}),"STRING_BOUNDS");
+  assert.equal(buildLocalSourcePlan(raw,{...pinned}).canonical_text,plan().canonical_text);
+});
+
+test("oversized dependency text rejects before UTF8 allocation while Unicode byte limits remain exact",()=>{
+  const OriginalEncoder=globalThis.TextEncoder;let encodes=0;
+  globalThis.TextEncoder=class { encode(){encodes++;throw new Error("PRIVATE_ENCODER_BODY");} };
+  try {rejects(()=>sourceText("x".repeat(2_000_001),1,512),"STRING_BOUNDS");assert.equal(encodes,0);}
+  finally {globalThis.TextEncoder=OriginalEncoder;}
+  assert.equal(sourceText("😀",1,4),"😀");rejects(()=>sourceText("😀",1,3),"STRING_BOUNDS");
+});
 
 test("complete current Form records and declared Sheet rows stay in separate namespaces; no pure source verification",()=>{
   const source=fixture(),artifact=plan(source);

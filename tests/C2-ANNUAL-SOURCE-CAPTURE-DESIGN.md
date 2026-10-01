@@ -4,7 +4,7 @@
 
 ## 1. 已固定的语义与本轮范围
 
-首次成功固定的不可变 source capture 保存归档捕获时完整当前来源，提交 cutoff 固定后不变；不是首次提交时原答案，也不是某个历史截止瞬间的完整值。`submission_cutoff_at` 与业务归档的 `cutoff_at`、实际 `observed_start_at`／`observed_end_at`／`captured_at` 分开。建议提交范围沿用现有 C2 导入的 `submitted < season_ends_at` 边界，并由已固定赛季／绑定参数派生，不允许调用者自行扩大；源实现前由 supervisor 核定此技术字段与比较规则。
+首次成功固定的不可变 source capture 保存归档捕获时完整当前来源，提交 cutoff 固定后不变；不是首次提交时原答案，也不是某个历史截止瞬间的完整值。`submission_cutoff_at` 与业务归档的 `cutoff_at`、实际 `observed_start_at`／`observed_end_at`／`captured_at` 分开。已批准的本地模型按 Form `createTime < pinned season_ends_at` 的纳秒边界判提交资格，由固定赛季／绑定参数派生 cutoff，不允许调用者扩大；真实来源读取仍须证明对应首次时间与绑定。
 
 Form 回答和 response Sheet 使用两个独立 record namespace，各自保存完整身份、schema、值与类型、数量和摘要。它们不能被拼成推测的单张“原始答案表”。来源 raw payload 留在受保护的 Google 私有捕获／证据存储；DO 只保留固定 command、已知 ID census、摘要／计数、gap 状态与经核验 receipt，不加入现有业务 DTO、公开视图或普通诊断日志。
 
@@ -52,7 +52,7 @@ Sheet原行号只作为这次观测的物理坐标，不成为永久response ID�
 
 无映射的完整Sheet dump最多是pending调查材料，绝不默认符合cutoff或年度artifact。pending证据与合规archive使用不同scope／manifest／目的，不公开，不进入业务DTO；存储位置、权限、资源及保留策略须另审。若连pending evidence的安全存储尚未确定，则只返回受控`SOURCE_SCOPE_UNPROVEN`并停止，不临时把raw返回给DO或日志。
 
-可信mapping的建立协议目前未解决：现有LEGACY_ROW或Coach关联member只是业务身份核查；任何新mapping都必须说明证据、固定版本、完整覆盖和更改规则，并单独审阅。不能以人为写一个ID就自动成为可信来源，也不能为了让验收通过降低该门槛。
+人工映射信任政策已接受，本地人工审核与 plan-only 模型也已实现，见§9；真实 Coach 鉴权、同一固定 capture 的私有读取及持久审核协议尚未接线。现有 LEGACY_ROW 或 Coach 关联 member 只属业务身份核查，不能代替响应行映射；实际接线仍须证明证据、固定版本、完整覆盖和追加更改规则。不能以人为写一个ID就自动成为可信来源，也不能为了让验收通过降低该门槛。
 
 ## 5. 观测区间与不可变捕获候选
 
@@ -68,7 +68,7 @@ Sheet原行号只作为这次观测的物理坐标，不成为永久response ID�
 
 ## 6. 私有目标、未知回复与原内容恢复
 
-只允许经登记且核验私有权限的捕获／staging目标，不开放任意Spreadsheet或范围。raw块使用版本化typed JSON文本；源公式、姓名、header都在JSON字段内存字面值，不能成为目标formulaValue。不得复用业务archiveCanonical的safe-integer规则丢弃合法Sheet小数，应另审finite number和完整API类型canonical协议。
+只允许经登记且核验私有权限的捕获／staging目标，不开放任意Spreadsheet或范围。raw块使用版本化typed JSON文本；源公式、姓名、header都在JSON字段内存字面值，不能成为目标formulaValue。不复用业务 archiveCanonical 的 safe-integer 规则丢弃合法 Sheet 小数；现行来源纯模型保留有限 IEEE-754 数值、完整受支持字段，并将未知内容完整保留为 pending 或拒绝整份输入。canonical typed JSON 不是原 HTTP 字节或数字词法的复现，不能恢复 JSON 解析前已损失的数字精度。
 
 [RAW写入选项](https://developers.google.com/workspace/sheets/api/reference/rest/v4/ValueInputOption)保存值而不按UI解析；若选结构化UpdateCells，则明确写stringValue而非formulaValue。这是候选安全写法，不表示旧setNumberFormat+setValues已经完成全部边界验收。读取／回执／日志也不能含raw答案、edit-response URL、credentials或公开文件定位。
 
@@ -80,7 +80,7 @@ Sheet原行号只作为这次观测的物理坐标，不成为永久response ID�
 
 ## 7. source verified与验收门槛
 
-SOURCE_CAPTURE_FIXED只证明原内容与operation已固定；SOURCE_NOT_VERIFIED／SOURCE_SCOPE_UNPROVEN／SOURCE_GAP保留原因。升级source verified至少要求完整当前可访问Form／Sheet证据、固定cutoff资格与可信映射覆盖、known-ID census无未解释缺口、原manifest/chunk全摘要与数量回读、原operation的不可变receipt及私有权限核验。业务Google verified不能替代source verified；有pending原行或known missing ID不能按“best effort”公开整季。
+SOURCE_CAPTURE_FIXED 是拟议的持久捕获阶段，只证明原内容与 operation 已固定；现行纯模型恒为 SOURCE_NOT_VERIFIED。SOURCE_SCOPE_UNPROVEN 是受控拒绝码，SOURCE_GAP 是证据条件分类，不能混成来源状态。GAP_LEDGER 还含 COVERAGE_LIMIT、PROOF_REQUIRED 和 UNSUPPORTED；其中覆盖限制／待证事项不等于已经发生的删除缺口，不能将条件总量称为实际丢失回答数。升级source verified至少要求完整当前可访问Form／Sheet证据、固定cutoff资格与可信映射覆盖、known-ID census无未解释缺口、原manifest/chunk全摘要与数量回读、原operation的不可变receipt及私有权限核验。业务Google verified不能替代source verified；有pending原行或known missing ID不能按“best effort”公开整季。
 
 | 后续测试 | 必须证明 |
 |---|---|
@@ -93,7 +93,7 @@ SOURCE_CAPTURE_FIXED只证明原内容与operation已固定；SOURCE_NOT_VERIFIE
 
 ## 8. 实施前仍需关闭的具体问题
 
-1. **Sheet资格与可信mapping**：现有代码没有证据。原Timestamp是否随native编辑改变未获官方保证；即使将来实测保持，也不能防人工更改或替代稳定ID。没有可信mapping，普通既有Sheet只能捕获pending材料，不能source verified。
+1. **Sheet资格与可信mapping**：本地人工审核只有声明及摘要链，尚无真实认证和固定来源证据。原Timestamp是否随native编辑改变未获官方保证；即使将来实测保持，也不能防人工更改或替代稳定ID。没有可信mapping，普通既有Sheet只能捕获pending材料，不能source verified。
 2. **历史census覆盖**：REST createTime可判现存回答，不能恢复已删除已知ID或从未观测ID。known missing必须gap；不能宣称枚举了全部曾经提交。迟到与UNKNOWN Sheet行如何留pending而不入年度archive，需按§4独立实现。
 3. **读取一致性与资源**：Forms分页和Sheet range没有已证明的共同snapshot token。需定版观测一致性保证、预算和失败attempt恢复；官方文档不能代替真实隔离试验。
 4. **私有不可变存储与未知创建**：staging位置、原控制ledger／完整块一次固定、权限、单cell／payload大小和永久receipt尚未实现。已存在目标内fixed sheetId只是候选；年度file创建仍沿[原年度设计](C2-ANNUAL-ARCHIVE-DESIGN.md)独立门槛。
@@ -103,7 +103,7 @@ SOURCE_CAPTURE_FIXED只证明原内容与operation已固定；SOURCE_NOT_VERIFIE
 
 ## 9. 已接受：人工映射的信任政策
 
-状态：2026-10-01用户已接受已认证Coach人工确认作为映射可信依据，尚未实现审核协议。已批准的捕获时完整源快照语义不变。现有响应表缺少可信的Form回答ID；现行纯模型仍为DECLARED_ONLY，将所有Sheet行保留为PRIVATE_PENDING，SHEET_CURRENT恒空，结果恒LOCAL_SOURCE_PLAN_ONLY／SOURCE_NOT_VERIFIED。接受政策不改变当前实现或来源核验门槛。
+状态：2026-10-01 用户已接受已认证 Coach 人工确认作为映射可信依据；本地纯审核协议已实现，真实鉴权、来源读取和持久审核未接线。已批准的捕获时完整源快照语义不变。现有响应表缺少可信的Form回答ID；现行纯模型仍为DECLARED_ONLY，将所有Sheet行保留为PRIVATE_PENDING，SHEET_CURRENT恒空，结果恒LOCAL_SOURCE_PLAN_ONLY／SOURCE_NOT_VERIFIED。接受政策不使原来源计划自动升级，也不降低来源核验门槛。
 
 已接受的依据是已认证的Coach查看同一次固定capture内双方完整内容，逐条明确确认对应关系。审核证据须绑定原source operation／snapshot、binding／generation／epoch、双方稳定定位与完整内容hash、审核者、理由及审核时间，标记HUMAN_ATTESTED。系统不按姓名、时间或顺序自动决定映射；对应Form的createTime仍是固定提交cutoff资格依据，Sheet当前Timestamp不替代它。
 
@@ -111,4 +111,4 @@ SOURCE_CAPTURE_FIXED只证明原内容与operation已固定；SOURCE_NOT_VERIFIE
 
 审核证据只追加。任何派生资格文件都须独立版本化并引用原固定内容hash，不修改旧raw manifest／chunks或追加新发现及迟到回答。重试仍恢复原manifest／chunks／source operation，不重新获取当前源替换原内容。完整来源读取、固定capture、权限、摘要回读、审核幂等和派生文件协议仍须实施与验收，人工确认本身不自动使整体source verified。
 
-此信任政策不再是待用户选择项。最小本地审核模型、无需原input的完整plan验证及RETAINED_PLAN_ONLY私有人审纯入口现已完成本地实施和双审，最新完整Node357项通过，见[私有人审adapter验收](C2-SOURCE-PLAN-REVIEW-ADAPTER-LOCAL-ACCEPTANCE.md)。它们只处理本地声明，不构成已认证Coach、真实固定capture、持久审核或source verified；原范围与缺口不变。下一步关闭私有staging原payload可靠保存、完整读取与固定capture、权限／ACL及原operation未知回复恢复门槛，再接真实审核；认证、版本、防重、资源与后续接线由团队按既定工程门槛处理。本文保留技术协议与已接受政策，不授权缩减既定完整来源范围。
+此信任政策不再是待用户选择项。最小本地审核模型、无需原input的完整plan验证及RETAINED_PLAN_ONLY私有人审纯入口现已完成本地实施和双审，该 adapter 切片的完整 Node357 项通过，见[私有人审adapter验收](C2-SOURCE-PLAN-REVIEW-ADAPTER-LOCAL-ACCEPTANCE.md)。它们只处理本地声明，不构成已认证Coach、真实固定capture、持久审核或source verified；原范围与缺口不变。下一步关闭私有staging原payload可靠保存、完整读取与固定capture、权限／ACL及原operation未知回复恢复门槛，再接真实审核；认证、版本、防重、资源与后续接线由团队按既定工程门槛处理。本文保留技术协议与已接受政策，不授权缩减既定完整来源范围。

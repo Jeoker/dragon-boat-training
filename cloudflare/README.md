@@ -5,7 +5,7 @@
 ## 环境边界
 
 - 默认配置名为 `dragon-boat-training-api-staging`，供本地和隔离 staging 使用。
-- production 必须显式执行带 `--env production` 的脚本。两个环境拥有不同的 Worker 名称、Durable Object 命名空间、数据和 secret。
+- `--env c2test` 是专用 C2 隔离环境，独立于默认 staging。production 必须显式使用 `--env production`；三个环境分别拥有自己的 Worker、Durable Object 命名空间、数据和 secret。
 - `.dev.vars`、Wrangler 本地状态、干运行产物和覆盖率目录均被忽略。仓库只保留 `.dev.vars.example`。
 - C0 内部测试入口仅在非 production 且请求提供 `C0_TEST_KEY` 时可用。C1 隔离业务入口另用 `C1_TEST_KEY`，并在内部继续验证 Coach Code 或新后端 session；C2 使用独立 `C2_TEST_KEY`，受保护读取还要求 C1 Coach session。三类入口在 production 均固定返回 `NOT_FOUND`。
 
@@ -60,7 +60,7 @@ schema v4 在训练版本状态中加入单调递增的队列序号，并增加�
 
 服务端按已发布且未结束的训练、赛季状态、成员资格、训练与报名版本执行写入。普通队员受报名截止约束，Coach 可在训练结束前代操作。容量分配和候补递补在单个 SQLite 事务中完成，固定侧和 Ambient 共用按 `(queue_at, queue_sequence)` 排序的唯一队列。没有草稿或正式版时按左右容量判断；已有排座后由真实空位和角色约束决定可行性。换侧保留原队列身份，但不保留已经主动放弃的船位；取消后重新报名取得新的时间和序号。
 
-业务行、不可变回执、审计和 `SIGNUP_CHANGED` outbox 同事务提交；同编号同参数重放不重复写入。公开入口对每个成员按分钟做有界限流，已完成请求重放不重复计数。成员停用和核心影子导入都不能绕过未来有效报名关联；排期修改预览读取真实确认／候补人数并绑定当前报名版本。
+业务行、不可变回执、审计和 `SIGNUPS_CHANGED` outbox 同事务提交；同编号同参数重放不重复写入。公开入口对每个成员按分钟做有界限流，已完成请求重放不重复计数。成员停用和核心影子导入都不能绕过未来有效报名关联；排期修改预览读取真实确认／候补人数并绑定当前报名版本。
 
 `import-signups` 是受测试 key 保护的版本化影子导入，验证来源身份、引用、容量、队列顺序、递补完整性、时间边界和版本漂移；省略行不表示删除，导入不创建 Google outbox。`public-practice` 返回公开训练、报名及最新正式排座投影；私有排座草稿不会进入公开响应。全部 C1.3／C1.4 入口仍是隔离接口，没有连接 Pages 或 Google。
 
@@ -84,7 +84,7 @@ schema v6 增加不可变训练历史、历史说明、赛季荣誉墙索引、�
 
 受保护备份在单个 SQLite 事务中截取业务、不可变请求、审计、outbox、任务和迁移状态，按一百行分块并生成 SHA-256 分块摘要和 manifest 摘要；读取和校验都要求有效 Coach 会话。短期 `coach_sessions`、公开限流状态、备份自身表不进入导出。C1.6 已在 125 名成员样本上下载并复算 191 条记录、29 个分块，且跨 Worker deployment 保持同一备份。这个结果只覆盖当前小团队规模，不代表无界数据量。备份内容仍含私人业务数据，必须由后续运维流程下载到仓库外的私有位置；Google 年度文件和外部存储导出属于 C2。
 
-C0 桥接小样使用 `2026-09-19.bridge.v1` 信封；签名绑定方向、团队、绑定版本、`writer_epoch`、时间戳、nonce、操作编号及负载摘要。传输 nonce 与操作幂等编号分离。staging 的受保护探针允许选择有效、过期、篡改负载、错团队、错 binding 和错代次场景，以验证真实 Google 拒绝路径；production 固定关闭这些入口。当前 Apps Script 端只保存少量 C0 回执用于证明协议，C2 必须改用正式持久表和分段业务回执。
+C0 桥接小样使用 `2026-09-19.bridge.v1` 信封；签名绑定方向、团队、绑定版本、`writer_epoch`、时间戳、nonce、操作编号及负载摘要。传输 nonce 与操作幂等编号分离。staging 的受保护探针允许选择有效、过期、篡改负载、错团队、错 binding 和错代次场景，以验证真实 Google 拒绝路径；production 固定关闭这些入口。独立 C0 探针只保存少量回执用于证明协议；完整 C2 桥接另用私有 BridgeExportReceipts 持久表和逐行回执，两个构建入口不能混用。
 
 ## C2.1 同步基础
 
@@ -120,6 +120,14 @@ schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、�
 
 Google 桥接可只读 `ScheduleTemplates`／`TrainingWeeks`，并对这两张表和 `Practices` 各执行最多四行的签名、绑定核验、前值保护和可恢复回执补丁。`SCHEDULE_TEMPLATE`／`TRAINING_WEEK` 已进入同步 B/C/G、基线及批次约束；`PRACTICE` 使用真实 Google 原始列。`export-next-schedule` 逐行按模板→周次→训练推进，以赛季版本补丁核验后确认整事件。Coach 引用只通过受签名保护的只读桥接返回 ID，不传凭据摘要。旧无源快照事件和旧格式 B 均阻断；当前隔离验收边界见下段。
 
-专用 `c2test` 为 Worker `0.16.1-c2-associated-export`／schema v13，隔离 Google Apps Script version 14。升级前 v12 的排期跨表、out-of-band 改动阻断／恢复、部分写入和丢回执恢复已[远端验收](../tests/C2-SCHEDULE-FAULT-ISOLATED-2026-09-30.md)。升级及热修前私有备份均已校验下载，后者为 37 分块。`2026-10-05` 测试周的排期、虚构 Alpha 左侧报名、20 格草稿／状态及正式 revision 1 已依序真实确认；旧草稿事件的顶层 `published_revision` 缺失经 0.16.1 严格兼容恢复。最终独立只读复查关联四表 1／1／20／1，七个受支持 scope B/C/G 零差异，outbox／未完成批次／retry／冲突零，Coach 已退出。**C2.4 核心四表隔离链路通过，候补、关联部分写入远端故障和同季冲突等未验收；C2.4 整体未完成。**当前专用 `c2test` 的 `C2_EXPORT_POLL_ENABLED=false` 且无 cron；原 staging／生产及 Pages 未切换。见[隔离关联验收](../tests/C2-ASSOCIATED-ISOLATED-ACCEPTANCE-2026-09-30.md)。
+2026-09-30 核心关联链路历史快照：当时专用 `c2test` 为 Worker `0.16.1-c2-associated-export`／schema v13，隔离 Google Apps Script version 14。升级前 v12 的排期跨表、out-of-band 改动阻断／恢复、部分写入和丢回执恢复已[远端验收](../tests/C2-SCHEDULE-FAULT-ISOLATED-2026-09-30.md)。升级及热修前私有备份均已校验下载，后者为 37 分块。`2026-10-05` 测试周的排期、虚构 Alpha 左侧报名、20 格草稿／状态及正式 revision 1 已依序真实确认；旧草稿事件的顶层 `published_revision` 缺失经 0.16.1 严格兼容恢复。最终独立只读复查关联四表 1／1／20／1，七个受支持 scope B/C/G 零差异，outbox／未完成批次／retry／冲突零，Coach 已退出。**C2.4 核心四表隔离链路通过，候补、关联部分写入远端故障和同季冲突等未验收；C2.4 整体未完成。**当前专用 `c2test` 的 `C2_EXPORT_POLL_ENABLED=false` 且无 cron；原 staging／生产及 Pages 未切换。见[隔离关联验收](../tests/C2-ASSOCIATED-ISOLATED-ACCEPTANCE-2026-09-30.md)。
 
-v11 将每季运行时暂停与影子绑定的 `export_paused` 分开：暂停后不准备新批次，已准备／发送的旧批次仍沿原批次核验；概览在排空期间显示 `PAUSING`，未排空不能恢复。恢复后成员／排期仍重读 Google 并比较 B/C/G。Coach 可分页读冲突与完整 B/C/G；概览提供积压、退避和注意项。v12 把非重试错误停在 `ACTION_REQUIRED`，Coach 可在核查后显式重试。这些能力已随 v13 保留。此前无故障暂停／恢复及拒绝路径已远端通过；新一轮在专用 `c2test` 以 Google 成员行整行 CAS 测试标记触发 `ACTION_REQUIRED`，第二次手动轮询为零。精确恢复原行后，Coach retry 经新比较在两次相隔至少 60 秒的轮询确认批次与事件。最终七 scope B/C/G 零差异、outbox／batch／冲突零、Coach 已退出；`sync_export_retries` 故障标志清零但保留历史调度行，造成概览下次时间陈旧的小缺陷；无 outbox 且 `next_due_at=null`，不会发 Google 请求。41 分块私有备份已校验下载，尚未恢复。临时手动轮询开关已用原配置恢复 false，远端 409 核验且始终无 cron。真实配额耗尽／随机断网、自动 cron、暂停中已发送批次排空、备份恢复及同季独立冲突仍未远端验收，C2.5 整体门槛未通过。见[C2.5 故障验收](../tests/C2-ACTION-REQUIRED-ISOLATED-ACCEPTANCE-2026-09-30.md)。
+2026-09-30 运维故障历史快照：v11 将每季运行时暂停与影子绑定的 `export_paused` 分开：暂停后不准备新批次，已准备／发送的旧批次仍沿原批次核验；概览在排空期间显示 `PAUSING`，未排空不能恢复。恢复后成员／排期仍重读 Google 并比较 B/C/G。Coach 可分页读冲突与完整 B/C/G；概览提供积压、退避和注意项。v12 把非重试错误停在 `ACTION_REQUIRED`，Coach 可在核查后显式重试。这些能力已随 v13 保留。此前无故障暂停／恢复及拒绝路径已远端通过；新一轮在专用 `c2test` 以 Google 成员行整行 CAS 测试标记触发 `ACTION_REQUIRED`，第二次手动轮询为零。精确恢复原行后，Coach retry 经新比较在两次相隔至少 60 秒的轮询确认批次与事件。最终七 scope B/C/G 零差异、outbox／batch／冲突零、Coach 已退出；`sync_export_retries` 故障标志清零但保留历史调度行，造成概览下次时间陈旧的小缺陷；无 outbox 且 `next_due_at=null`，不会发 Google 请求。41 分块私有备份已校验下载，尚未恢复。临时手动轮询开关已用原配置恢复 false，远端 409 核验且始终无 cron。真实配额耗尽／随机断网、自动 cron、暂停中已发送批次排空、备份恢复及同季独立冲突仍未远端验收，C2.5 整体门槛未通过。见[C2.5 故障验收](../tests/C2-ACTION-REQUIRED-ISOLATED-ACCEPTANCE-2026-09-30.md)。
+
+## 当前隔离与本地年度边界
+
+2026-10-01 当前隔离基线：专用 c2test 已部署 Worker 0.17.0-c2-associated-lanes／schema14，轮询关闭、crons=[]。候补递补、关联受控部分写入／丢回复、既存 FAILED 批次暂停排空及独立训练阻塞／恢复已按各自范围验收；并发 SENT 暂停仅有本地真实调用链证据。真实配额耗尽、随机网络故障、自动 cron、restore 和更广实体仍未验收，C2.4／C2.5 整体未完成。见[最新实际报告](../tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)与[当前进度](../CURRENT-STATUS.md)。
+
+本地源码 schema15／50表已实现年度业务捕获与持久计划，未部署到远端 schema14。完整来源、人工映射及 plan-only 审核已完成本地纯模块验收，但没有运行时路由、真实 Coach 认证、私有来源读取、持久审核 CAS 或 Google 年度输出。原来源模型所有 Sheet 行仍为 PRIVATE_PENDING，整体 SOURCE_NOT_VERIFIED。
+
+配置须分别核对：默认原 staging 保留十分钟 cron 配置且轮询关闭；专用 c2test 与 production 无 cron。c2test 显式导出开关不等于自动轮询；production C2 写回仍关闭。

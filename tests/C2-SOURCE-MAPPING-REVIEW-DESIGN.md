@@ -8,7 +8,7 @@
 
 已提交 [source pure contract](../shared/c2-source-capture-contract.ts) 与 [projection](../shared/c2-source-capture-projection.ts)（`8fed6a9`）只有 LOCAL_SOURCE_PLAN_ONLY／SOURCE_NOT_VERIFIED，没有真实 fixed/private Google capture、认证 receipt 或持久 source operation。[本地验收](C2-SOURCE-CAPTURE-PURE-LOCAL-ACCEPTANCE.md)的19专项和283完整Node仅证明纯模型。本切片不得把它包装成 SOURCE_CAPTURE_FIXED，也不得制造 session、Google receipt、权限核验成功或 source verified。
 
-第一切片拟新增共享纯审核 contract／projection、Node测试和本地报告：结果恒 **LOCAL_REVIEW_PLAN_ONLY／SOURCE_NOT_VERIFIED**。不修改现有 source pure 格式及 DECLARED_ONLY 行为；不接 Worker、业务存储、公开接口、UI、bridge、Google、alarm 或 manifest版本。纯模型可验证调用上下文的形状／一致性，不能自己认证 Coach。
+第一切片已实现共享纯审核 contract／projection、Node测试和本地报告：结果恒 **LOCAL_REVIEW_PLAN_ONLY／SOURCE_NOT_VERIFIED**。不修改现有 source pure 格式及 DECLARED_ONLY 行为；不接 Worker、业务存储、公开接口、UI、bridge、Google、alarm 或 manifest版本。纯模型可验证调用上下文的形状／一致性，不能自己认证 Coach。
 
 ## 2. 受保护调用者与来源锚
 
@@ -24,13 +24,13 @@ server context 必须包含 team／season／actor及其允许审核的范围、�
 
 先用现有 `parseSourceJson` 的 UTF8／depth／解码后 duplicate-key 检查，再以原 pinned context 调用 `buildLocalSourcePlan`。重建的整个 core canonical text 必须与提供的原 text **逐字一致**，并核固定格式、state、source_status、metadata、五namespace、全chunks的顺序／index／offset／count／bytecount和全部原records；不能只核选中两个记录或总行数。调用 context 必须与重建 metadata 的 team／season／binding／generation／epoch／sourceop／来源身份／cutoff一致。任何多块、少块、重排、跨namespace、剪字段、换schema、改gap或额外 verified 字段都拒绝，不修补原 plan。
 
-此输入只是有界、本地可重复的内部一致性证据：原 JSON 是调用者提供的声明，重建不是第二次真实读取，更不能证明原内容来自 Google。原input和plan当前均未实际持久保存／capture，不能声称这套接口可直接恢复真实 fixed SourceCapture。它只用于本地模型和测试；未来真实 source 服务不能把完整 raw 回传到 DO 来重建或把这三个本地文本存进 DO，也不能为重建长期保存已被范围排除的迟到完整答案。真实artifact可能仅有完整chunks而没有原整input，未来必须另审plan-core-only的完整namespace／chunks／manifest／typed内容验证及私有读取adapter，不强迫真实capture重建本地input格式或此轮重做schema。
+此输入只是有界、本地可重复的内部一致性证据：原 JSON 是调用者提供的声明，重建不是第二次真实读取，更不能证明原内容来自 Google。原input和plan当前均未实际持久保存／capture，不能声称这套接口可直接恢复真实 fixed SourceCapture。它只用于本地模型和测试；未来真实 source 服务不能把完整 raw 回传到 DO 来重建或把这三个本地文本存进 DO，也不能为重建长期保存已被范围排除的迟到完整答案。真实artifact可能仅有完整chunks而没有原整input，完整 plan-core-only validator 和本地 review adapter 已另审并实现（见[adapter 验收](C2-SOURCE-PLAN-REVIEW-ADAPTER-LOCAL-ACCEPTANCE.md)）；未来真实私有读取 adapter 仍须独立审阅，不强迫真实capture重建本地input格式或此轮重做schema。
 
 原输入的词法、空白及 finite IEEE754 规范与 source pure一致，摘要针对版本化 typed canonical 内容，不声称复现原 HTTP 字节、指数文本、原key顺序或此前已丢失精度。原输入重建所需的 `input_bytes` 也保持 exact；不能拿后来不同输入替代同一次本地 source 锚。
 
 ## 4. 私有审核视图与显式命令
 
-拟提供两步纯接口，名称待实现时按现有项目习惯确定：
+已实现两步纯接口 prepareLocalMappingReview／planLocalMappingReview；下文保留原设计步骤：
 
 | 接口 | 输入／输出和限制 |
 |---|---|

@@ -1,5 +1,7 @@
 # C2.6 年度归档第一切片 - 本地验收
 
+> 历史切片说明：下文内存 exact-plan store、32 requests／8MB及当时测试数量保留为第一切片证据。2026-10-01 整体审核中，重复的 InMemoryArchivePlans 和其专用预算字段已删除，实际持久恢复由 schema15 service 承担；当前源码只保留年度输入／record／chunk／plan的有效资源测试。见[本轮审核](C2-ROUND-REVIEW-2026-10-01.md)及[存储验收](C2-ANNUAL-STORAGE-LOCAL-ACCEPTANCE.md)。
+
 日期：2026-09-30。范围由 [设计](C2-ANNUAL-ARCHIVE-DESIGN.md) 和 supervisor 本轮授权限定。
 
 ## 已实现的范围

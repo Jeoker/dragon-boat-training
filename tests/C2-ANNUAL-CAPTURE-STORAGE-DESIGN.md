@@ -1,10 +1,10 @@
 # C2.6 一致捕获与持久计划设计
 
-状态：2026-10-01。纯模型 `dcc13df`、delivery 1 只读 adapter／proof `2e2fc80` 已提交。supervisor 已明确授权本文 stage 2 的本地三表、持久 service／CAS／backup及测试；本地源为 application schema15／50张备份表。远端 c2test 训练通道的实际证据仍为 schema14／47张表，本文不改变其报告，不修改 manifest／服务版本，不部署或远端写入。
+状态：2026-10-01。纯模型 `dcc13df`、delivery 1 只读 adapter／proof `2e2fc80` 已提交。supervisor 已明确授权本文 stage 2 的本地三表、持久 service／CAS／backup及测试；本地源为 application schema15／50张备份表，已完成实现及双审，见[本地存储验收](C2-ANNUAL-STORAGE-LOCAL-ACCEPTANCE.md)。远端 c2test 训练通道的实际证据仍为 schema14／47张表，本文不改变其报告，不修改 manifest／服务版本，不部署或远端写入。
 
 ## 1. 权威范围与最小交付
 
-沿用 [年度设计](C2-ANNUAL-ARCHIVE-DESIGN.md) 及 [第一切片验收](C2-ANNUAL-ARCHIVE-LOCAL-ACCEPTANCE.md)。[迁移计划](../cloudflare-migration-plan.md)第 44、186、237 行分别要求独立于 Google 的冻结、可从 DO 快照复算的年度业务文件、完整来源另行核验；数据库 backup 不代替年度档案。
+沿用 [年度设计](C2-ANNUAL-ARCHIVE-DESIGN.md) 及 [第一切片验收](C2-ANNUAL-ARCHIVE-LOCAL-ACCEPTANCE.md)。[迁移计划](../cloudflare-migration-plan.md)的“Google 双向同步协议”、C2.6 及“备份、保留与恢复”章节分别要求独立于 Google 的冻结、可从 DO 快照复算的年度业务文件、完整来源另行核验；数据库 backup 不代替年度档案。
 
 第一实施阶段仅真实 SQL row adapter、资源／范围 proof helpers 及 Node／Workers 测试，已完成且没有增加 schema 或 runtime 入口。经后续独立授权的 stage 2 实现没有公开路由的 DO capture／storage service、additive 本地 SQL 迁移及备份测试；测试入口直接调用 service，绝不接 public HTTP、alarm、cron、桥接或 `HISTORY_CHANGED` 消费。内部阶段为 `CAPTURED` → `LOCAL_DIGEST_READY`；后者仅表示固定本地内容及摘要已完成，不表示 Google／source verified、ARCHIVED 或 public eligible。
 

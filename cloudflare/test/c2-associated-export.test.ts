@@ -201,7 +201,7 @@ class SheetMirror {
   loseFirstReply = false;
   partialFirstSeatBeforeLoss = false;
   beforeRead: ((scope: SheetScope) => void) | null = null;
-  afterPatch: (() => Promise<void>) | null = null;
+  afterPatch: ((requestId: string) => Promise<void | Response>) | null = null;
   constructor(leftCapacity = 1, rightCapacity = 1) {
     for (const scope of Object.keys(SHEET_SCOPES) as SheetScope[]) this.rows.set(scope, []);
     this.rows.set("PRACTICE", [cells("PRACTICE", capacity(leftCapacity, rightCapacity))]);
@@ -260,7 +260,8 @@ class SheetMirror {
         this.receipts.set(envelope.operation_id, receipt);
       }
       if (this.loseFirstReply) { this.loseFirstReply = false; throw new Error("Reply lost after Sheet commit"); }
-      await this.afterPatch?.();
+      const intercepted = await this.afterPatch?.(envelope.request_id);
+      if (intercepted) return intercepted;
       return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: receipt });
     });
   }
@@ -1054,6 +1055,60 @@ it("preserves a new concurrent failure while an earlier Google batch confirms", 
     expect(context.storage.sql.exec<{ failure_count: number; last_error: string }>("SELECT failure_count,last_error FROM sync_export_retries").one()).toEqual({ failure_count: 2, last_error: "SERVICE_BUSY" });
     expect(context.storage.sql.exec<{ status: string }>("SELECT status FROM sync_batches").one().status).toBe("CONFIRMED");
   });
+});
+
+it.each([[false, false], [true, false], [false, true], [true, true]])(
+  "preserves newer global retry ownership after a late failed poll with Coach rearm=%s, nonretryable=%s", async (rearmByCoach, nonretryable) => {
+  const testEnv = { ...environment(`late-poll-failure-${rearmByCoach}-${nonretryable}`), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  const login = await (await call(testEnv, "/internal/c1/coach-login", {
+    request_id: "late_poll_login_001", coach_code: "local-test-coach-code" }, true)).json() as any;
+  const token = login.data.result.session_token;
+  let reached = false;
+  let released = false;
+  mirror.afterPatch = async (requestId) => {
+    reached = true;
+    while (!released) await new Promise(resolve => setTimeout(resolve, 1));
+    if (nonretryable) return Response.json({ ok: false, meta: { request_id: requestId },
+      error: { code: "BRIDGE_OPERATION_CONFLICT", message: "Operation conflict", retryable: false } });
+    throw new Error("Reply lost after a concurrent administrative decision");
+  };
+  mirror.install();
+  const pending = (async () => (await call(testEnv, "/internal/c2/poll-due-exports", {
+    request_id: "late_poll_failure_001" })).json())();
+  let newer: unknown;
+  try {
+    for (let count = 0; count < 200 && !reached; count++) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(reached).toBe(true);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(`INSERT INTO sync_export_retries VALUES (?,1,7,0,'SYNC_REFERENCE_NEEDS_REVIEW',?,1)`,
+        seasonId, "2026-10-01T01:00:00.000Z").toArray();
+    });
+    if (rearmByCoach) {
+      const result = await (await call(testEnv, "/internal/c2/retry-export", {
+        request_id: "late_poll_coach_retry_001", season_id: seasonId, session_token: token })).json() as any;
+      expect(result).toMatchObject({ data: { result: { rearmed: true } } });
+    }
+    newer = await runInDurableObject(stub, async (_instance: TeamState, context) =>
+      context.storage.sql.exec("SELECT * FROM sync_export_retries").one());
+  } finally {
+    released = true;
+  }
+  expect(await pending).toMatchObject({ data: { results: [{ status: rearmByCoach ? "ORIGINAL_EVENT_UNAVAILABLE" : "ACTION_REQUIRED" }] } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec("SELECT * FROM sync_export_retries").one()).toEqual(newer);
+    expect(context.storage.sql.exec<{ status: string }>("SELECT status FROM sync_batches").one().status).toBe("FAILED");
+    if (nonretryable) expect(context.storage.sql.exec<{ last_error: string }>("SELECT last_error FROM sync_batches").one().last_error).toBe("Operation conflict");
+    expect(context.storage.sql.exec<{ status: string }>("SELECT status FROM sync_outbox WHERE outbox_id='out_associated_001'").one().status).toBe("PENDING");
+    expect(selectExportLane(context.storage.sql, seasonId).reason).toBe(rearmByCoach ? "DRAIN_BATCH" : "GLOBAL_ACTION_REQUIRED");
+  });
+  if (!rearmByCoach) {
+    const writes = mirror.writes;
+    await call(testEnv, "/internal/c2/poll-due-exports", { request_id: "late_poll_after_halt_001" });
+    expect(mirror.writes).toBe(writes);
+  }
+  await call(testEnv, "/internal/c1/coach-logout", { request_id: "late_poll_logout_001", session_token: token }, true);
 });
 
 async function preflightEvidence(stub: ReturnType<Env["TEAM_STATE"]["getByName"]>) {

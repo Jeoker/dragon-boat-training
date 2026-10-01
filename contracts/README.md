@@ -5,7 +5,7 @@
 - [api-v1.json](api-v1.json)：现行 Apps Script 动作、权限、输入和输出清单。
 - [api-cloudflare-c0.json](api-cloudflare-c0.json)：Cloudflare C0 隔离测试接口，不是生产报名 API。
 - [api-cloudflare-c1.json](api-cloudflare-c1.json)：C1 核心、权限、排期、报名候补、排座、冻结历史与运维切片的隔离接口。
-- [api-cloudflare-c2.json](api-cloudflare-c2.json)：C2 绑定、Form 导入、Sheet 差异、成员／赛季版本、排期及报名／排座关联导出和导出运维的隔离接口。成员／排期写回及报名→完整草稿→正式 revision 的核心四表链路已通过独立 Google 验收；候补、关联部分写入故障及同季冲突仍未验收。C2.5 无故障暂停／恢复已隔离验收，有故障的运维尚未通过；均未接入生产。
+- [api-cloudflare-c2.json](api-cloudflare-c2.json)：C2 绑定、Form 导入、Sheet 差异、成员／排期及报名排座关联导出和运维的隔离接口。已完成范围与未验收门槛见下文及[当前进度](../CURRENT-STATUS.md)，均未接入生产。
 
 这些 JSON 文件是接口清单，不是可交给 JSON Schema 验证器执行的 schema。C1 的动作注册在 `shared/c1-actions.ts`，核心、排期、报名、排座及历史 DTO／运行时解析分别在 `shared/c1-contract.ts`、`shared/c1-schedule-contract.ts`、`shared/c1-signup-contract.ts`、`shared/c1-seating-contract.ts` 和 `shared/c1-history-contract.ts`；服务端业务校验及客户端响应校验继续独立承担相应边界。测试核对代码与清单中的动作、方法和权限声明一致。不能把字段清单当成完整的类型或权限校验。C1 影子导入的 `transport_only` 表示本地／staging 隔离入口只使用统一的 `C1_TEST_KEY` 传输门；当前没有第二个未实现的 migration key，production 入口仍固定隐藏。
 
@@ -15,7 +15,7 @@
 2. 公开读取用 GET。Apps Script 管理读取和写入用 POST JSON 请求体，浏览器以 `text/plain;charset=UTF-8` 发送并跟随重定向。Code 和 session token 不进入 URL。
 3. 所有 POST 必须带客户端生成的 `request_id`，8–128 位 ASCII 字母、数字、下划线或连字符。缺失或非法编号在业务动作前拒绝；GET 缺省时服务端可生成编号。正常客户端始终传入编号并验证响应关联。
 4. Apps Script 版本字段接受非负安全整数，保留规范十进制字符串兼容；不把 `null`、布尔值、数组、空串或小数转换成版本。明确的布尔选项只接受 JSON boolean。`known_roster_version=-1` 是旧页面的“未知”提示，不是业务版本。缺省 `bootstrap.season_id` 或旧客户端空串表示首页默认入口。
-5. Cloudflare JSON 数值字段只接受 number 安全整数，布尔字段只接受 boolean。不能以 TypeScript 类型断言代替运行时校验。迁移旧客户端时由适配器明确处理兼容，不静默转换原请求摘要。
+5. Cloudflare 业务 DTO 的版本、计数等整数字段只接受 number 安全整数，布尔字段只接受 boolean。不能以 TypeScript 类型断言代替运行时校验。迁移旧客户端时由适配器明确处理兼容，不静默转换原请求摘要。内部来源纯模型另保留有限 IEEE-754 小数，不把业务整数约束套到原 Sheet 数值上。
 6. `limit` 必须为正整数；缺省值、上限和超过上限时的拒绝或截断规则见动作清单。cursor 是不透明续页标识，客户端不构造、不解释。实体关联、必填字段、枚举和时间边界继续在业务层检查。
 
 ## 响应边界
@@ -54,6 +54,6 @@ Apps Script 业务失败可能仍是 HTTP 200，必须检查 envelope。客户�
 
 ## C1／C2 接口设计约束
 
-C1.1–C1.6 已按业务域建立独立请求／响应 DTO、运行时解析、集中动作注册和契约测试；C2 继续沿用这一结构。C2.1 的 `shared/c2-sync-contract.ts` 校验 Google 文件 ID、数字 Sheet tab ID、字段映射、依赖组基线及稳定来源键；同步概览用 `binding_current` 区分旧绑定和当前赛季版本。C2.2 增加 Form 签名读取、分页导入、核查列表、显式关联和默认关闭的轮询。C2.3 的 `check-sheet-differences` 要求当前绑定与 Coach 会话，按登记 Tab 比较 B/C/G；它只写诊断元数据，不修改业务行或 Google。C2.4 的成员及赛季名单版本、排期跨表链路、out-of-band 模板改动阻断／恢复、排期部分写入／丢回执，以及报名→完整草稿→正式 revision 核心四表写回均已隔离验证；候补、关联部分写入故障及同季冲突仍未验收。C2.5 已随 schema v13 部署到专用隔离 Worker，真实无故障暂停／恢复、重放和错误拒绝路径通过；非重试错误停轮询、修复后重试、批次排空、持久退避及备份恢复尚未远端验收。冲突的业务解决与导入、浏览器页面尚未实现。接口清单只描述边界，不能代替运行时类型系统；部署与验收状态以[当前进度](../CURRENT-STATUS.md)为准。
+C1.1–C1.6 已按业务域建立独立请求／响应 DTO、运行时解析、集中动作注册和契约测试；C2 继续沿用这一结构。C2.1 的 `shared/c2-sync-contract.ts` 校验 Google 文件 ID、数字 Sheet tab ID、字段映射、依赖组基线及稳定来源键；同步概览用 `binding_current` 区分旧绑定和当前赛季版本。C2.2 增加 Form 签名读取、分页导入、核查列表、显式关联和默认关闭的轮询。C2.3 的 `check-sheet-differences` 要求当前绑定与 Coach 会话，按登记 Tab 比较 B/C/G；它只写诊断元数据，不修改业务行或 Google。2026-10-01 当前隔离基线：专用 c2test 已部署 Worker 0.17.0-c2-associated-lanes／schema14，轮询关闭、crons=[]。候补递补、关联受控部分写入／丢回复、既存 FAILED 批次暂停排空及独立训练阻塞／恢复已按各自范围验收；并发 SENT 暂停仅有本地真实调用链证据。真实配额耗尽、随机网络故障、自动 cron、restore 和更广实体仍未验收，C2.4／C2.5 整体未完成。见[最新实际报告](../tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)与[当前进度](../CURRENT-STATUS.md)。 冲突业务解决／导入和浏览器同步管理页面仍未实现。年度业务捕获与持久计划已在本地 schema15／50表实现；完整来源、人工映射和 plan-only 审核为内部纯模块，没有年度／来源 HTTP 动作或真实 Coach 认证接线。接口清单不代替运行时类型、授权或来源真实性证明。
 
 新接口统一写入回执与可选视图；异步维护返回任务标识及任务状态。旧动作和历史日志由兼容适配器承接，不破坏重试摘要。接口清单中的服务版本、动作、方法、权限和直接业务错误必须由测试与实现对照；修改 `wrangler.jsonc` 后必须重新生成 Worker 类型。前端接入前验证完整业务响应形状、缓存代次、结果查询权限和浏览器 CORS。C0 探针的成功只证明持久化与桥接机制，不能替代这些业务契约验收。

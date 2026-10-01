@@ -1,5 +1,7 @@
 # C2.5 不同训练关联事件独立推进：本地验收
 
+> 历史范围说明：下文“当前／待执行／未部署”指该切片形成时的状态。后续实际执行已完成，见[隔离实际验收](C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)；今天的部署状态见[CURRENT-STATUS](../CURRENT-STATUS.md)。本文不授权重新运行旧脚本，不替代实际验收报告。
+
 日期：2026-09-30（America/New_York）。状态：本地 schema v14 实现及回归通过，尚未部署或进行新训练通道的真实 Google 验收。设计入口：[C2-ASSOCIATED-LANE-DESIGN.md](C2-ASSOCIATED-LANE-DESIGN.md)。远端专项门槛：[C2-ASSOCIATED-LANE-REMOTE-PLAN.md](C2-ASSOCIATED-LANE-REMOTE-PLAN.md)。
 
 当前隔离 c2test 仍是 0.16.2／schema v13／writer epoch 0。本文的源码和模拟 SheetBridge 证据不能替代远端升级、真实 Google 冲突验收或私有备份恢复演练。未修改 Wrangler 版本、绑定、功能开关；验收执行时未部署或远端写入。默认 staging 配置仍为 0.16.0-c2-associated-export，导出与自动轮询开关均关闭。

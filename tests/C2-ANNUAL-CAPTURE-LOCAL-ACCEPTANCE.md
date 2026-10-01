@@ -1,5 +1,7 @@
 # C2.6 一致捕获 adapter／proof - delivery 1 本地验收
 
+> 历史范围说明：本文是 Delivery 1 历史验收；末尾“下一步”按当时范围解释。后续本地持久计划已完成，见 C2-ANNUAL-STORAGE-LOCAL-ACCEPTANCE.md。 最新状态见[CURRENT-STATUS](../CURRENT-STATUS.md)。
+
 日期：2026-10-01。依据 [捕获存储设计](C2-ANNUAL-CAPTURE-STORAGE-DESIGN.md)及 supervisor 明确的 delivery 1 授权，只实现只读适配与证明，不提前实现后续三表／持久 service。
 
 ## 实现及边界

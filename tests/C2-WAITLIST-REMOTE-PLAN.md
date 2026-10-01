@@ -1,5 +1,7 @@
 # C2.4 候补递补：隔离 Google 执行前计划
 
+> 历史范围说明：下文“当前／待执行／未部署”指该切片形成时的状态。后续实际执行已完成，见[隔离实际验收](C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md)；今天的部署状态见[CURRENT-STATUS](../CURRENT-STATUS.md)。本文不授权重新运行旧脚本，不替代实际验收报告。
+
 日期：2026-09-30。此文件是可复核的执行计划，不是远端验收报告。入口为 [`live-c2-waitlist-acceptance.mjs`](live-c2-waitlist-acceptance.mjs)。新增脚本当前仅经过本地语法和代码核查；远端结果由实际执行后的独立验收记录证明。
 
 ## 场景与数据条件

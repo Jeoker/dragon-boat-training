@@ -19,7 +19,7 @@ export interface LocalSourceChunk {
 const has = (row: SourceObject, key: string) => Object.hasOwn(row, key);
 const known = (row: SourceObject, keys: string[]) => Object.keys(row).every(key => keys.includes(key));
 
-export function sourceCellUnsupported(cell: SourceJson): boolean {
+function sourceCellUnsupported(cell: SourceJson): boolean {
   const row = sourceObject(cell);
   let unsupported = !known(row, ["userEnteredValue", "effectiveValue", "formattedValue", "userEnteredFormat",
     "effectiveFormat", "hyperlink", "note"]);
@@ -68,7 +68,7 @@ export function sourceCellUnsupported(cell: SourceJson): boolean {
   return unsupported;
 }
 
-export function addSourceRecord(groups: SourceRecordGroups, namespace: SourceNamespace, record: SourceObject) {
+function addSourceRecord(groups: SourceRecordGroups, namespace: SourceNamespace, record: SourceObject) {
   sourceAssert(sourceBytes(sourceCanonical(record)) <= SOURCE_LIMITS.record_bytes, "RECORD_BYTES_EXCEEDED");
   groups[namespace].push(record);
 }

@@ -8,22 +8,85 @@ import { parseImportSeatingSnapshot } from "./c1-seating-contract";
 // Internal, pure format. This is NOT a C1/C2 HTTP contract or a deployed archive protocol.
 export const ARCHIVE_FORMAT = "c2-annual-plan-v1";
 export const ARCHIVE_LIMITS = Object.freeze({ input_bytes: 2_000_000, records: 5000,
-  chunk_bytes: 64_000, chunk_records: 100, total_bytes: 2_000_000, memory_bytes: 8_000_000, memory_requests: 32 });
+  chunk_bytes: 64_000, chunk_records: 100, total_bytes: 2_000_000, depth: 40 });
 export function archiveAssert(condition: unknown, field: string): asserts condition {
   if (!condition) throw new ContractValidationError("Archive input is incomplete or inconsistent.", field);
 }
 export function utf8Bytes(text: string): number { return new TextEncoder().encode(text).length; }
-export function archiveCanonical(value: unknown): string {
-  if (value === null || typeof value === "boolean") return JSON.stringify(value);
-  if (typeof value === "number") { archiveAssert(Number.isSafeInteger(value), "number"); return JSON.stringify(value); }
-  if (typeof value === "string") {
-    // Reject lone surrogates: TextEncoder would otherwise silently substitute U+FFFD.
-    archiveAssert(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value), "unicode");
-    return JSON.stringify(value);
+// Canonical comparisons can include an entire saved SQL row (four independently
+// bounded 2MB texts, escaped once more), rather than just a 2MB annual plan.
+const CANONICAL_BYTES = 8 * ARCHIVE_LIMITS.total_bytes + 100_000;
+
+function archiveJson(value: unknown, budget: number, integersOnly: boolean): string {
+  const ownErrors = new Set<Error>();
+  const ancestors = new Set<object>();
+  let bytes = 0;
+  const require = (condition: unknown, field: string): void => {
+    if (condition) return;
+    const error = new ContractValidationError("Archive input is incomplete or inconsistent.", field);
+    ownErrors.add(error);
+    throw error;
+  };
+  const emit = (text: string): string => {
+    bytes += utf8Bytes(text);
+    require(bytes <= budget, "input_bytes");
+    return text;
+  };
+  const quoted = (text: string): string => {
+    // Check before allocating an escaped copy of a possibly enormous string.
+    require(text.length <= budget - bytes, "input_bytes");
+    require(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(text), "unicode");
+    return emit(JSON.stringify(text));
+  };
+  const visit = (entry: unknown, depth: number): string => {
+    require(depth <= ARCHIVE_LIMITS.depth, "json_depth");
+    if (entry === null || typeof entry === "boolean") return emit(JSON.stringify(entry));
+    if (typeof entry === "string") return quoted(entry);
+    if (typeof entry === "number") {
+      require(integersOnly ? Number.isSafeInteger(entry) : Number.isFinite(entry), "number");
+      return emit(JSON.stringify(entry));
+    }
+    require(entry !== null && typeof entry === "object", "json");
+    const container = entry as object;
+    require(!ancestors.has(container), "json_cycle");
+    const array = Array.isArray(container);
+    const prototype = Object.getPrototypeOf(container);
+    require(prototype === (array ? Array.prototype : Object.prototype) ||
+      !integersOnly && !array && prototype === null, "json");
+    // Arrays have a non-accessor, nonconfigurable own length. Check it before
+    // enumerating keys, and inspect individual descriptors only after degree proof.
+    const length = array ? Object.getOwnPropertyDescriptor(container, "length")?.value : 0;
+    require(!array || Number.isSafeInteger(length) && length <= budget - bytes, "input_bytes");
+    const keys = Reflect.ownKeys(container);
+    require(keys.length <= budget - bytes, "input_bytes");
+    require(keys.every(key => typeof key === "string"), "json");
+    if (array) require(keys.length === length + 1, "json_array");
+    ancestors.add(container);
+    const parts: string[] = [emit(array ? "[" : "{")];
+    const names = array ? null : (keys as string[]).sort();
+    const count = array ? length : keys.length;
+    for (let index = 0; index < count; index++) {
+      const key = array ? String(index) : names![index];
+      const descriptor = Object.getOwnPropertyDescriptor(container, key);
+      require(descriptor && descriptor.enumerable && Object.hasOwn(descriptor, "value"), "json_descriptor");
+      if (index) parts.push(emit(","));
+      if (!array) parts.push(quoted(key), emit(":"));
+      parts.push(visit(descriptor!.value, depth + 1));
+    }
+    parts.push(emit(array ? "]" : "}"));
+    ancestors.delete(container);
+    return parts.join("");
+  };
+  try { return visit(value, 0); }
+  catch (error) {
+    if (ownErrors.has(error as Error)) throw error;
+    // A Proxy's reflection trap may throw any private message or error class.
+    archiveAssert(false, "json");
   }
-  if (Array.isArray(value)) return `[${value.map(archiveCanonical).join(",")}]`;
-  archiveAssert(value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype, "json");
-  return `{${Object.keys(value).sort().map(key => `${archiveCanonical(key)}:${archiveCanonical((value as Input)[key])}`).join(",")}}`;
+}
+
+export function archiveCanonical(value: unknown): string {
+  return archiveJson(value, CANONICAL_BYTES, true);
 }
 
 export interface FrozenPracticeInput {
@@ -137,11 +200,10 @@ function eventDetails(action:string,value: unknown): Input {
   return result;
 }
 export function parseArchiveInput(value: unknown) {
-  // Coarse whole-input guard runs before any projection, including ignored private extensions.
-  let inputText: string;
-  try { inputText = JSON.stringify(value); } catch { throw new ContractValidationError("Archive input is not JSON."); }
-  archiveAssert(typeof inputText === "string" && utf8Bytes(inputText) <= ARCHIVE_LIMITS.input_bytes, "input_bytes");
-  const input = object(value); archiveAssert(input.format === ARCHIVE_FORMAT, "format");
+  // Meter every explicit JSON field, including ignored private extensions, without
+  // executing getters/toJSON. Parse the fixed copy, never reread a caller object.
+  const inputText = archiveJson(value, ARCHIVE_LIMITS.input_bytes, false);
+  const input = object(JSON.parse(inputText)); archiveAssert(input.format === ARCHIVE_FORMAT, "format");
   const request_id = requestId(input), snapshot_id = identifier(input, "snapshot_id"), season = object(input.season);
   const seed = { request_id, source_snapshot_id: snapshot_id };
   const core = parseImportCoreSnapshot({ ...seed, settings_version: 0, default_season_id: null, coaches: [], seasons: [season], members: input.members });
