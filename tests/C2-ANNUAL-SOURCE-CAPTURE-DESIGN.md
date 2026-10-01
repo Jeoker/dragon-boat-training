@@ -100,3 +100,17 @@ SOURCE_CAPTURE_FIXED只证明原内容与operation已固定；SOURCE_NOT_VERIFIE
 5. **API与类型覆盖**：Forms REST／Sheets grid能力和OAuth部署范围需独立检查；不改变既有bridge以偷带新权限。完整source类型schema、文件上传引用与附件范围须明确，遇实际不支持内容停止，不只存可读姓名冒充完整。
 
 这些问题是具体技术与验收缺口，不重新询问用户已批准的原始来源产品语义。2026-10-01，已获授权的纯typed-record／cutoff／gap分类切片完成本地实现和双审：五namespace、pinned season_ends_at纳秒边界、decoded duplicate key拒绝、未知完整pending或整input拒绝；DECLARED_ONLY不使任何Sheet行进入年度合规chunks，结果永远LOCAL_SOURCE_PLAN_ONLY／SOURCE_NOT_VERIFIED。详见[纯来源模型本地验收](C2-SOURCE-CAPTURE-PURE-LOCAL-ACCEPTANCE.md)。这不实现本文观测／存储／未知回复状态机；Google协议、API接线、raw存储和远端验收仍需supervisor另行授权及交叉审核。
+
+## 9. 待用户审定：人工映射的信任政策
+
+状态：仅提案，未接受、未实现。已批准的捕获时完整源快照语义不变。现有响应表缺少可信的Form回答ID；当前模型将所有Sheet行保留为PRIVATE_PENDING。因此，来源核验还需要决定什么证据可以确认Sheet行与Form回答的对应关系。
+
+建议允许已认证的Coach查看同一次固定capture内双方完整内容，逐条明确确认对应关系。系统记录原source operation／snapshot、binding／generation／epoch、双方稳定定位与完整内容摘要、审核者、理由及审核时间，标记HUMAN_ATTESTED。系统不按姓名、时间或顺序自动决定映射；对应Form的createTime仍是提交cutoff资格依据，Sheet当前Timestamp不替代它。
+
+人工确认是责任人的身份关联声明，不能保证该关联客观无误，也不能恢复首次提交原值、删除答案、未保存附件或从未观测的历史。重复、歧义、known missing及其他未解释缺口继续待核；不能用一个人工写入的ID消掉这些条件。
+
+审核证据只追加。任何派生资格文件都须独立版本化并引用原固定内容摘要，不修改旧raw manifest／chunks或追加迟到回答。即使接受人工确认，完整来源读取、固定capture、权限、摘要回读、审核幂等和派生文件协议仍须实施与验收，人工确认本身不等于整体source verified。
+
+另一选择是继续只接受来源自身可证明的稳定身份／提交时间。没有这类证据的既有Sheet行保持待核，不能借完整Form副本直接认定Sheet范围已核验。此选择不会授权缩减既定完整来源范围。
+
+用户需要选择是否接受HUMAN_ATTESTED作为映射可信依据；认证、版本、防重、资源及界面实现细节由团队按既定工程门槛处理。本提案不改当前DECLARED_ONLY代码或公开门槛。
