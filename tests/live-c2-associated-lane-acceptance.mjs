@@ -74,7 +74,22 @@ export function assertRestoredDeployment(deployments, identity) {
 }
 export function privateFailureRecord(error, phase) {
   return { format: 1, phase, recorded_at: new Date().toISOString(), error_name: error.name,
-    condition: error.condition ?? null, stack_frames: String(error.stack ?? "").split("\n").filter(line => /^\s+at\s/u.test(line)) };
+    condition: error.condition ?? null, ...(error.http_context ? { http_context: error.http_context } : {}),
+    stack_frames: String(error.stack ?? "").split("\n").filter(line => /^\s+at\s/u.test(line)) };
+}
+const HTTP_PATHS = new Set(["coach-login", "coach-logout", "create-backup-snapshot", "verify-backup-snapshot", "get-backup-chunk", "schedule-workspace",
+  "prepare-training-week", "create-practice", "confirm-training-week", "signup"].map(action => `/internal/c1/${action}`).concat(
+  ["get-sync-overview", "check-sheet-differences", "check-associated-physical-differences", "export-next-associated", "export-next-schedule", "retry-export", "list-export-blocks"].map(action => `/internal/c2/${action}`)));
+const HTTP_SCOPES = new Set(["SEASON", "COACH", "MEMBER", "SCHEDULE_TEMPLATE", "TRAINING_WEEK", "PRACTICE", "SIGNUP", "SEAT_PLAN_DRAFT", "SEAT_PLAN_CURRENT", "SEAT_PLAN_REVISION"]);
+export function goodHttp(result) {
+  if (result.http === 200 && result.ok === true) return result.data;
+  const codes = new Set(["SERVICE_BUSY", ...["c1", "c2"].flatMap(kind => load(new URL(`../contracts/api-cloudflare-${kind}.json`, import.meta.url)).errors)]);
+  const status = Number.isInteger(result.http) && result.http >= 100 && result.http <= 599 ? result.http : "UNKNOWN";
+  const code = codes.has(result.error) ? result.error : "UNCLASSIFIED_ERROR";
+  const context = { status, error_code: code, retryable: typeof result.retryable === "boolean" ? result.retryable : null,
+    path: HTTP_PATHS.has(result.context?.path) ? result.context.path : null,
+    scope: HTTP_SCOPES.has(result.context?.scope) ? result.context.scope : null };
+  throw Object.assign(new Error("HTTP_REQUEST_FAILED"), { condition: `HTTP_${status}_${code}`, http_context: context });
 }
 export function singleRowCas(page, scope, id, field, value, operationId) {
   assert.ok(["PRACTICE", "MEMBER"].includes(scope)); assert.equal(page.entity_type, scope);
@@ -425,9 +440,11 @@ async function main() {
     const response = await fetch(new URL(path, WORKER), { method: "POST", headers: { authorization: `Bearer ${key(kind)}`,
       "content-type": "application/json" }, body: JSON.stringify(envelope), signal: AbortSignal.timeout(45_000) });
     const body = await response.json(); assertApiCorrelation(body.meta, envelope.request_id, kind);
-    return { http: response.status, ok: body.ok, data: body.data, error: body.error?.code ?? null };
+    return { http: response.status, ok: body.ok, data: body.data, error: body.error?.code ?? null,
+      retryable: typeof body.error?.retryable === "boolean" ? body.error.retryable : null,
+      context: { path, scope: payload.entity_type ?? payload.scope ?? null } };
   };
-  const good = result => { assert.equal(result.http, 200); assert.equal(result.ok, true); return result.data; };
+  const good = goodHttp;
   const login = good(await api("/internal/c1/coach-login", "c1", { coach_code: coach }));
   const token = login.result.session_token;
   try {

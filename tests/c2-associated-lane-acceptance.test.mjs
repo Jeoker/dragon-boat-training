@@ -7,7 +7,7 @@ import { PHASES, assertPhase, assertEventAnchor, assertLaneProgress, assertOrigi
   journalCall, singleRowCas, reverseCas, assertCasReceipt, expectedGoogleRows, readScopeDefinitions, canonical,
   assertBackupDownload, assertMigrationPreserved, assertBatchReceipt, assertPendingBlock, fixtureTimings,
   saveKnownExport, pendingExportEvidence, clearExportEvidence, assertUsageRefresh, assertUpgradeReference, assertApiCorrelation,
-  privateFailureRecord, assertRestoredDeployment
+  privateFailureRecord, assertRestoredDeployment, goodHttp
 } from "./live-c2-associated-lane-acceptance.mjs";
 
 const sha = value => createHash("sha256").update(value).digest("base64url");
@@ -182,6 +182,23 @@ test("private failure diagnostics retain stack locations without assertion expec
   const record = privateFailureRecord(error, "preflight"); assert.equal(record.phase, "preflight");
   assert.ok(record.stack_frames.length > 0); assert.ok(record.stack_frames.every(frame => /^\s+at\s/u.test(frame)));
   assert.ok(!JSON.stringify(record).includes(secretValue)); assert.ok(!Object.hasOwn(record, "message"));
+});
+
+test("HTTP diagnostic exposes only fixed codes, endpoints, scopes and retryability and stops instead of proceeding", () => {
+  let error;
+  try { goodHttp({ http: 502, ok: false, error: "SERVICE_BUSY", retryable: true,
+    context: { path: "/internal/c2/check-sheet-differences", scope: "PRACTICE", private_id: "private_sentinel" } }); }
+  catch (failure) { error = failure; }
+  assert.equal(error.condition, "HTTP_502_SERVICE_BUSY");
+  assert.deepEqual(privateFailureRecord(error, "capture").http_context,
+    { status: 502, error_code: "SERVICE_BUSY", retryable: true, path: "/internal/c2/check-sheet-differences", scope: "PRACTICE" });
+  assert.ok(!JSON.stringify(privateFailureRecord(error, "capture")).includes("private_sentinel"));
+  assert.throws(() => goodHttp({ http: 200, ok: false, error: "BRIDGE_INVALID_RESPONSE", retryable: false }), e => e.condition === "HTTP_200_BRIDGE_INVALID_RESPONSE");
+  try { goodHttp({ http: 503, ok: false, error: "private_sentinel", retryable: "private_sentinel",
+    context: { path: "/internal/c2/private_sentinel", scope: "private_sentinel" } }); } catch (failure) { error = failure; }
+  assert.equal(error.condition, "HTTP_503_UNCLASSIFIED_ERROR");
+  assert.deepEqual(error.http_context, { status: 503, error_code: "UNCLASSIFIED_ERROR", retryable: null, path: null, scope: null });
+  assert.deepEqual(goodHttp({ http: 200, ok: true, data: { status: "READY" } }), { status: "READY" });
 });
 
 test("phase ordering stops writes after an interrupted phase and permits only confirmed history", () => {
