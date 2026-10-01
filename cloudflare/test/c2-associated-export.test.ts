@@ -618,6 +618,159 @@ it("recovers the same concurrent request without changing event or allocating a 
   });
 });
 
+it("pauses during a real SENT await, drains only the original batch and preserves a later business event", async () => {
+  const testEnv = environment("sent-pause-barrier"), mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  const initial = await preflightEvidence(stub);
+  const login = await (await call(testEnv, "/internal/c1/coach-login", {
+    request_id: "sent_pause_login_001", coach_code: "local-test-coach-code" }, true)).json() as any;
+  const token = login.data.result.session_token;
+  const control = async (id: string, paused: boolean) => {
+    const response = await call(testEnv, "/internal/c2/set-export-pause", {
+      request_id: id, session_token: token, season_id: seasonId, paused });
+    return { status: response.status, body: await response.json() as any };
+  };
+  const overview = async (id: string) => (await (await call(testEnv, "/internal/c2/get-sync-overview", {
+    request_id: id, session_token: token, season_id: seasonId })).json() as any).data;
+  const publicCurrent = async (id: string) => {
+    const url = new URL("https://example.test/internal/c1/public-practice");
+    url.searchParams.set("request_id", id); url.searchParams.set("season_id", seasonId); url.searchParams.set("practice_id", practiceId);
+    const beforeCalls = { reads, writes: mirror.writes };
+    const response = await worker.fetch(new IncomingRequest(url, { method: "GET", headers: { authorization: "Bearer local-c1-test-key" } }), testEnv);
+    expect(response.status).toBe(200); const body = await response.json() as any; expect(body.ok).toBe(true);
+    expect(body.data.signup_version).toBe(2);
+    expect(body.data.signups).toHaveLength(1);
+    expect(body.data.signups[0]).toMatchObject({ member_id: members[0], preference: "RIGHT", status: "CONFIRMED" });
+    expect(body.data.seat_plan).toMatchObject({ status: "UNPUBLISHED", seat_plan_version: 0, published_revision: 0,
+      seats: [], coach: null, steerer: null, rows: [{ row_number: 1, left: null, right: null }] });
+    expect(body.data).not.toHaveProperty("draft_seats"); expect(body.data.seat_plan).not.toHaveProperty("draft_seats");
+    expect({ reads, writes: mirror.writes }).toEqual(beforeCalls);
+  };
+  let released = false, entered = false, settled = false, reads = 0;
+  const release = () => { released = true; };
+  // Each waiter owns its own I/O context; only booleans cross the mock/request boundary.
+  // Polling never releases the barrier by time: all assertions must finish first.
+  const awaitCondition = async (condition: () => boolean) => {
+    while (!condition()) await new Promise<void>(resolve => setTimeout(resolve, 1));
+  };
+  mirror.beforeRead = () => { reads++; };
+  // The actual send has committed SENT and the mock Google receipt is already verified.
+  // No Durable Object I/O runs inside this callback. Only the test controller releases it.
+  mirror.afterPatch = async () => {
+    mirror.afterPatch = null;
+    entered = true; await awaitCondition(() => released);
+  };
+  mirror.install();
+  const originalId = "sent_pause_original_export_001";
+  const sending = next(testEnv, originalId).finally(() => { settled = true; });
+  try {
+    await awaitCondition(() => entered || settled); expect(entered).toBe(true); expect(settled).toBe(false);
+    const sent = await preflightEvidence(stub), batch = sent.batches[0];
+    expect(sent.batches).toHaveLength(1); expect(batch.status).toBe("SENT");
+    expect(mirror.patchOperationIds).toEqual([batch.batch_id]); expect(mirror.writes).toBe(1);
+    expect(mirror.receipts.get(String(batch.batch_id))).toMatchObject({ status: "verified", operation_id: batch.batch_id });
+    expect(sent.outbox).toEqual(initial.outbox); expect(sent.baselines).toEqual(initial.baselines);
+    expect(sent.physical).toEqual(initial.physical); expect(sent.cursors).toEqual(initial.cursors);
+    const originalPin = await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const sql = context.storage.sql;
+      expect(sql.exec("SELECT * FROM system_requests WHERE request_id=?", originalId).toArray()).toEqual([]);
+      expect(sql.exec("SELECT status,receipt_json FROM sync_batch_items WHERE batch_id=?", batch.batch_id).toArray())
+        .toEqual([{ status: "PENDING", receipt_json: null }]);
+      const pins = sql.exec("SELECT * FROM sync_export_request_selections").toArray(); expect(pins).toHaveLength(1);
+      expect(pins[0].outbox_id).toBe("out_associated_001"); return pins[0];
+    });
+    const heldGoogle = JSON.stringify([...mirror.rows]), heldReads = reads;
+    const paused = await control("sent_pause_request_001", true);
+    expect(paused).toMatchObject({ status: 200, body: { data: { result: { status: "PAUSING", unfinished_batch_id: batch.batch_id } } } });
+    expect(await overview("sent_pause_overview_001")).toMatchObject({ export_control: {
+      status: "PAUSING", pause_requested: true, unfinished_batch: { batch_id: batch.batch_id, status: "SENT" } } });
+    const early = await control("sent_pause_early_resume_001", false);
+    expect(early).toMatchObject({ status: 409, body: { error: { code: "SYNC_EXPORT_DRAINING" } } });
+    // Runtime export pause must permit normal C1 writes, without changing the in-flight snapshot.
+    const changed = await (await call(testEnv, "/internal/c1/update-signup", {
+      request_id: "sent_pause_business_update_001", season_id: seasonId, practice_id: practiceId,
+      member_id: members[0], practice_version: 1, signup_version: 1, preference: "RIGHT" }, true)).json() as any;
+    expect(changed).toMatchObject({ ok: true, data: { result: { signup_version: 2, signup: { preference: "RIGHT" } } } });
+    const withSuccessor = await preflightEvidence(stub);
+    expect(withSuccessor.outbox).toHaveLength(initial.outbox.length + 1);
+    expect(withSuccessor.outbox.find(row => row.outbox_id === "out_associated_001")).toEqual(initial.outbox.find(row => row.outbox_id === "out_associated_001"));
+    const successor = withSuccessor.outbox.find(row => row.outbox_id !== "out_associated_001")!;
+    expect(JSON.parse(String(successor.payload_json)).entity).toMatchObject({ signup_version: 2, signup_rows: [{ preference: "RIGHT" }] });
+    expect(successor.status).toBe("PENDING"); expect(Number(successor.due_at_ms)).toBeGreaterThan(Date.now());
+    expect(withSuccessor.batches).toEqual(sent.batches); expect(withSuccessor.baselines).toEqual(initial.baselines);
+    expect(withSuccessor.physical).toEqual(initial.physical); expect(withSuccessor.cursors).toEqual(initial.cursors);
+    await publicCurrent("sent_pause_public_during_001");
+    expect(reads).toBe(heldReads); expect(mirror.writes).toBe(1); expect(JSON.stringify([...mirror.rows])).toBe(heldGoogle);
+    release();
+    const result = await sending;
+    expect(result).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_associated_001", batch_id: batch.batch_id } });
+    expect(await overview("sent_pause_overview_002")).toMatchObject({ export_control: { status: "PAUSED", pause_requested: true, unfinished_batch: null } });
+    const drained = await preflightEvidence(stub);
+    expect(drained.batches).toHaveLength(1); expect(drained.batches[0].status).toBe("CONFIRMED");
+    expect(drained.batches[0].attempt_count).toBe(sent.batches[0].attempt_count);
+    for (const field of ["batch_id", "payload_digest", "first_outbox_id", "last_outbox_id", "binding_version", "writer_epoch"])
+      expect(drained.batches[0][field]).toBe(batch[field]);
+    expect(drained.outbox).toEqual(withSuccessor.outbox); expect(drained.baselines).toEqual(initial.baselines);
+    expect(drained.physical).toEqual(initial.physical); expect(drained.cursors).toEqual(initial.cursors);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const sql = context.storage.sql;
+      const items = sql.exec("SELECT status,receipt_json FROM sync_batch_items WHERE batch_id=?", batch.batch_id).toArray();
+      expect(items).toHaveLength(1); expect(items[0].status).toBe("VERIFIED");
+      expect(JSON.parse(String(items[0].receipt_json))).toMatchObject({ status: "verified", operation_id: batch.batch_id });
+      const request = sql.exec("SELECT result_json FROM system_requests WHERE request_id=?", originalId).one();
+      expect(JSON.parse(String(request.result_json))).toMatchObject({ status: "BATCH_CONFIRMED", outbox_id: "out_associated_001", batch_id: batch.batch_id });
+      expect(sql.exec("SELECT outbox_id FROM sync_export_request_selections").toArray()).toEqual([{ outbox_id: "out_associated_001" }]);
+    });
+    const pausedReads = reads;
+    const fresh = await (await call(testEnv, "/internal/c2/export-next-associated", {
+      request_id: "sent_pause_new_target_probe_001", season_id: seasonId, outbox_id: successor.outbox_id })).json() as any;
+    // The v14 selector reports the runtime-paused lane as unavailable before preparing.
+    expect(fresh).toMatchObject({ error: { code: "SYNC_OUTBOX_BLOCKED" } });
+    expect(await next(testEnv, "sent_pause_next_stage_probe_001")).toMatchObject({ error: { code: "SYNC_OUTBOX_BLOCKED" } });
+    expect((await next(testEnv, originalId)).data).toEqual(result.data); // A completed request cannot select its successor.
+    expect(await preflightEvidence(stub)).toEqual(drained);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      expect(context.storage.sql.exec("SELECT * FROM sync_export_request_selections").toArray()).toEqual([originalPin]);
+      expect(context.storage.sql.exec("SELECT request_id FROM system_requests WHERE action='exportNextAssociated'").toArray())
+        .toEqual([{ request_id: originalId }]);
+    });
+    expect(reads).toBe(pausedReads); expect(mirror.writes).toBe(1);
+    expect(JSON.stringify([...mirror.rows])).toBe(heldGoogle);
+    expect(await control("sent_pause_resume_001", false)).toMatchObject({ status: 200, body: { data: { result: { status: "RUNNING" } } } });
+    expect(await next(testEnv, "sent_pause_original_final_001")).toMatchObject({ data: { status: "EVENT_CONFIRMED", outbox_id: "out_associated_001" } });
+    const final = await preflightEvidence(stub);
+    expect(final.batches).toEqual(drained.batches); expect(final.outbox.find(row => row.outbox_id === successor.outbox_id)).toEqual(successor);
+    const confirmedOriginal = final.outbox.find(row => row.outbox_id === "out_associated_001")!;
+    expect(confirmedOriginal.status).toBe("CONFIRMED"); expect(confirmedOriginal.payload_json).toBe(sent.outbox[0].payload_json);
+    expect(confirmedOriginal.due_at_ms).toBe(sent.outbox[0].due_at_ms);
+    expect(final.cursors).toMatchObject([{ signup_version: 1, seat_plan_version: 0, published_revision: 0 }]);
+    expect(final.physical).toHaveLength(1); expect(JSON.parse(String(final.physical[0].cells_json))).toEqual(cells("SIGNUP", signup(members[0], 1)));
+    expect(final.baselines.filter(row => row.entity_type !== "SIGNUP")).toEqual(initial.baselines);
+    const signupBaselines = final.baselines.filter(row => row.entity_type === "SIGNUP");
+    expect(signupBaselines).toHaveLength(new Set(SYNC_FIELD_DEFINITIONS.SIGNUP.map(field => field.dependency_group)).size);
+    expect(signupBaselines.every(row => row.cloud_version === 1 && row.entity_id === `${practiceId}:${members[0]}`)).toBe(true);
+    expect(JSON.parse(String(signupBaselines.find(row => row.dependency_group === "SIGNUP_STATE")!.baseline_json)))
+      .toEqual({ preference: "LEFT", status: "CONFIRMED" });
+    expect(JSON.parse(String(signupBaselines.find(row => row.dependency_group === "SIGNUP_QUEUE")!.baseline_json)))
+      .toEqual({ queue_at: at, queue_sequence: 1 });
+    expect(mirror.rows.get("SIGNUP")).toEqual([cells("SIGNUP", signup(members[0], 1))]);
+    await publicCurrent("sent_pause_public_after_001");
+    expect((await next(testEnv, originalId)).data).toEqual(result.data); expect(mirror.patchOperationIds).toEqual([batch.batch_id]);
+    expect((await overview("sent_pause_overview_003")).export_control.status).toBe("RUNNING");
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      const sql = context.storage.sql;
+      expect(sql.exec("SELECT * FROM sync_export_request_selections WHERE request_key=?", originalPin.request_key).toArray()).toEqual([originalPin]);
+      expect(sql.exec("SELECT preference FROM signups WHERE practice_id=? AND member_id=?", practiceId, members[0]).one()).toEqual({ preference: "RIGHT" });
+      expect(sql.exec("SELECT signup_version FROM practice_versions WHERE practice_id=?", practiceId).one()).toEqual({ signup_version: 2 });
+      expect(sql.exec("SELECT * FROM sync_export_event_blocks").toArray()).toEqual([]);
+      expect(sql.exec("SELECT * FROM sync_export_retries").toArray()).toEqual([]);
+    });
+  } finally {
+    release(); await sending;
+    await call(testEnv, "/internal/c1/coach-logout", { request_id: "sent_pause_logout_001", session_token: token }, true);
+  }
+});
+
 it("preserves global ACTION_REQUIRED ahead of batch drain and allows runtime pause recovery after explicit clear", async () => {
   const testEnv = environment("global-before-drain");
   const mirror = new SheetMirror();
