@@ -99,4 +99,4 @@ SOURCE_CAPTURE_FIXED只证明原内容与operation已固定；SOURCE_NOT_VERIFIE
 4. **私有不可变存储与未知创建**：staging位置、原控制ledger／完整块一次固定、权限、单cell／payload大小和永久receipt尚未实现。已存在目标内fixed sheetId只是候选；年度file创建仍沿[原年度设计](C2-ANNUAL-ARCHIVE-DESIGN.md)独立门槛。
 5. **API与类型覆盖**：Forms REST／Sheets grid能力和OAuth部署范围需独立检查；不改变既有bridge以偷带新权限。完整source类型schema、文件上传引用与附件范围须明确，遇实际不支持内容停止，不只存可读姓名冒充完整。
 
-这些问题是具体技术与验收缺口，不重新询问用户已批准的原始来源产品语义。下一步可先做纯typed-record／cutoff／gap分类模型与本地故障状态机；Google协议、API接线、raw存储和远端验收仍需supervisor另行授权及交叉审核。
+这些问题是具体技术与验收缺口，不重新询问用户已批准的原始来源产品语义。2026-10-01，已获授权的纯typed-record／cutoff／gap分类切片完成本地实现和双审：五namespace、pinned season_ends_at纳秒边界、decoded duplicate key拒绝、未知完整pending或整input拒绝；DECLARED_ONLY不使任何Sheet行进入年度合规chunks，结果永远LOCAL_SOURCE_PLAN_ONLY／SOURCE_NOT_VERIFIED。详见[纯来源模型本地验收](C2-SOURCE-CAPTURE-PURE-LOCAL-ACCEPTANCE.md)。这不实现本文观测／存储／未知回复状态机；Google协议、API接线、raw存储和远端验收仍需supervisor另行授权及交叉审核。
