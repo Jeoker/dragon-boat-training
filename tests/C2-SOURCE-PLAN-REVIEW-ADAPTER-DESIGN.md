@@ -1,6 +1,6 @@
 # C2.6 完整原 plan 接入私有人审 - 纯 adapter 设计
 
-日期：2026-10-01。仅设计，待 supervisor 与两名独立 reviewer 审阅后授权实施。现有人工审核政策已获用户接受，本切片没有新用户选择；未新增代码、权限、存储、Google 或 runtime 接线。
+日期：2026-10-01。本文设计已获supervisor及两名独立reviewer审阅，supervisor已授权最小本地纯adapter；本地实现及验证事实见[验收记录](C2-SOURCE-PLAN-REVIEW-ADAPTER-LOCAL-ACCEPTANCE.md)。下文保留已审实施门槛。现有人工审核政策已获用户接受，没有新用户选择；本切片不接实际权限、存储、Google或runtime。
 
 依据：[原 plan validator 设计](C2-SOURCE-PLAN-VALIDATION-DESIGN.md)、[完整 validator](../shared/c2-source-plan-validation-projection.ts)、[validator context](../shared/c2-source-plan-validation-contract.ts)、[人工审核设计](C2-SOURCE-MAPPING-REVIEW-DESIGN.md)、[既有人审 projection](../shared/c2-source-mapping-review-projection.ts)及[人审 contract](../shared/c2-source-mapping-review-contract.ts)。完整 validator 已完成本地实现、作者337项Node全量及两名独审；具体范围见[本地验收](C2-SOURCE-PLAN-VALIDATION-LOCAL-ACCEPTANCE.md)。这是本地纯校验，不是实际来源已核验。
 
@@ -98,4 +98,4 @@ HUMAN_ATTESTED 只记录关联声明。新 mode 不删除原 GAP_LEDGER、missin
 | 预算和隐私 | 原合法core导致私有view新wrapper>2M整失败、合法ledger追加>512K整失败、依赖异常固定；mode只wrapper，控制/ledger/error无raw、答案或URL；oldAPI返回不加mode |
 | 范围 | 始终LOCAL_REVIEW_PLAN_ONLY/NOT_VERIFIED/falseexport，无持久request/noauth/noGoogle/noactualcapture，不以通过adapter当authenticated receipt |
 
-设计确定后授权本地实施，不需要用户再次选择已接受的人工信任政策。实际 fixed source artifact、完整读取协议、权限、持久审核与年度 source verification 仍为后续独立门槛。
+上述最小本地实施已获授权，不需要用户再次选择已接受的人工信任政策。实际 fixed source artifact、完整读取协议、权限、持久审核与年度 source verification 仍为后续独立门槛。

@@ -1,0 +1,343 @@
+// Internal pure view/ledger helpers, not a service API or a caller-supplied proof port.
+// The public entry points establish complete source proof before passing these records.
+import {
+  exactSourceKeys,
+  sourceArray,
+  sourceAssert,
+  sourceInteger,
+  sourceInstant,
+  sourceObject,
+  sourceText,
+  type SourceObject,
+} from "./c2-source-capture-contract";
+import {
+  DERIVED_FORMAT,
+  REVIEW_DOMAINS,
+  REVIEW_FORMAT,
+  REVIEW_LIMITS,
+  assertFreshContext,
+  boundedText,
+  emptyReviewLedger,
+  hashReview,
+  parseLedgerEnvelope,
+  parseLocator,
+  parseMappingCommand,
+  reviewAnchor,
+  reviewDigest,
+  reviewJson,
+  type MappingCommand,
+  type RecordLocator,
+  type ReviewAnchor,
+  type ReviewContext,
+  type ReviewContextPort,
+  type ReviewEvidence,
+  type ReviewHashPort,
+  type ReviewLedger,
+} from "./c2-source-mapping-review-contract";
+
+export interface PrivateReviewRecord {
+  locator: RecordLocator;
+  content_digest: string;
+  schema_digest: string;
+  raw: SourceObject;
+  unsupported: boolean;
+}
+
+export interface LocalMappingReviewView {
+  format: typeof REVIEW_FORMAT;
+  state: "LOCAL_REVIEW_PLAN_ONLY";
+  source_status: "SOURCE_NOT_VERIFIED";
+  anchor: ReviewAnchor;
+  form_schema: SourceObject;
+  sheet_schema: SourceObject;
+  form_schema_digest: string;
+  sheet_schema_digest: string;
+  form_records: PrivateReviewRecord[];
+  sheet_records: PrivateReviewRecord[];
+  unreviewable_responses: { response_id: string; code: "FULL_RESPONSE_NOT_AVAILABLE_FOR_REVIEW" }[];
+}
+
+export interface PreparedBundle {
+  context: ReviewContext;
+  view: LocalMappingReviewView;
+  gap_digest: string;
+  gap_count: number;
+}
+
+function boundedControl(value: unknown, limit: number): string {
+  return boundedText(reviewJson(value), limit);
+}
+
+/** Internal data only; public adapters establish the source proof first. */
+export interface RetainedReviewRecord {
+  locator: { namespace: string; chunk_index: number; record_offset: number };
+  record: SourceObject;
+}
+
+export async function prepareReviewRecords(
+  records: readonly RetainedReviewRecord[],
+  context: ReviewContext,
+  contextPort: ReviewContextPort,
+  hashPort: ReviewHashPort,
+): Promise<PreparedBundle> {
+  const anchor = reviewAnchor(context);
+  const forms: { raw: SourceObject; locator: RecordLocator; unsupported: boolean }[] = [];
+  const sheets: typeof forms = [];
+  const gaps: SourceObject[] = [];
+  const unreviewable: LocalMappingReviewView["unreviewable_responses"] = [];
+  let formSchema: SourceObject | undefined;
+  let sheetSchema: SourceObject | undefined;
+  let formSchemaUnsupported = false;
+  let sheetSchemaUnsupported = false;
+
+  for (const { record, locator } of records) {
+    if (record.record_type === "FORM_SCHEMA") {
+      formSchema = sourceObject(record.raw);
+      formSchemaUnsupported = locator.namespace === "PRIVATE_PENDING";
+    } else if (record.record_type === "SHEET_SCHEMA") {
+      sheetSchema = sourceObject(record.raw);
+      sheetSchemaUnsupported = sourceArray(record.reasons).includes("SHEET_SCHEMA_UNSUPPORTED");
+    }
+    else if (record.record_type === "SOURCE_EVIDENCE_CONDITION") gaps.push(record);
+    else if (record.record_type === "FORM_RESPONSE_EXCLUDED") {
+      const identity = sourceObject(record.identity);
+      unreviewable.push({ response_id: sourceText(identity.response_id, 1, 512), code: "FULL_RESPONSE_NOT_AVAILABLE_FOR_REVIEW" });
+    } else if (record.record_type === "FORM_RESPONSE" || record.record_type === "SHEET_ROW") {
+      sourceAssert(locator.namespace === "FORM_CURRENT" || locator.namespace === "PRIVATE_PENDING", "REVIEW_LOCATOR_INVALID");
+      const target = record.record_type === "FORM_RESPONSE" ? forms : sheets;
+      const reasons = record.reasons ? sourceArray(record.reasons) : [];
+      target.push({
+        raw: sourceObject(record.raw),
+        locator: {
+          namespace: locator.namespace,
+          chunk_index: locator.chunk_index,
+          record_offset: locator.record_offset,
+          record_type: record.record_type,
+        },
+        unsupported: reasons.some(reason => reason !== "SHEET_SCOPE_UNPROVEN"),
+      });
+    }
+  }
+  sourceAssert(formSchema && sheetSchema, "REVIEW_SCHEMA_MISSING");
+  const formSchemaDigest = await hashReview(hashPort, REVIEW_DOMAINS.schema,
+    reviewJson({ anchor, kind: "FORM_SCHEMA", raw: formSchema }));
+  const sheetSchemaDigest = await hashReview(hashPort, REVIEW_DOMAINS.schema,
+    reviewJson({ anchor, kind: "SHEET_SCHEMA", raw: sheetSchema }));
+
+  const hashRecords = async (records: typeof forms, schemaDigest: string, schemaUnsupported: boolean): Promise<PrivateReviewRecord[]> => {
+    const result: PrivateReviewRecord[] = [];
+    for (const record of records) {
+      const contentDigest = await hashReview(hashPort, REVIEW_DOMAINS.record,
+        reviewJson({ anchor, locator: record.locator, schema_digest: schemaDigest, raw: record.raw }));
+      const complete = {
+        ...record,
+        unsupported: record.unsupported || schemaUnsupported,
+        content_digest: contentDigest,
+        schema_digest: schemaDigest,
+      };
+      boundedControl(complete, 64_000);
+      result.push(complete);
+    }
+    return result;
+  };
+  const view: LocalMappingReviewView = {
+    format: REVIEW_FORMAT,
+    state: "LOCAL_REVIEW_PLAN_ONLY",
+    source_status: "SOURCE_NOT_VERIFIED",
+    anchor,
+    form_schema: formSchema,
+    sheet_schema: sheetSchema,
+    form_schema_digest: formSchemaDigest,
+    sheet_schema_digest: sheetSchemaDigest,
+    form_records: await hashRecords(forms, formSchemaDigest, formSchemaUnsupported),
+    sheet_records: await hashRecords(sheets, sheetSchemaDigest, sheetSchemaUnsupported),
+    unreviewable_responses: unreviewable,
+  };
+  // Schemas occur once in this private view. No partial view is returned on overflow.
+  boundedControl(view, REVIEW_LIMITS.view_bytes);
+  const gapDigest = await hashReview(hashPort, REVIEW_DOMAINS.gaps, reviewJson({ anchor, conditions: gaps }));
+  assertFreshContext(contextPort, context);
+  return { context, view, gap_digest: gapDigest, gap_count: gaps.length };
+}
+
+function selectedRecords(view: LocalMappingReviewView, command: MappingCommand) {
+  sourceAssert(command.local_snapshot_id === view.anchor.local_snapshot_id, "REVIEW_SNAPSHOT_INVALID");
+  const form = view.form_records.find(record => record.raw.responseId === command.response_id);
+  if (!form) {
+    sourceAssert(!view.unreviewable_responses.some(record => record.response_id === command.response_id), "FULL_RESPONSE_NOT_AVAILABLE_FOR_REVIEW");
+    sourceAssert(false, "REVIEW_RECORD_NOT_FOUND");
+  }
+  const sheet = view.sheet_records.find(record => record.raw.row_index === command.row_index);
+  sourceAssert(sheet, "REVIEW_RECORD_NOT_FOUND");
+  sourceAssert(form.content_digest === command.expected_form_digest &&
+    sheet.content_digest === command.expected_sheet_digest, "REVIEW_CONTENT_CHANGED");
+  return { form, sheet };
+}
+
+function commandText(anchor: ReviewAnchor, actor: string, command: MappingCommand): string {
+  return reviewJson({ format: REVIEW_FORMAT, anchor, actor_id: actor, command });
+}
+
+async function ledgerDigest(ledger: ReviewLedger, port: ReviewHashPort): Promise<string> {
+  return hashReview(port, REVIEW_DOMAINS.ledger, boundedControl(ledger, REVIEW_LIMITS.ledger_bytes));
+}
+
+function ledgerWith(anchor: ReviewAnchor, evidence: ReviewEvidence[]): ReviewLedger {
+  return { ...emptyReviewLedger(anchor), version: evidence.length, evidence };
+}
+
+async function validateLedger(
+  text: string,
+  prepared: PreparedBundle,
+  hashPort: ReviewHashPort,
+): Promise<ReviewLedger> {
+  const { context, view } = prepared;
+  const row = parseLedgerEnvelope(text, view.anchor);
+  sourceAssert(row.version === context.ledger_version, "REVIEW_LEDGER_ANCHOR_MISMATCH");
+  const providedDigest = await hashReview(hashPort, REVIEW_DOMAINS.ledger, text);
+  sourceAssert(providedDigest === context.ledger_digest, "REVIEW_LEDGER_ANCHOR_MISMATCH");
+  const evidence: ReviewEvidence[] = [];
+  const requests = new Set<string>();
+  const rows = new Set<number>();
+  const responses = new Set<string>();
+
+  for (const raw of sourceArray(row.evidence)) {
+    boundedControl(raw, REVIEW_LIMITS.control_bytes);
+    const item = sourceObject(raw);
+    exactSourceKeys(item, ["sequence", "anchor", "actor_id", "reviewed_at", "command", "command_digest",
+      "prior_ledger_digest", "form_locator", "sheet_locator", "mapping_status"]);
+    sourceAssert(sourceInteger(item.sequence, 1, REVIEW_LIMITS.evidence) === evidence.length + 1,
+      "REVIEW_LEDGER_SEQUENCE_INVALID");
+    sourceAssert(reviewJson(item.anchor) === reviewJson(view.anchor) && item.mapping_status === "HUMAN_ATTESTED",
+      "REVIEW_LEDGER_OWNERSHIP_CHANGED");
+    const actor = sourceText(item.actor_id, 1, 512);
+    const reviewedAt = sourceText(item.reviewed_at, 1, 128);
+    // A replay may retain its first request time while later evidence already exists.
+    // The authority-pinned ledger/chain fixes old times; this request's clock is not their upper bound.
+    sourceInstant(reviewedAt);
+    const command = parseMappingCommand(reviewJson(item.command));
+    const key = reviewJson([actor, command.request_id]);
+    sourceAssert(!requests.has(key) && !rows.has(command.row_index) && !responses.has(command.response_id),
+      "REVIEW_DUPLICATE_DECISION");
+    requests.add(key);
+    rows.add(command.row_index);
+    responses.add(command.response_id);
+    const selected = selectedRecords(view, command);
+    const formLocator = parseLocator(item.form_locator, "FORM_RESPONSE");
+    const sheetLocator = parseLocator(item.sheet_locator, "SHEET_ROW");
+    sourceAssert(reviewJson(formLocator) === reviewJson(selected.form.locator) &&
+      reviewJson(sheetLocator) === reviewJson(selected.sheet.locator), "REVIEW_LOCATOR_INVALID");
+    const priorDigest = await ledgerDigest(ledgerWith(view.anchor, evidence), hashPort);
+    sourceAssert(reviewDigest(item.prior_ledger_digest) === priorDigest, "REVIEW_LEDGER_CHAIN_INVALID");
+    const digest = await hashReview(hashPort, REVIEW_DOMAINS.command, commandText(view.anchor, actor, command));
+    sourceAssert(reviewDigest(item.command_digest) === digest, "REVIEW_COMMAND_CHANGED");
+    evidence.push({
+      sequence: evidence.length + 1,
+      anchor: view.anchor,
+      actor_id: actor,
+      reviewed_at: reviewedAt,
+      command,
+      command_digest: digest,
+      prior_ledger_digest: priorDigest,
+      form_locator: formLocator,
+      sheet_locator: sheetLocator,
+      mapping_status: "HUMAN_ATTESTED",
+    });
+  }
+  const ledger = ledgerWith(view.anchor, evidence);
+  sourceAssert(reviewJson(ledger) === text, "REVIEW_LEDGER_CHANGED");
+  return ledger;
+}
+
+async function derivedQualification(prepared: PreparedBundle, ledger: ReviewLedger, hashPort: ReviewHashPort) {
+  const reviews = ledger.evidence.map(evidence => {
+    const { form, sheet } = selectedRecords(prepared.view, evidence.command);
+    const instant = sourceInstant(sourceText(form.raw.createTime, 1, 128));
+    const cutoff = sourceInstant(prepared.view.anchor.source.season_ends_at);
+    return {
+      sequence: evidence.sequence,
+      row_index: evidence.command.row_index,
+      response_id: evidence.command.response_id,
+      form_locator: evidence.form_locator,
+      sheet_locator: evidence.sheet_locator,
+      form_content_digest: evidence.command.expected_form_digest,
+      sheet_content_digest: evidence.command.expected_sheet_digest,
+      mapping_status: "HUMAN_ATTESTED",
+      submission_scope: instant < cutoff ? "BEFORE_CUTOFF" : "AT_OR_AFTER_CUTOFF",
+      content_status: form.unsupported || sheet.unsupported ? "UNSUPPORTED_CONTENT_REMAINS" : "OTHER_EVIDENCE_REQUIRED",
+    };
+  });
+  const derived = {
+    format: DERIVED_FORMAT,
+    state: "LOCAL_REVIEW_PLAN_ONLY",
+    source_status: "SOURCE_NOT_VERIFIED",
+    annual_export_authorized: false,
+    anchor: ledger.anchor,
+    ledger_version: ledger.version,
+    ledger_digest: await ledgerDigest(ledger, hashPort),
+    source_evidence_condition_digest: prepared.gap_digest,
+    source_evidence_condition_count: prepared.gap_count,
+    unreviewed_sheet_rows: prepared.view.sheet_records.length - reviews.length,
+    reviews,
+  };
+  return boundedControl(derived, REVIEW_LIMITS.derived_bytes);
+}
+
+export async function planPreparedMappingReview(
+  prepared: PreparedBundle,
+  priorText: string,
+  command: MappingCommand,
+  contextPort: ReviewContextPort,
+  hashPort: ReviewHashPort,
+) {
+  const ledger = await validateLedger(priorText, prepared, hashPort);
+  const { context, view } = prepared;
+  selectedRecords(view, command);
+  const digest = await hashReview(hashPort, REVIEW_DOMAINS.command, commandText(view.anchor, context.actor_id, command));
+  const existing = ledger.evidence.find(item => item.actor_id === context.actor_id && item.command.request_id === command.request_id);
+  let selectedEvidence: ReviewEvidence;
+  let nextLedger: ReviewLedger;
+  let prefix: ReviewLedger;
+  if (existing) {
+    sourceAssert(existing.command_digest === digest && reviewJson(existing.command) === reviewJson(command), "REVIEW_IDEMPOTENCY_CONFLICT");
+    selectedEvidence = existing;
+    nextLedger = ledger;
+    prefix = ledgerWith(view.anchor, ledger.evidence.slice(0, existing.sequence));
+  } else {
+    sourceAssert(ledger.evidence.length < REVIEW_LIMITS.evidence, "REVIEW_EVIDENCE_LIMIT");
+    sourceAssert(!ledger.evidence.some(item => item.command.row_index === command.row_index ||
+      item.command.response_id === command.response_id), "REVIEW_DUPLICATE_DECISION");
+    const selected = selectedRecords(view, command);
+    selectedEvidence = {
+      sequence: ledger.version + 1,
+      anchor: view.anchor,
+      actor_id: context.actor_id,
+      reviewed_at: context.reviewed_at,
+      command,
+      command_digest: digest,
+      prior_ledger_digest: context.ledger_digest,
+      form_locator: selected.form.locator,
+      sheet_locator: selected.sheet.locator,
+      mapping_status: "HUMAN_ATTESTED",
+    };
+    boundedControl(selectedEvidence, REVIEW_LIMITS.control_bytes);
+    nextLedger = ledgerWith(view.anchor, [...ledger.evidence, selectedEvidence]);
+    prefix = nextLedger;
+  }
+  const nextText = boundedControl(nextLedger, REVIEW_LIMITS.ledger_bytes);
+  const derivedText = await derivedQualification(prepared, prefix, hashPort);
+  const nextDigest = await ledgerDigest(nextLedger, hashPort);
+  assertFreshContext(contextPort, context);
+  return {
+    format: REVIEW_FORMAT,
+    state: "LOCAL_REVIEW_PLAN_ONLY" as const,
+    source_status: "SOURCE_NOT_VERIFIED" as const,
+    append_required: !existing,
+    expected_ledger_version: context.ledger_version,
+    expected_ledger_digest: context.ledger_digest,
+    ledger_text: nextText,
+    ledger_digest: nextDigest,
+    evidence_text: reviewJson(selectedEvidence),
+    derived_text: derivedText,
+  };
+}

@@ -111,4 +111,4 @@ SOURCE_CAPTURE_FIXED只证明原内容与operation已固定；SOURCE_NOT_VERIFIE
 
 审核证据只追加。任何派生资格文件都须独立版本化并引用原固定内容hash，不修改旧raw manifest／chunks或追加新发现及迟到回答。重试仍恢复原manifest／chunks／source operation，不重新获取当前源替换原内容。完整来源读取、固定capture、权限、摘要回读、审核幂等和派生文件协议仍须实施与验收，人工确认本身不自动使整体source verified。
 
-此信任政策不再是待用户选择项。下一步先设计最小本地审核模型；认证、版本、防重、资源与后续接线由团队按既定工程门槛处理。本文仅记录已接受的政策，不实现审核、来源读取或存储，也不授权缩减既定完整来源范围。
+此信任政策不再是待用户选择项。最小本地审核模型、无需原input的完整plan验证及RETAINED_PLAN_ONLY私有人审纯入口现已完成本地实施和双审，最新完整Node357项通过，见[私有人审adapter验收](C2-SOURCE-PLAN-REVIEW-ADAPTER-LOCAL-ACCEPTANCE.md)。它们只处理本地声明，不构成已认证Coach、真实固定capture、持久审核或source verified；原范围与缺口不变。下一步关闭私有staging原payload可靠保存、完整读取与固定capture、权限／ACL及原operation未知回复恢复门槛，再接真实审核；认证、版本、防重、资源与后续接线由团队按既定工程门槛处理。本文保留技术协议与已接受政策，不授权缩减既定完整来源范围。
