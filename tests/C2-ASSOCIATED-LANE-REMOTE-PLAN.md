@@ -1,10 +1,10 @@
 # C2 独立训练通道真实 Google 验收计划
 
-> 2026-09-30。执行前计划，尚未运行。仅供专用 `c2test`；不能据此宣布 C2.5 完成或启用生产同步。runner 已实现，本地检查与独立审核是执行命令前的门槛。
+> 2026-09-30制定的执行前规则，2026-10-01对应隔离验收已完成；实际结果见[独立训练真实验收报告](C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)。本文保留执行门槛与恢复规则，不是实际报告，也不构成重复创建业务数据的授权；不能据此宣布C2.5完成或启用生产同步。
 
 ## 1. 执行边界与入口门槛
 
-目标候选为 Worker `0.17.0-c2-associated-lanes`、schema14；实际部署须由 supervisor 另行完成并记录。保持 `C2_EXPORT_POLL_ENABLED=false`、`crons=[]`。仅调用显式、逐事件 exporter；不运行 poll endpoint。生产、原 staging、原训练记录及原表单来源均不在验收范围。
+本计划执行时的目标为 Worker `0.17.0-c2-associated-lanes`、schema14；supervisor已完成专用c2test部署及本轮验收。以下仍保留当时执行前门槛。保持 `C2_EXPORT_POLL_ENABLED=false`、`crons=[]`。仅调用显式、逐事件 exporter；不运行 poll endpoint。生产、原 staging、原训练记录及原表单来源均不在验收范围。
 
 在任何业务写入前，必须证明：
 
