@@ -76,6 +76,8 @@ Sheet原行号只作为这次观测的物理坐标，不成为永久response ID�
 
 已有私有Spreadsheet内的候选技术是预先保存sheetId与operation identity，再把建Tab、identity marker与控制ledger放同一次[Sheets batchUpdate](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate)；API声明请求更新一起原子应用，且[AddSheetRequest](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/request#AddSheetRequest)允许指定尚未存在的sheetId。但这只是候选：必须独测ID碰撞、并发、未知响应、marker被编辑及完整块发布。该能力不提供读前值CAS，不能单凭atomic batchUpdate实现全协议，也不解决新年度Spreadsheet创建的未知窗口。
 
+另一私有staging候选是普通非Workspace的JSON／binary文件：[Drive创建文件说明](https://developers.google.com/workspace/drive/api/guides/create-file)允许先用generateIds取得固定ID，再以该ID创建普通文件，并明确成功后同ID重试返回409且不会创建重复文件；此能力不适用于原生Spreadsheet，也不替代年度Spreadsheet自动创建需求。候选协议须在create前可靠持久保存原payload与operation／attempt／namespace／目标ID关联，使用无转换的明确MIME；成功、未知回复或409后，按原ID用[files.get](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/get)核身份／元信息、alt=media原bytes与摘要，并核私有ACL。409不代表内容正确；[404可能表示不存在或无读取权限](https://developers.google.com/workspace/drive/api/guides/handle-errors)，404及搜索空均不构成可换ID或重新读取活来源的依据。原payload未可靠保存且原文件读不到时必须停止，不能假称一次create已解决cold restart的原内容恢复。固定ID／appProperties不强制文件不可变，也不提供多文件原子固定；原payload持久保存、完整权限与继承ACL、[OAuth scopes](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)、真实丢回复／并发／重启故障恢复均尚未闭环或实测。该候选只来自本轮只读官方研究，没有新增Drive接线、授权或远端写入。
+
 ## 7. source verified与验收门槛
 
 SOURCE_CAPTURE_FIXED只证明原内容与operation已固定；SOURCE_NOT_VERIFIED／SOURCE_SCOPE_UNPROVEN／SOURCE_GAP保留原因。升级source verified至少要求完整当前可访问Form／Sheet证据、固定cutoff资格与可信映射覆盖、known-ID census无未解释缺口、原manifest/chunk全摘要与数量回读、原operation的不可变receipt及私有权限核验。业务Google verified不能替代source verified；有pending原行或known missing ID不能按“best effort”公开整季。
