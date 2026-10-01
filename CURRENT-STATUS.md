@@ -111,7 +111,7 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 
 ## 未完成范围与下一步
 
-1. **C2.6 来源技术前置门槛**：业务持久捕获schema15／backup50表与完整来源纯模型已本地实现并双审，尚未部署。下一步先审可靠Sheet身份与首次提交证据、API能力／权限、分页／range及观测一致性、私有不可变目标与原operation未知回复恢复；纯模型不代替这些技术协议，DECLARED mapping仍不能升级Sheet年度范围。有缺口则保持pending／未verified，后续来源读取、存储、文件创建及接线须独立授权。当前remote保持0.17／schema14／47表。见[source技术设计](tests/C2-ANNUAL-SOURCE-CAPTURE-DESIGN.md)及[纯模型验收](tests/C2-SOURCE-CAPTURE-PURE-LOCAL-ACCEPTANCE.md)。
+1. **C2.6 来源审核与技术前置门槛**：业务持久捕获schema15／backup50表与完整来源纯模型已本地实现并双审，尚未部署。用户已接受已认证Coach在同一次固定完整capture上人工确认作为映射可信依据，政策已定、审核协议尚未实现；下一步设计最小本地审核模型，绑定generation／epoch、双方完整hash和actor审计，以只追加证据及独立派生版本保存责任声明。当前模型仍为DECLARED_ONLY，所有Sheet行仍PRIVATE_PENDING，结果恒SOURCE_NOT_VERIFIED；人工确认不保证客观正确、不恢复历史、不消其他gap，也不自动使来源verified。固定提交cutoff仍依Form createTime，不追加新发现或迟到回答。完整读取／固定capture、首次时间证据、API能力／权限、观测一致性、私有不可变目标与原operation未知回复恢复仍需独立评审，后续来源读取、存储、文件创建及接线须独立授权。当前remote保持0.17／schema14／47表。见[source技术设计](tests/C2-ANNUAL-SOURCE-CAPTURE-DESIGN.md)及[纯模型验收](tests/C2-SOURCE-CAPTURE-PURE-LOCAL-ACCEPTANCE.md)。
 2. **继续 C2.5 剩余运维验收**：独立训练真实Googlefinal已完成；真实配额／随机断网、并发SENT远端窗口、自动cron、备份restore及更广独立实体仍需各自证据，不人为耗尽Google配额。自动导出保持关闭，不连接生产Pages／Google，不改变Apps Script写入归属。见[最新实际验收](tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)及[Cloudflare迁移计划](cloudflare-migration-plan.md#c2-可执行工作清单)。
 3. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
 4. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。

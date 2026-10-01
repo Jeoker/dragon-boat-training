@@ -225,6 +225,8 @@ P1 排期管理使用 `P1M:` 请求范围及 `P1_MANAGEMENT` 确定计划。默�
 
 原始来源采用已批准的“归档时完整源快照”语义：首次成功固定的不可变 source capture 保存当时完整的绑定 Form 回答与 response Sheet 状态，按事先固定的提交 cutoff 选择回答范围。提交 cutoff 与实际捕获／观测时间不同，`captured_at`／`observed_at` 记录实际时间，不声称保存了首次提交值或某个历史截止瞬间的完整值。已知回答已删除或无法稳定对应时保留明确缺口／待核查状态，不静默省略或标为来源已完整核验；未保存的过去完整答案不能由当前值或 DO 精简字段补回。固定后重试恢复原 manifest、chunks 和 source operation，不重新读取当前来源替换原内容；之后新发现的回答或迟到回答不追加旧档。此来源协议由 C2.6 后续独立实现、核验，不表示现行 `ArchiveActions` 已具备这些保证。
 
+2026-10-01，用户接受已认证 Coach 对同一次固定 capture 内双方完整内容逐条人工确认，作为 Sheet 行与 Form 回答映射的可信依据（`HUMAN_ATTESTED`）。确认须绑定原 source operation／snapshot、binding／generation／epoch、双方稳定定位与完整内容 hash，并保留审核者、理由及时间的审计证据。它是责任人的关联声明，不保证关联客观无误，也不恢复历史缺口；重复、歧义、known missing 和其他未解释缺口不能因填入一个回答 ID 自动消除。提交资格仍严格依据对应 Form 的 `createTime` 与固定 cutoff，不能改用 Sheet 当前 Timestamp。审核证据只追加，派生资格文件独立版本化并引用原固定 hash，不修改旧 raw manifest／chunks，不追加新发现或迟到回答。政策已定，确认协议尚未实现；人工确认不自动使整体来源 verified，当前纯模型仍将所有 Sheet 行保留为 `PRIVATE_PENDING`，结果恒为 `SOURCE_NOT_VERIFIED`。
+
 Tab 可命名为 `2026-Q3 2026-08-22 1000 p_ab12`，身份仍以完整赛季和训练 ID 为准。年度文件可命名为 `Dragon Boat Training Archive 2026`；名称只供人识别，读取必须使用 `AnnualArchiveFiles` 中已校验的文件 ID。创建结果未知时重放原创建请求并恢复映射，不能按名称另建文件。取消训练不创建任何归档 Tab。
 
 赛季已归档且私有快照校验完成后，才向 `PublicHistoryIndex` 批量发布白名单快照，并同步更新 `PublicHistorySeasons`。只取未取消训练的最终正式版本，不以草稿填补；没有正式版本时按项目说明显示未发布，取消训练不写入目录。目录按赛季和训练 ID 去重，内部定位不发给浏览器。发布失败保留任务重试，不影响原归档和新季。
