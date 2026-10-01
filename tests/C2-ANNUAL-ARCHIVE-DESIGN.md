@@ -93,7 +93,7 @@
 - 签名 envelope、binding、writer epoch、原 operation 和 digest 复用 [bridge.ts](../cloudflare/src/bridge.ts)、[BridgeSecurity.gs](../backend/src/BridgeSecurity.gs)。年度命令必须在实际 `Code.gs` registry 和 action allowlist 注册，限定私有目标、正确年度和固定 snapshot；不能复用运行表 CAS 来悄悄创建文件。
 - 旧 `ensureAnnualArchiveFile_` 在 `SpreadsheetApp.create` 与保存映射之间可能中断；当前源码没有证明该窗口能找到原创建结果。不得猜测 Drive 创建 API 支持幂等或按文件名称找到唯一结果。必须单独查官方能力、选择可证明的持久身份协议并故障测试，再实现。不能通过每次另建文件规避未知结果，也不能把用户手动建文件当作自动创建需求已完成。
 - 旧 `writeAndVerifyArchiveTab_` 可以借鉴文本格式、manifest 和回读，但已有同名 Tab不证明身份正确；旧函数会覆盖内容，不能直接充当不可变归档写协议。分块重试必须保留原目标、验证已有内容、拒绝第三种内容，不能擦掉人工变化。
-- 原始来源目前涉及完整绑定 response Sheet 与 Form 稳定回答 ID。源 manifest 必须明确完整 schema、header、原始值／类型规范、截止时间、删除或修改响应的处理和 source count；稳定 ID无法对应的记录不能按名字猜配。截止范围在第一次计划固定，迟到回答不追加旧档案。第一切片只表达必需 source evidence，不选择未经审查的 Google 分页／冻结协议。
+- 原始来源已批准采用“归档时完整源快照”：首次成功固定的不可变 source capture 保存当时完整的绑定 Form 回答和 response Sheet 状态，按事先固定的提交 cutoff 选择回答范围。源 manifest 必须明确完整 schema、header、原始值／类型规范、稳定回答身份、source count 和实际 `captured_at`／`observed_at`；提交 cutoff 与观测时间不同，不声称首次提交值或历史截止瞬间的完整值。已知删除或无法稳定对应的回答保留明确缺口／待核查，不按名字猜配、不静默省略或标为来源完整核验；当前源值和 DO 精简字段不能补回未保存的过去完整答案。固定后重试恢复原 manifest、chunks 和 source operation，不重新读取来源替换原内容，之后新发现的回答和迟到回答不追加旧档。第一切片只表达必需 source evidence，完整捕获的一致性、Google 分页及不可变存储协议仍需后续独立审阅、实现和验收。
 - 私有权限必须验证，不能以“创建默认应私有”替代证据；独立测试年度文件与生产年映射隔离，未经授权不改生产 Apps Script。
 - `HISTORY_CHANGED` 当前由 [c2-export-lanes.ts](../cloudflare/src/c2-export-lanes.ts)归为全季 BARRIER，而现有 [c2-export-poller.ts](../cloudflare/src/c2-export-poller.ts)无年度 handler。后续接合需明确处理该屏障、已发送原批 drain／暂停和年度任务关系；不得跳过未知事件或让年度任务确认 unrelated outbox。
 
