@@ -1,6 +1,6 @@
 # C2.6 Coach 人工来源映射审核 - 最小本地模型设计
 
-日期：2026-10-01。用户已明确接受“Coach 人工确认，记录确认依据和审计，再完成其他来源核验”的信任政策。本文件仅设计，实施待 supervisor 审定；没有新用户决策、代码、schema、HTTP、权限接线或远端操作。
+日期：2026-10-01。用户已明确接受“Coach 人工确认，记录确认依据和审计，再完成其他来源核验”的信任政策。本文原设计经两人审核后，supervisor已授权仅本地共享纯审核模型／Node测试；没有schema、HTTP、实际权限接线、持久存储或远端操作。本地实现与独审事实见[验收记录](C2-SOURCE-MAPPING-REVIEW-LOCAL-ACCEPTANCE.md)，后续真实来源协议仍待独立授权。
 
 ## 1. 已接受的政策与实现边界
 
@@ -71,6 +71,7 @@ DO未来只可保存有界的身份、hash、reason code、actor、时间、版�
 |---|---|
 | 原source input和原plan core | 各≤2,000,000 UTF8 bytes；各自解析前检查byte／depth／decoded duplicate key，再完整复构exactplan。不宣称两者合计仅2MB |
 | 原source完整records／cells | 沿现SOURCE_LIMITS：输入／输出各≤5000records、cells≤50,000、单record／chunk≤64,000 bytes、每chunk≤100records；没有只读选中块而省略其他chunks的捷径 |
+| private review view | 每个schema仅top-level保存一次，候选引用schema digest；完整view实际canonical UTF8≤2,000,000 bytes，单候选包装≤64,000 bytes，超额不返回部分view；输入／plan预算不替代view输出核验 |
 | command／server context | 每份≤8,000 bytes，固定字段／有限enum、ID≤512 UTF8 bytes，摘要规范化base64url长度43；context对象若使用getter则先复制有限字段为canonical值，拒accessor／extra数据体 |
 | prior review ledger | ≤512,000 UTF8 bytes、≤1000 evidence；解析前byte／depth／decoded duplicate key，之后全量scope／chain／唯一性验证，不分页漏过去的决定 |
 | 新evidence／derived | 单条≤8,000 bytes；新ledger和derived control各≤512,000 bytes、derived references≤5000；raw不复制进这些control对象。预算不足整个操作失败，不截断reason／旧ledger或悄悄漏row |
