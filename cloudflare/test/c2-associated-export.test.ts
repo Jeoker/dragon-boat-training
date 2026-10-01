@@ -7,7 +7,7 @@ import { SHEET_SCOPES, type SheetScope } from "../src/c2-sheet-bridge";
 import { SYNC_FIELD_DEFINITIONS, normalizeSyncValue } from "../../shared/c2-sync-rules";
 import worker from "../src/index";
 import { exportClassificationAnchor, indexExportEvent, selectExportLane } from "../src/c2-export-lanes";
-import { applySchema } from "../src/schema";
+import { applySchema, APPLICATION_SCHEMA_VERSION } from "../src/schema";
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 const seasonId = "season_associated_export_001";
@@ -822,7 +822,7 @@ it("exposes paginated local blocks and includes all four durable lane tables in 
   mirror.loseFirstReply = true;
   expect(await next(testEnv, "backup_partial_B_001")).toMatchObject({ error: { code: "BRIDGE_UNAVAILABLE" } });
   const backup = await (await call(testEnv, "/internal/c1/create-backup-snapshot", { request_id: "lane_backup_001", session_token: token }, true)).json() as any;
-  expect(backup.data.result.manifest.schema_version).toBe(14);
+  expect(backup.data.result.manifest.schema_version).toBe(APPLICATION_SCHEMA_VERSION);
   const tables = backup.data.result.manifest.tables as Array<{ name: string; row_count: number; chunk_indices: number[] }>;
   for (const table of ["sync_export_event_index", "sync_export_event_blocks", "sync_export_request_selections", "sync_export_poll_plans"]) {
     const entry = tables.find((row) => row.name === table)!;

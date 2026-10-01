@@ -1,6 +1,6 @@
 import { indexExportEvent } from "./c2-export-lanes";
 
-export const APPLICATION_SCHEMA_VERSION = 14;
+export const APPLICATION_SCHEMA_VERSION = 15;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -615,6 +615,46 @@ function applyC2ExportLaneSchema(sql: SqlStorage): void {
   }
 }
 
+function applyC2AnnualArchiveSchema(sql: SqlStorage): void {
+  const definitions=`
+    CREATE TABLE IF NOT EXISTS annual_archive_plans (
+      snapshot_id TEXT PRIMARY KEY, logical_scope TEXT NOT NULL UNIQUE,
+      first_request_key TEXT NOT NULL, first_request_id TEXT NOT NULL, actor_scope TEXT NOT NULL,
+      command_text TEXT NOT NULL, command_digest TEXT NOT NULL,
+      team_id TEXT NOT NULL, season_id TEXT NOT NULL, practice_id TEXT,
+      kind TEXT NOT NULL CHECK(kind IN ('PRACTICE','SEASON')), format TEXT NOT NULL,
+      binding_version INTEGER NOT NULL, backend_generation TEXT NOT NULL, writer_epoch INTEGER NOT NULL,
+      captured_at TEXT NOT NULL, cutoff_at TEXT NOT NULL, archive_year INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('CAPTURED','LOCAL_DIGEST_READY')),
+      metadata_text TEXT NOT NULL, canonical_plan_text TEXT NOT NULL, capture_proof_text TEXT NOT NULL,
+      record_count INTEGER NOT NULL, chunk_count INTEGER NOT NULL, input_bytes INTEGER NOT NULL,
+      manifest_text TEXT, content_digest TEXT, completed_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS annual_archive_chunks (
+      snapshot_id TEXT NOT NULL REFERENCES annual_archive_plans(snapshot_id),
+      chunk_index INTEGER NOT NULL, row_offset INTEGER NOT NULL, row_count INTEGER NOT NULL,
+      payload_text TEXT NOT NULL, utf8_bytes INTEGER NOT NULL, payload_digest TEXT,
+      PRIMARY KEY(snapshot_id,chunk_index)
+    );
+    CREATE TABLE IF NOT EXISTS annual_archive_requests (
+      request_key TEXT PRIMARY KEY, actor_scope TEXT NOT NULL, request_id TEXT NOT NULL,
+      command_text TEXT NOT NULL, command_digest TEXT NOT NULL,
+      snapshot_id TEXT NOT NULL REFERENCES annual_archive_plans(snapshot_id),
+      saved_result_text TEXT, created_at TEXT NOT NULL,
+      UNIQUE(actor_scope,request_id)
+    );
+    CREATE INDEX IF NOT EXISTS annual_archive_request_snapshot ON annual_archive_requests(snapshot_id);
+  `;
+  sql.exec(definitions).toArray();
+  // Existing additive objects may be reused only with the exact reviewed structure, never rebuilt or repaired.
+  const normalize=(text:string)=>text.replace(/\s+/gu," ").trim().replace(/ IF NOT EXISTS/gu,"");
+  for(const statement of definitions.split(";").filter(text=>text.trim())){
+    const match=/^CREATE (TABLE|INDEX) IF NOT EXISTS ([a-z_]+)/u.exec(statement.trim())!;
+    const stored=sql.exec<{sql:string}>("SELECT sql FROM sqlite_master WHERE type=? AND name=?",match[1].toLowerCase(),match[2]).toArray()[0];
+    if(!stored||normalize(stored.sql)!==normalize(statement))throw new Error("Unsupported annual archive storage schema.");
+  }
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -639,6 +679,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 12) applyC2ExportActionRequiredSchema(sql);
     if (currentVersion < 13) applyC2AssociatedExportSchema(sql);
     if (currentVersion < 14) applyC2ExportLaneSchema(sql);
+    if (currentVersion < 15) applyC2AnnualArchiveSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

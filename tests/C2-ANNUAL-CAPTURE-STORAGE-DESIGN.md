@@ -1,14 +1,14 @@
 # C2.6 一致捕获与持久计划设计
 
-状态：2026-09-30，待 supervisor 审阅的下一本地切片设计。已提交的纯模型是 `dcc13df`；本文不修改 runtime、schema、manifest、部署配置或远端数据，不预分配部署版本。正在执行的 v14 训练通道验收与本文独立。
+状态：2026-10-01。纯模型 `dcc13df`、delivery 1 只读 adapter／proof `2e2fc80` 已提交。supervisor 已明确授权本文 stage 2 的本地三表、持久 service／CAS／backup及测试；本地源为 application schema15／50张备份表。远端 c2test 训练通道的实际证据仍为 schema14／47张表，本文不改变其报告，不修改 manifest／服务版本，不部署或远端写入。
 
 ## 1. 权威范围与最小交付
 
 沿用 [年度设计](C2-ANNUAL-ARCHIVE-DESIGN.md) 及 [第一切片验收](C2-ANNUAL-ARCHIVE-LOCAL-ACCEPTANCE.md)。[迁移计划](../cloudflare-migration-plan.md)第 44、186、237 行分别要求独立于 Google 的冻结、可从 DO 快照复算的年度业务文件、完整来源另行核验；数据库 backup 不代替年度档案。
 
-当前拟议第一实施阶段仅真实 SQL row adapter、资源／范围 proof helpers 及 Node／Workers 测试，不增加 schema 或 runtime 入口，不接 C1 生命周期。后续待独立授权阶段才实现没有公开路由的 DO capture／storage service、additive 本地 SQL 迁移及备份测试；测试入口直接调用 service，绝不接 public HTTP、alarm、cron、桥接或 `HISTORY_CHANGED` 消费。后续内部阶段为 `CAPTURED` → `LOCAL_DIGEST_READY`；后者仅表示固定本地内容及摘要已完成，不表示 Google／source verified、ARCHIVED 或 public eligible。
+第一实施阶段仅真实 SQL row adapter、资源／范围 proof helpers 及 Node／Workers 测试，已完成且没有增加 schema 或 runtime 入口。经后续独立授权的 stage 2 实现没有公开路由的 DO capture／storage service、additive 本地 SQL 迁移及备份测试；测试入口直接调用 service，绝不接 public HTTP、alarm、cron、桥接或 `HISTORY_CHANGED` 消费。内部阶段为 `CAPTURED` → `LOCAL_DIGEST_READY`；后者仅表示固定本地内容及摘要已完成，不表示 Google／source verified、ARCHIVED 或 public eligible。
 
-本轮先审设计，随后须明确授权才能新增源码或 SQL。真实文件创建、原始回答抓取、receipt、权限及旧 C1 public 兼容仍按前设计独立处理。
+本文门槛先经双审再获上述本地授权。真实文件创建、原始回答抓取、receipt、权限及旧 C1 public 兼容仍按前设计独立处理。
 
 ## 2. 可复用处及不能直接照搬的部分
 
@@ -65,15 +65,15 @@ audit 的业务 action 采用已提交纯模型的有限 C1 + Form 清单。运�
 
 SQL COUNT／长度聚合及所有权 proof 仍随目标数据量和原文本大小增长；2MB限制是 JS 物化范围证明，不是总 SQL CPU／读取量常数保证。Workers 实际 transaction latency、rowsRead/rowsWritten 与内存须本地测量，有限样本不能证明平台所有资源限制。过大季的有界 SQL 捕获副本／分段协议另做切片；本轮明确失败，不扩大到自动分页调度器。
 
-## 6. 最小持久模型（拟议三张 additive 表）
+## 6. 最小持久模型（三张 additive 表）
 
-表名是提案，不是已经新增 schema。没有复制 source raw answers 或年度 receipt 表。
+stage 2 本地 schema15实现下列三表；没有复制 source raw answers 或年度 receipt 表。历史版本清单位于 canonical plan 的完整 history／correction records，plans创建时间即captured_at，完成时间另存completed_at。
 
 | 表 | 必要字段／约束 |
 |---|---|
-| annual_archive_plans | snapshot_id PK；logical_scope UNIQUE（team/kind/season/practice，practice缺省用明确sentinel）；first_request_key／request_id／command_digest／actor；team、binding、generation、epoch；captured_at、cutoff_at、archive_year、history版本清单；format；CAPTURED/LOCAL_DIGEST_READY；metadata_text、canonical_plan_text（纯模型 exacttext锚）；capture_proof_text；record/chunk/inputbyte counts；manifest_text／digest nullable；created/completed_at |
+| annual_archive_plans | snapshot_id PK；logical_scope UNIQUE（team/kind/season/practice，SEASON的practice_id明确null）；first_request_key／first_request_id／command_text／command_digest／actor_scope；team_id、binding_version、backend_generation、writer_epoch；captured_at、cutoff_at、archive_year，history版本位于canonical records；format；CAPTURED/LOCAL_DIGEST_READY；metadata_text、canonical_plan_text（纯模型exacttext锚）、capture_proof_text；record_count／chunk_count／input_bytes；manifest_text／content_digest nullable；完成时间completed_at，创建时点即captured_at |
 | annual_archive_chunks | (snapshot_id,chunk_index) PK+FK；row_offset/count、payload_text、utf8_bytes；payload_digest nullable；全部 exact text不可更新，仅 digest从null到确认值；完整序号和offset校验 |
-| annual_archive_requests | request_key PK+actor/action/request_id UNIQUE；command_digest／command_text、snapshot_id FK；saved_result_text nullable；创建时间；原请求在 CAPTURED 就绑定，不等completed才能锁事件 |
+| annual_archive_requests | request_key PK+(actor_scope,request_id) UNIQUE；command_digest／command_text、snapshot_id FK；saved_result_text nullable；created_at；专用年度表不另设action列，原请求在CAPTURED就绑定，不等completed才能锁事件 |
 
 `canonical_plan_text` 与 chunks 会重复存文本，目的为已有纯模型exact返回和分块存取各保留完整锚；不冒称总storage仅2MB。实现须记录实际写入文本 bytes并在测试证明按有限plan产生的有限写入；若改为不重复存而可靠复构exacttext，须单独证明与firstslice canonical逐字相同。capture_proof只存数量、选择边界、固定格式和检查结果，不复制 raw credentials／全system_requests。
 
@@ -81,9 +81,9 @@ logical_scope 防止两个不同请求在可变成员／新更正之后重新捕
 
 ## 7. digest、CAS、重启与请求恢复
 
-capture方法先计算命令identity（事务外、只命令），验证调用者范围；**在任何live读取前** 查原 request pin／completed result。相同request不同command拒绝，已有CAPTURED直接使用保存内容finalize；已ready返回原saved result。权限/当前归属必须仍有效，但不重新读取members/practices来决定旧请求结果。跨实例或同ID并发在capture事务内再查pin/scope，先存在者获胜，其他复验摘要后复用，不能裸PK异常后重建。
+capture方法先计算命令identity（事务外、只命令），验证调用者范围；**在任何live读取前** 查原 request pin／completed result。相同request不同command拒绝，已有CAPTURED的capture返回固定artifact，不隐式推进；显式resume／finalize只使用保存内容计算摘要；已READY的capture／resume／finalize复算固定内容并exact核manifest／原结果后重放。权限/当前归属必须仍有效，但不重新读取members/practices来决定旧请求结果。跨实例或同ID并发在capture事务内再查pin/scope，先存在者获胜，其他复验摘要后复用，不能裸PK异常后重建。
 
-finalize只读已存plan和完整chunks，不读业务表。resume/replay/finalize加载saved大文本前均先SQL COUNT／UTF8长度聚合，证明metadata／canonical／proof／request savedresult与所有chunk完整集合预算；新增超大chunk、损坏超大plan或异常集合立即停止，不因capture曾bounded就先无界物化。各类text的确定上限、存储重复开销及manifest包装在实现前由同一budget helper列明；实际加载再次核计数／字节。先证明format、snapshot/binding/generation/epoch、canonical_plan与metadata/chunks/count逐字一致，chunk序号覆盖完整、长度预算和offset连续。异步SHA-256使用原payload_text，保存每块描述；manifest包括身份、范围、capture proof摘要、metadata摘要、固定块描述和计数，content_digest覆盖版本化canonical manifest core（不把其自己的digest放入自身）。created/finalized时间不参与业务内容digest的动态重算。
+finalize只读已存plan和完整chunks；每个同步事务另核当前season及可选sync_binding的binding_version标量，不重新读取成员／训练／历史正文。server-owned context可由固定Env对象或同步getter提供；跨await提交重新核当前team／actor／generation／epoch。调用者未来必须在权限验证后供给当前Env权威，不把app_meta.schema_version当writer代次，未接线的内部service本身不实现公开Coach鉴权。resume/replay/finalize加载saved大文本前均先SQL COUNT／UTF8长度聚合，证明metadata／canonical／proof／request savedresult与所有chunk完整集合预算；新增超大chunk、损坏超大plan或异常集合立即停止，不因capture曾bounded就先无界物化。本地实现将plan四份大文本各限2MB及其它字段8KB；全部chunk payload累计2MB、每块64KB、小字段累计按最多5000×256 bytes保守计；本次pin总字段8KB。所有数值列必须在SQL预查证明INTEGER／非负安全整数，避免SQLite affinity下巨量TEXT先物化；实际加载再次核计数／字节。先证明format、snapshot/binding/generation/epoch、canonical_plan与metadata/chunks/count逐字一致，chunk序号覆盖完整、长度预算和offset连续。异步SHA-256使用原payload_text，保存每块描述；manifest包括身份、范围、capture proof摘要、metadata摘要、固定块描述和计数，content_digest覆盖版本化canonical manifest core（不把其自己的digest放入自身）。created/finalized时间不参与业务内容digest的动态重算。
 
 await期间业务可继续发生；提交事务只比较保存的原内容，不要求live行仍相等。CAS必须复验原 plan identity、CAPTURED状态、command text/digest、metadata_text、canonical_plan_text、capture_proof_text以及 **完整chunk集合的index/offset/count/text/bytecount**，而非只status或总hash。任一删除、增加、漂移、版本不支持或归属变化都停止，不落READY／假成功。原文本是不可变事务锚，不自研同步hash。
 
@@ -118,6 +118,6 @@ await期间业务可继续发生；提交事务只比较保存的原内容，不
 
 没有新的用户产品决策：完整私有年度内容、自然冻结、不等待Google、取消过滤、原始来源独立核验及公开verified门槛均已批准。
 
-supervisor需要审定：三表／scope唯一及别request别名语义；5000逻辑输入行的保守capture限额及转义预估方法；历史更正只固定本次范围、后续附录另审；后续内部service测试入口而非公开route。version0虚拟state的sentinel／sourcecreated_at／逐practiceprovenance方案已由supervisor明确，第一阶段仍须实际SQL证据验证；该阶段仅adapter/proof/test，后续schema/service授权须在live v14验收完成后另行决定。若测量证明必须减少档案内容、修改更正权利／已批准公开语义或放弃自动创建，应带具体证据再交用户决定，不能以资源预算静默降级。
+以下是设计阶段的历史审定门槛，现已按本文顶部授权及本地验收关闭：三表／scope唯一及别request别名语义；5000逻辑输入行的保守capture限额及转义预估方法；历史更正只固定本次范围、后续附录另审；后续内部service测试入口而非公开route。version0虚拟state的sentinel／sourcecreated_at／逐practiceprovenance方案已由supervisor明确，第一阶段实际SQL证据已通过并提交；后续schema15／内部service已获单独本地授权，未扩成远端部署或公开协议。若测量证明必须减少档案内容、修改更正权利／已批准公开语义或放弃自动创建，应带具体证据再交用户决定，不能以资源预算静默降级。
 
-本设计尚未授权实施；没有新schema迁移、持久计划证据、年度Google verified或生产切换声明。
+stage 2 已获明确本地授权，实际实现／验证范围见 [持久计划本地验收](C2-ANNUAL-STORAGE-LOCAL-ACCEPTANCE.md)。远端仍为schema14；没有年度Google verified、来源完整验证、HTTP接线或生产切换声明。后续公开／远端协议须另行审定。

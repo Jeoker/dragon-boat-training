@@ -143,7 +143,9 @@ describe("annual capture delivery1 real SQLite read-only adapter",()=>{
       const second=previewArchiveCapture(ctx.storage,f.command,f.identity);
       expect(first.plan.canonical_text).not.toBe(second.plan.canonical_text);
       expect(archiveCanonical(first.input)).not.toBe(archiveCanonical(second.input));
-      expect(ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE name LIKE 'annual_archive_%'").toArray()).toEqual([]);
+      // schema15 adds storage, but this read-only adapter still leaves every durable table empty.
+      for(const table of ["annual_archive_plans","annual_archive_chunks","annual_archive_requests"])
+        expect(ctx.storage.sql.exec<{n:number}>(`SELECT COUNT(*) n FROM ${table}`).one().n).toBe(0);
     });
   });
   it("captures native C1 signup/cancel audit seating, final corrections and subsequent history notes at one local time",async()=>{
