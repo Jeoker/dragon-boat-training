@@ -6,7 +6,8 @@ import test from "node:test";
 import { PHASES, assertPhase, assertEventAnchor, assertLaneProgress, assertOriginalRows, assertGoogleUnchanged,
   journalCall, singleRowCas, reverseCas, assertCasReceipt, expectedGoogleRows, readScopeDefinitions, canonical,
   assertBackupDownload, assertMigrationPreserved, assertBatchReceipt, assertPendingBlock, fixtureTimings,
-  saveKnownExport, pendingExportEvidence, clearExportEvidence, assertUsageRefresh, assertUpgradeReference, assertApiCorrelation
+  saveKnownExport, pendingExportEvidence, clearExportEvidence, assertUsageRefresh, assertUpgradeReference, assertApiCorrelation,
+  privateFailureRecord, assertRestoredDeployment
 } from "./live-c2-associated-lane-acceptance.mjs";
 
 const sha = value => createHash("sha256").update(value).digest("base64url");
@@ -133,12 +134,54 @@ test("old request, revision and logical baseline values are protected while base
 
 test("a mismatched HTTP reply keeps the original request unknown and never persists a known result", async () => {
   const journal = j(), meta = { service_version: "0.17.0-c2-associated-lanes", backend_instance: "dragon-boat-training-c2-test",
-    writer_epoch: 0, backend_generation: "cf-c2-isolated-1", contract_version: "2026-09-19.c0", request_id: "another_request" };
+    writer_epoch: 0, backend_generation: "cf-c2-isolated-1", contract_version: "2026-09-21.c1.5", request_id: "another_request" };
   const run = () => journalCall(journal, "signup-a1", () => ({ payload: { request_id: "original_request", preference: "LEFT" } }), () => {},
-    async saved => { assertApiCorrelation(meta, saved.payload.request_id); return { ok: true }; }, () => {});
+    async saved => { assertApiCorrelation(meta, saved.payload.request_id, "c1"); return { ok: true }; }, () => {});
   await assert.rejects(run()); assert.equal(journal.calls["signup-a1"].payload.request_id, "original_request");
   assert.ok(!Object.hasOwn(journal.calls["signup-a1"], "result")); meta.request_id = "original_request";
   assert.deepEqual(await run(), { ok: true });
+});
+
+test("actual C1 and C2 envelope contracts are distinct and both preserve exact request correlation", () => {
+  const common = { service_version: "0.17.0-c2-associated-lanes", backend_instance: "dragon-boat-training-c2-test", writer_epoch: 0,
+    backend_generation: "cf-c2-isolated-1", request_id: "fixed_request" };
+  for (const [kind, contract] of [["c1", "2026-09-21.c1.5"], ["c2", "2026-09-30.c2.5-associated-export"]]) {
+    const meta = { ...common, contract_version: contract }; assertApiCorrelation(meta, "fixed_request", kind);
+    assert.throws(() => assertApiCorrelation(meta, "fixed_request", kind === "c1" ? "c2" : "c1"));
+    assert.throws(() => assertApiCorrelation({ ...meta, contract_version: "2026-09-19.c0" }, "fixed_request", kind));
+    assert.throws(() => assertApiCorrelation(meta, "other_request", kind));
+  }
+});
+
+test("the configured isolated metadata and authoritative shared contracts match the runner response gate", () => {
+  const vars = JSON.parse(readFileSync(new URL("../cloudflare/wrangler.jsonc", import.meta.url), "utf8")).env.c2test.vars;
+  const meta = { service_version: vars.SERVICE_VERSION, backend_instance: vars.BACKEND_INSTANCE,
+    writer_epoch: Number(vars.WRITER_EPOCH), backend_generation: vars.BACKEND_GENERATION, request_id: "fixed_contract_probe" };
+  for (const kind of ["c1", "c2"]) {
+    const shared = readFileSync(new URL(`../shared/${kind}-actions.ts`, import.meta.url), "utf8");
+    const declared = shared.match(new RegExp(`export const ${kind.toUpperCase()}_CONTRACT_VERSION = "([^"]+)";`)); assert.ok(declared);
+    const contract = JSON.parse(readFileSync(new URL(`../contracts/api-cloudflare-${kind}.json`, import.meta.url), "utf8"));
+    assert.equal(contract.contract_version, declared[1]);
+    assertApiCorrelation({ ...meta, contract_version: declared[1] }, meta.request_id, kind);
+  }
+});
+
+test("the actual restore metadata array permits an unversioned HEAD but requires exactly one original v14 deployment", () => {
+  const identity = { deployment_id: "fixed_isolated_deployment" }, deployments = [{ deploymentId: "unversioned_head" },
+    { deploymentId: identity.deployment_id, versionNumber: 14, description: "Original isolated clean v14" }];
+  assertRestoredDeployment(deployments, identity);
+  for (const invalid of [{ deployments }, [], [{ ...deployments[1], versionNumber: 15 }],
+    [...deployments, { ...deployments[1] }], [...deployments, { deploymentId: identity.deployment_id }]]) {
+    assert.throws(() => assertRestoredDeployment(invalid, identity));
+  }
+});
+
+test("private failure diagnostics retain stack locations without assertion expected/actual or error messages", () => {
+  const secretValue = "private_fixture_sentinel";
+  let error; try { assert.equal(secretValue, "different"); } catch (failure) { error = failure; }
+  const record = privateFailureRecord(error, "preflight"); assert.equal(record.phase, "preflight");
+  assert.ok(record.stack_frames.length > 0); assert.ok(record.stack_frames.every(frame => /^\s+at\s/u.test(frame)));
+  assert.ok(!JSON.stringify(record).includes(secretValue)); assert.ok(!Object.hasOwn(record, "message"));
 });
 
 test("phase ordering stops writes after an interrupted phase and permits only confirmed history", () => {

@@ -60,10 +60,21 @@ export function pendingExportEvidence(journal, phase) {
 export function clearExportEvidence(journal, phase, persist) {
   assert.ok(pendingExportEvidence(journal, phase)); journal.evidence_pending = null; persist(journal);
 }
-export function assertApiCorrelation(meta, requestId) {
+export function assertApiCorrelation(meta, requestId, kind) {
+  assert.ok(kind === "c1" || kind === "c2");
   assert.equal(meta?.service_version, VERSION); assert.equal(meta?.backend_instance, "dragon-boat-training-c2-test");
   assert.equal(meta?.writer_epoch, 0); assert.equal(meta?.request_id, requestId);
-  assert.equal(meta?.backend_generation, "cf-c2-isolated-1"); assert.equal(meta?.contract_version, "2026-09-19.c0");
+  assert.equal(meta?.backend_generation, "cf-c2-isolated-1");
+  assert.equal(meta?.contract_version, kind === "c1" ? "2026-09-21.c1.5" : "2026-09-30.c2.5-associated-export");
+}
+export function assertRestoredDeployment(deployments, identity) {
+  assert.ok(Array.isArray(deployments));
+  assert.equal(deployments.filter(item => item.deploymentId === identity.deployment_id && item.versionNumber === 14).length, 1);
+  assert.equal(deployments.filter(item => item.deploymentId === identity.deployment_id).length, 1);
+}
+export function privateFailureRecord(error, phase) {
+  return { format: 1, phase, recorded_at: new Date().toISOString(), error_name: error.name,
+    condition: error.condition ?? null, stack_frames: String(error.stack ?? "").split("\n").filter(line => /^\s+at\s/u.test(line)) };
 }
 export function singleRowCas(page, scope, id, field, value, operationId) {
   assert.ok(["PRACTICE", "MEMBER"].includes(scope)); assert.equal(page.entity_type, scope);
@@ -391,7 +402,7 @@ async function main() {
     equal(files.map(({ name, hash }) => ({ name, hash })), expected.map(({ name, hash }) => ({ name, hash })));
   }
   const deployments = load(new URL("associated-fault-overlay/deployments-restored.json", root));
-  assert.equal(deployments.filter(item => item.deploymentId === identity.deployment_id && item.versionNumber === 14).length, 1);
+  assertRestoredDeployment(deployments, identity);
   assert.equal(faultPlan.script_id, identity.script_id); assert.equal(faultPlan.deployment_id, identity.deployment_id);
   const waitlist = load(new URL("c2-waitlist-journal.json", root));
   requireData(Boolean(waitlist.final_backup && waitlist.cancel?.confirmed && waitlist.events?.every(event => event.confirmed)), "WAITLIST_FINAL_NOT_CONFIRMED");
@@ -413,7 +424,7 @@ async function main() {
     const envelope = { request_id: fresh("read"), ...payload, ...(token ? { session_token: token } : {}) };
     const response = await fetch(new URL(path, WORKER), { method: "POST", headers: { authorization: `Bearer ${key(kind)}`,
       "content-type": "application/json" }, body: JSON.stringify(envelope), signal: AbortSignal.timeout(45_000) });
-    const body = await response.json(); assertApiCorrelation(body.meta, envelope.request_id);
+    const body = await response.json(); assertApiCorrelation(body.meta, envelope.request_id, kind);
     return { http: response.status, ok: body.ok, data: body.data, error: body.error?.code ?? null };
   };
   const good = result => { assert.equal(result.http, 200); assert.equal(result.ok, true); return result.data; };
@@ -743,7 +754,13 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().then(result => console.log(JSON.stringify({ ...result, coach_logged_out: true }))).catch(error => { console.error(JSON.stringify({ status: "FAILED_STOP", phase: process.argv.find(arg => arg.startsWith("--phase="))?.slice(8),
+  main().then(result => console.log(JSON.stringify({ ...result, coach_logged_out: true }))).catch(error => {
+    const phase = process.argv.find(arg => arg.startsWith("--phase="))?.slice(8);
+    try {
+      const directory = new URL("../cloudflare/.acceptance-artifacts/", import.meta.url); mkdirSync(fileURLToPath(directory), { recursive: true });
+      writeFileSync(new URL("c2-associated-lane-failure.json", directory), JSON.stringify(privateFailureRecord(error, phase), null, 2) + "\n");
+    } catch { /* Preserve controlled stderr even if private diagnostic storage is unavailable. */ }
+    console.error(JSON.stringify({ status: "FAILED_STOP", phase,
     error_code: error.message === "DATA_PRECONDITION_REQUIRED" ? error.message : "PRECONDITION_OR_EVIDENCE_MISMATCH",
     condition: error.condition ?? null, next_action: "Inspect private evidence; preserve the original request and journal." })); process.exitCode = 1; });
 }

@@ -102,3 +102,5 @@ node --env-file="D:\agents\dev-master\.c2-form-test\acceptance.env" tests/live-c
 ```
 
 export phase 返回 BATCH_PROGRESS 时，下次仍执行同一 phase。不得用循环自动进下一 phase；必须先看受控结果和私有证据。NATURAL_DUE_NOT_REACHED 保留原 due 并自然等待。成功输出在 Coach logout 成功后才发出，带 `coach_logged_out=true`。私有 journal 固定为 `cloudflare/.acceptance-artifacts/c2-associated-lane-journal.json`，不删除/换名来重跑未知请求，不覆盖其它验收 journal。本文没有远端执行结果。
+
+HTTP 回复按实际 API 分类严格匹配合同：C1 为 `2026-09-21.c1.5`，C2 为 `2026-09-30.c2.5-associated-export`；同时核对隔离版本、instance、generation、epoch及实际发送的 request_id。失败仅在 ignored `cloudflare/.acceptance-artifacts/c2-associated-lane-failure.json` 保存 phase、condition、错误类型与调用栈位置；不保存 assert message/expected/actual，不将私有详情打印至终端。
