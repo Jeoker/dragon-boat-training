@@ -1,4 +1,6 @@
-export const APPLICATION_SCHEMA_VERSION = 13;
+import { indexExportEvent } from "./c2-export-lanes";
+
+export const APPLICATION_SCHEMA_VERSION = 14;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -576,6 +578,43 @@ function applyC2AssociatedExportSchema(sql: SqlStorage): void {
   `).toArray();
 }
 
+function applyC2ExportLaneSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS sync_export_event_index (
+      outbox_id TEXT PRIMARY KEY REFERENCES sync_outbox(outbox_id),
+      event_sequence INTEGER NOT NULL UNIQUE CHECK(event_sequence>0),
+      season_id TEXT NOT NULL, payload_anchor TEXT NOT NULL, topic_anchor TEXT NOT NULL,
+      handler_kind TEXT NOT NULL CHECK(handler_kind IN ('ASSOCIATED','BARRIER')),
+      practice_id TEXT, classification_anchor TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS sync_export_event_season_idx ON sync_export_event_index(season_id,event_sequence);
+    CREATE INDEX IF NOT EXISTS sync_export_event_practice_idx ON sync_export_event_index(season_id,practice_id,event_sequence);
+    CREATE TABLE IF NOT EXISTS sync_export_event_blocks (
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL CHECK(binding_version>=1),
+      outbox_id TEXT NOT NULL REFERENCES sync_outbox(outbox_id), practice_id TEXT NOT NULL,
+      payload_anchor TEXT NOT NULL, payload_digest TEXT NOT NULL, error_code TEXT NOT NULL,
+      failure_count INTEGER NOT NULL CHECK(failure_count>=0), next_attempt_at_ms INTEGER NOT NULL CHECK(next_attempt_at_ms>=0),
+      action_required INTEGER NOT NULL CHECK(action_required IN (0,1)),
+      blocked_scope TEXT NOT NULL, blocked_entity_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY(season_id,binding_version,outbox_id)
+    );
+    CREATE INDEX IF NOT EXISTS sync_export_blocks_due_idx ON sync_export_event_blocks(season_id,binding_version,action_required,next_attempt_at_ms);
+    CREATE TABLE IF NOT EXISTS sync_export_request_selections (
+      request_key TEXT PRIMARY KEY, season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      outbox_id TEXT NOT NULL REFERENCES sync_outbox(outbox_id), event_anchor TEXT NOT NULL,
+      event_digest TEXT NOT NULL, request_digest TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sync_export_poll_plans (
+      request_key TEXT PRIMARY KEY, request_digest TEXT NOT NULL,
+      plan_json TEXT NOT NULL CHECK(json_valid(plan_json)), plan_digest TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+  `).toArray();
+  // This is the sole backfill. Runtime selectors never silently repair missing indexes.
+  for (const row of sql.exec<{ outbox_id: string }>("SELECT outbox_id FROM sync_outbox ORDER BY rowid").toArray()) {
+    indexExportEvent(sql, row.outbox_id);
+  }
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -599,6 +638,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 11) applyC2ExportOperationsSchema(sql);
     if (currentVersion < 12) applyC2ExportActionRequiredSchema(sql);
     if (currentVersion < 13) applyC2AssociatedExportSchema(sql);
+    if (currentVersion < 14) applyC2ExportLaneSchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

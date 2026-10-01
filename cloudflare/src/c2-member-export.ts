@@ -1,3 +1,4 @@
+import { selectExportLane, assertSelectedOutbox, persistExportSelection } from "./c2-export-lanes";
 import { canonicalJson } from "../../shared/c1-rules";
 import { SYNC_FIELD_DEFINITIONS, compareSyncGroup, normalizeSyncValue } from "../../shared/c2-sync-rules";
 import { identifier, object, requestId } from "../../shared/c1-contract";
@@ -59,10 +60,10 @@ function eventRosterVersion(sql: SqlStorage, event: ExportEvent, current: number
   // Pre-capture events can only use the live version when no later roster event exists.
   // Otherwise the version at this event cannot be reconstructed without guessing.
   const later = firstRow<SqlRow>(sql,
-    `SELECT outbox_id FROM sync_outbox WHERE rowid>? AND status='PENDING'
-     AND json_extract(payload_json,'$.entity.season_id')=? AND
+    `SELECT o.outbox_id FROM sync_outbox o JOIN sync_export_event_index i ON i.outbox_id=o.outbox_id WHERE i.event_sequence>? AND status='PENDING'
+     AND i.season_id=? AND
        (topic='MEMBERS_IMPORTED' OR (topic='CORE_CHANGED' AND
-        json_extract(payload_json,'$.action')='updateMember')) LIMIT 1`,
+        CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.action') END='updateMember')) LIMIT 1`,
     event.sequence, (payload.entity as { season_id?: string } | undefined)?.season_id ?? "");
   if (later) throw new ApiError("SYNC_ROSTER_VERSION_UNCAPTURED",
     "An older member event has no captured roster version and newer member events exist.", 409);
@@ -184,8 +185,14 @@ export class C2MemberExportService {
       throw new ApiError("MEMBER_EXPORT_DISABLED", "The isolated member export is disabled.", 409);
     }
     const core = new C1Service(this.ctx, this.env);
-    const identity = await core.createRequestIdentity("C2:EXPORT", "exportNextMember",
+    let identity = await core.createRequestIdentity("C2:EXPORT", "exportNextMember",
       input.request_id, { season_id: input.season_id });
+    const pin = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM sync_export_request_selections WHERE request_key=?", identity.requestKey);
+    if (pin) {
+      if (pin.season_id !== input.season_id) throw new ApiError("IDEMPOTENCY_CONFLICT", "The original request belongs to another season.", 409);
+      identity = await core.createRequestIdentity("C2:EXPORT", "exportNextMember", input.request_id, { season_id: input.season_id, outbox_id: pin.outbox_id });
+      if (pin.request_digest !== identity.payloadDigest) throw new ApiError("IDEMPOTENCY_CONFLICT", "The original request digest changed.", 409);
+    }
     const replay = core.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
     const requestBatchId = `batch_${identity.requestKey.slice(7)}`;
@@ -196,7 +203,8 @@ export class C2MemberExportService {
       if (String(ownBatch.season_id) !== input.season_id) {
         throw new ApiError("IDEMPOTENCY_CONFLICT", "The request identifier belongs to another season.", 409);
       }
-      return this.send(ownBatch, input.request_id, identity);
+      if (ownBatch.status === "CONFIRMED") return this.send(ownBatch, input.request_id, identity);
+      if (!["PREPARED", "SENT", "PARTIAL", "FAILED"].includes(ownBatch.status)) throw new ApiError("SYNC_BATCH_INVALID", "The original batch is not eligible for sending.", 409);
     }
     const season = firstRow<SqlRow>(sql, "SELECT binding_version,roster_version FROM seasons WHERE season_id=?", input.season_id);
     const binding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", input.season_id);
@@ -204,26 +212,45 @@ export class C2MemberExportService {
         Number(binding.export_paused) !== 0) {
       throw new ApiError("SYNC_EXPORT_PAUSED", "A current, unpaused season binding is required.", 409);
     }
-    const batch = firstRow<StoredBatch>(sql,
-      `SELECT * FROM sync_batches WHERE season_id=? AND direction='CLOUDFLARE_TO_GOOGLE'
-       AND status IN ('PREPARED','SENT','PARTIAL','FAILED') ORDER BY created_at,batch_id LIMIT 1`, input.season_id);
-    if (batch) return this.send(batch, input.request_id, identity);
+    const selection = selectExportLane(sql, input.season_id);
+    if (pin && Number(pin.binding_version) !== Number(binding.binding_version)) throw new ApiError("IDEMPOTENCY_CONFLICT", "The original request binding changed.", 409);
+    if (pin) {
+      const original = firstRow<SqlRow>(sql, "SELECT i.*,o.payload_json,o.topic FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=?", String(pin.outbox_id));
+      if (!original || original.season_id !== input.season_id || original.payload_anchor !== pin.event_anchor || original.payload_json !== pin.event_anchor || original.topic_anchor !== original.topic ||
+          `sha256_v1:${await sha256Base64Url(String(original.payload_json))}` !== pin.event_digest)
+        throw new ApiError("SYNC_EVENT_INDEX_INVALID", "The original event changed.", 409);
+      if (selection.event?.outbox_id !== pin.outbox_id) throw new ApiError("SYNC_OUTBOX_BLOCKED", "The original event is unavailable; this request cannot select another event.", 409);
+    }
+    if (selection.coverage !== "complete") throw new ApiError("SYNC_EVENT_INDEX_INCOMPLETE", "The event dependency scan is incomplete.", 409);
+    if (selection.batch_id) {
+      const batch = firstRow<StoredBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", selection.batch_id)!;
+      const topic = selection.event!.topic;
+      const action = (JSON.parse(selection.event!.payload_json) as { action?: string }).action;
+      if (!(topic === "MEMBERS_IMPORTED" || topic === "CORE_CHANGED" && action === "updateMember"))
+        throw new ApiError("SYNC_OUTBOX_BLOCKED", "Another handler owns the unfinished batch.", 409);
+
+      if (!pin && !ownBatch) {
+        identity = await core.createRequestIdentity("C2:EXPORT", "exportNextMember", input.request_id, { season_id: input.season_id, outbox_id: selection.event!.outbox_id });
+        persistExportSelection(this.ctx, identity.requestKey, identity.payloadDigest, selection.event!, Number(binding.binding_version),
+          `sha256_v1:${await sha256Base64Url(selection.event!.payload_json)}`, selection.batch_id);
+      }
+      return this.send(batch, input.request_id, identity);
+    }
     assertExportMayPrepare(sql, input.season_id);
-    const event = firstRow<ExportEvent>(sql,
-      `SELECT rowid AS sequence,outbox_id,payload_json FROM sync_outbox
-       WHERE status='PENDING' AND due_at_ms<=? AND
-         json_extract(payload_json,'$.entity.season_id')=? AND
-         ((topic='MEMBERS_IMPORTED' AND json_extract(payload_json,'$.action') IN
-           ('pullFormResponses','resolveFormSource')) OR
-          (topic='CORE_CHANGED' AND json_extract(payload_json,'$.action')='updateMember'))
-       ORDER BY rowid LIMIT 1`, Date.now(), input.season_id);
-    if (!event) return this.remember(identity, input.request_id,
-      { season_id: input.season_id, status: "IDLE" });
-    const earlier = firstRow<SqlRow>(sql,
-      `SELECT outbox_id FROM sync_outbox WHERE status='PENDING' AND rowid<?
-       AND json_extract(payload_json,'$.entity.season_id')=? LIMIT 1`, event.sequence, input.season_id);
-    if (earlier) throw new ApiError("SYNC_OUTBOX_BLOCKED",
-      "An earlier season event needs its own export handler first.", 409);
+    if (!selection.event) {
+      if (!["IDLE", "WAITING_OR_BLOCKED"].includes(selection.reason)) throw new ApiError("SYNC_OUTBOX_BLOCKED", "The season is halted.", 409);
+      return this.remember(identity, input.request_id, { season_id: input.season_id, status: "IDLE" });
+    }
+    const selected = selection.event;
+    const action = (JSON.parse(selected.payload_json) as { action?: string }).action;
+    if (!(selected.topic === "MEMBERS_IMPORTED" && ["pullFormResponses", "resolveFormSource"].includes(action ?? "") ||
+          selected.topic === "CORE_CHANGED" && action === "updateMember")) throw new ApiError("SYNC_OUTBOX_BLOCKED", "An earlier event needs its own handler.", 409);
+    const event: ExportEvent = { ...selected, sequence: selected.event_sequence };
+    // Before the first Google read, persist the original event even if no batch is created.
+    if (!pin) {
+      identity = await core.createRequestIdentity("C2:EXPORT", "exportNextMember", input.request_id, { season_id: input.season_id, outbox_id: event.outbox_id });
+      persistExportSelection(this.ctx, identity.requestKey, identity.payloadDigest, selected, Number(binding.binding_version), `sha256_v1:${await sha256Base64Url(event.payload_json)}`);
+    }
     const capturedRosterVersion = eventRosterVersion(sql, event, Number(season.roster_version));
     const seasonBaselines = sql.exec<SqlRow>(
       `SELECT dependency_group,baseline_json FROM sync_baselines
@@ -285,6 +312,7 @@ export class C2MemberExportService {
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
       assertExportMayPrepare(sql, input.season_id);
+      assertSelectedOutbox(sql, input.season_id, event.outbox_id, event.payload_json, version);
       const current = firstRow<SqlRow>(sql, "SELECT binding_version,export_paused,runtime_spreadsheet_id FROM sync_bindings WHERE season_id=?",
         input.season_id);
       const currentMember = firstRow<SqlRow>(sql, "SELECT member_version FROM members WHERE season_id=? AND member_id=?",
@@ -299,7 +327,7 @@ export class C2MemberExportService {
       if (!current || Number(current.binding_version) !== version || Number(current.export_paused) !== 0 ||
           current.runtime_spreadsheet_id !== page.spreadsheet_id ||
           Number(currentMember?.member_version) !== target.cloud_version ||
-          currentEvent?.status !== "PENDING" || alreadyVerified || competing || alreadyPrepared) {
+          currentEvent?.status !== "PENDING" || !firstRow(sql, "SELECT 1 AS valid FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=? AND i.season_id=? AND i.payload_anchor=o.payload_json AND i.topic_anchor=o.topic", event.outbox_id, String(binding.season_id)) || alreadyVerified || competing || alreadyPrepared) {
         throw new ApiError("SYNC_EXPORT_STALE", "The member export changed during inspection.", 409, true);
       }
       sql.exec(
@@ -380,6 +408,7 @@ export class C2MemberExportService {
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
       assertExportMayPrepare(sql, String(season.season_id));
+      assertSelectedOutbox(sql, String(season.season_id), event.outbox_id, event.payload_json, Number(binding.binding_version));
       const current = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", season.season_id);
       const currentSeason = firstRow<SqlRow>(sql, "SELECT binding_version,roster_version FROM seasons WHERE season_id=?", season.season_id);
       const competing = firstRow<SqlRow>(sql,
@@ -391,7 +420,7 @@ export class C2MemberExportService {
           Number(current.export_paused) !== 0 ||
           current.runtime_spreadsheet_id !== binding.runtime_spreadsheet_id ||
           Number(currentSeason.roster_version) < rosterVersion ||
-          currentEvent?.status !== "PENDING" || competing ||
+          currentEvent?.status !== "PENDING" || !firstRow(sql, "SELECT 1 AS valid FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=? AND i.season_id=? AND i.payload_anchor=o.payload_json AND i.topic_anchor=o.topic", event.outbox_id, String(binding.season_id)) || competing ||
           firstRow<SqlRow>(sql, "SELECT batch_id FROM sync_batches WHERE batch_id=?", batchId)) {
         throw new ApiError("SYNC_EXPORT_STALE", "The season export changed during inspection.", 409, true);
       }
@@ -484,7 +513,7 @@ export class C2MemberExportService {
           Number(currentSeason.binding_version) !== Number(batch.binding_version) ||
           String(binding.runtime_spreadsheet_id) !== target.spreadsheet_id ||
           String(currentBatch.payload_digest) !== receipt.payload_digest ||
-          currentEvent?.status !== "PENDING") {
+          currentEvent?.status !== "PENDING" || !firstRow(sql, "SELECT 1 AS valid FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=? AND i.season_id=? AND i.payload_anchor=o.payload_json AND i.topic_anchor=o.topic", batch.first_outbox_id, batch.season_id)) {
         exportStateChanged = true;
         recordExportPartial(sql, batch.batch_id,
           "Google verified the batch, but its binding or event changed; review before confirming.");
@@ -576,7 +605,7 @@ export class C2MemberExportService {
             target.expected[seasonHeaders.indexOf("runtime_spreadsheet_id")] ||
           String(currentBatch.payload_digest) !== receipt.payload_digest ||
           String(currentBatch.first_outbox_id) !== String(batch.first_outbox_id) ||
-          currentEvent?.status !== "PENDING" ||
+          currentEvent?.status !== "PENDING" || !firstRow(sql, "SELECT 1 AS valid FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=? AND i.season_id=? AND i.payload_anchor=o.payload_json AND i.topic_anchor=o.topic", batch.first_outbox_id, batch.season_id) ||
           !memberTargetsVerified(sql, String(batch.first_outbox_id), Number(batch.binding_version))) {
         exportStateChanged = true;
         recordExportPartial(sql, batch.batch_id,

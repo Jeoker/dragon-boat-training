@@ -1,3 +1,5 @@
+import { C1Service } from "./c1-service";
+import { selectExportLane, LocalExportConflict, type IndexedEvent } from "./c2-export-lanes";
 import { sha256Base64Url } from "./crypto";
 import { ApiError, requireRequestId } from "./http";
 import { firstRow, type SqlRow } from "./c1-support";
@@ -6,46 +8,108 @@ import { C2MemberExportService } from "./c2-member-export";
 import { C2ScheduleExportService } from "./c2-schedule-export";
 import { C2AssociatedExportService } from "./c2-associated-export";
 
+interface PollTarget {
+  season_id: string; binding_version: number; outbox_id: string | null;
+  topic: string | null; event_anchor: string | null; event_digest: string | null;
+  coverage: "complete" | "incomplete";
+}
+
 export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
   const requestId = requireRequestId(raw);
   if (env.ENVIRONMENT === "production" || env.C2_EXPORT_POLL_ENABLED !== "true") {
     throw new ApiError("EXPORT_POLL_DISABLED", "Automatic Google export is disabled.", 409);
   }
+  const core = new C1Service(ctx, env);
+  const identity = await core.createRequestIdentity("C2:EXPORT", "pollDueExports", requestId, {});
+  const replay = core.replayRequest(identity.requestKey, identity.payloadDigest);
+  if (replay) return replay;
+  const remember = (result: Record<string, unknown>) => ctx.storage.transactionSync(() => {
+    const prior = core.replayRequest(identity.requestKey, identity.payloadDigest);
+    if (prior) return prior;
+    core.recordRequest(identity, "C2:EXPORT", "pollDueExports", requestId, result,
+      { polled: result.polled }, new Date().toISOString());
+    return result;
+  });
   const sql = ctx.storage.sql;
   const now = Date.now();
-  const seasons = sql.exec<{ season_id: string; binding_version: number }>(
-    `SELECT b.season_id,b.binding_version FROM sync_bindings b
-     JOIN seasons s ON s.season_id=b.season_id AND s.binding_version=b.binding_version
-     LEFT JOIN sync_export_controls c ON c.season_id=b.season_id
-     LEFT JOIN sync_export_retries r ON r.season_id=b.season_id
-       AND r.binding_version=b.binding_version
-     WHERE b.export_paused=0 AND COALESCE(r.action_required,0)=0
-       AND COALESCE(r.next_attempt_at_ms,0)<=?
-       AND (COALESCE(c.pause_requested,0)=0 OR EXISTS (
-         SELECT 1 FROM sync_batches x WHERE x.season_id=b.season_id
-         AND x.direction='CLOUDFLARE_TO_GOOGLE'
-         AND x.status IN ('PREPARED','SENT','PARTIAL','FAILED')))
-       AND (EXISTS (SELECT 1 FROM sync_batches x WHERE x.season_id=b.season_id
-         AND x.direction='CLOUDFLARE_TO_GOOGLE'
-         AND x.status IN ('PREPARED','SENT','PARTIAL','FAILED'))
-         OR (SELECT o.due_at_ms FROM sync_outbox o WHERE o.status='PENDING'
-           AND json_extract(o.payload_json,'$.entity.season_id')=b.season_id
-           ORDER BY o.rowid LIMIT 1)<=?)
-     ORDER BY COALESCE(r.next_attempt_at_ms,0), b.season_id LIMIT 4`, now, now).toArray();
+  let plan = firstRow<SqlRow>(sql, "SELECT * FROM sync_export_poll_plans WHERE request_key=?", identity.requestKey);
+  if (!plan) {
+    const candidates = sql.exec<{ season_id: string; binding_version: number }>(
+      `SELECT b.season_id,b.binding_version FROM sync_bindings b JOIN seasons s
+       ON s.season_id=b.season_id AND s.binding_version=b.binding_version ORDER BY b.season_id LIMIT 101`).toArray();
+    if (candidates.length > 100) return remember({ polled: 0, results: [], coverage: "incomplete", reason: "SEASON_SCAN_LIMIT" });
+    const choices = candidates.map(season => ({ season, selection: selectExportLane(sql, season.season_id, now) }))
+      .filter(choice => choice.selection.event !== null || choice.selection.coverage === "incomplete").slice(0, 4);
+    const targets: PollTarget[] = await Promise.all(choices.map(async ({ season, selection }) => ({
+      ...season, outbox_id: selection.event?.outbox_id ?? null, topic: selection.event?.topic ?? null,
+      event_anchor: selection.event?.payload_anchor ?? null, coverage: selection.coverage,
+      event_digest: selection.event ? `sha256_v1:${await sha256Base64Url(selection.event.payload_anchor)}` : null
+    })));
+    const text = JSON.stringify(targets);
+    const digest = `sha256_v1:${await sha256Base64Url(text)}`;
+    plan = ctx.storage.transactionSync(() => {
+      const existing = firstRow<SqlRow>(sql, "SELECT * FROM sync_export_poll_plans WHERE request_key=?", identity.requestKey);
+      if (existing) return existing;
+      for (const target of targets) {
+        const current = selectExportLane(sql, target.season_id, now);
+        if (current.coverage !== target.coverage || (current.event?.outbox_id ?? null) !== target.outbox_id ||
+            (current.event?.payload_anchor ?? null) !== target.event_anchor ||
+            target.coverage === "complete" && Number(current.binding_version) !== target.binding_version)
+          throw new ApiError("SYNC_EXPORT_STALE", "The poll plan changed before it was persisted.", 409, true);
+      }
+      sql.exec("INSERT INTO sync_export_poll_plans(request_key,request_digest,plan_json,plan_digest,created_at) VALUES (?,?,?,?,?)",
+        identity.requestKey, identity.payloadDigest, text, digest, new Date().toISOString()).toArray();
+      return firstRow<SqlRow>(sql, "SELECT * FROM sync_export_poll_plans WHERE request_key=?", identity.requestKey)!;
+    });
+  }
+  if (plan.request_digest !== identity.payloadDigest || `sha256_v1:${await sha256Base64Url(String(plan.plan_json))}` !== plan.plan_digest)
+    throw new ApiError("SYNC_EVENT_INDEX_INVALID", "The original poll plan changed.", 409);
+  let seasons: PollTarget[];
+  try {
+    const parsed: unknown = JSON.parse(String(plan.plan_json));
+    if (!Array.isArray(parsed) || parsed.length > 4 || !parsed.every(target => target && typeof target === "object" &&
+        typeof target.season_id === "string" && Number.isSafeInteger(target.binding_version) && target.binding_version >= 1 &&
+        ["complete", "incomplete"].includes(target.coverage) && (target.outbox_id === null || typeof target.outbox_id === "string"))) throw new Error("shape");
+    seasons = parsed as PollTarget[];
+  } catch { throw new ApiError("SYNC_EVENT_INDEX_INVALID", "The original poll plan is invalid.", 409); }
   const results: Array<{ season_id: string; status: string; error_code?: string }> = [];
   for (const season of seasons) {
     const seasonId = season.season_id;
+    const observedRetry = JSON.stringify(firstRow<SqlRow>(sql,
+      "SELECT * FROM sync_export_retries WHERE season_id=? AND binding_version=?", seasonId, season.binding_version));
     try {
-      const batch = unfinishedExport(sql, seasonId);
-      const event = batch ? firstRow<SqlRow>(sql,
-        `SELECT topic,payload_json FROM sync_outbox WHERE outbox_id=(
-           SELECT first_outbox_id FROM sync_batches WHERE batch_id=?)`, batch.batch_id) :
-        firstRow<SqlRow>(sql,
-          `SELECT topic,payload_json FROM sync_outbox WHERE outbox_id=(
-             SELECT outbox_id FROM sync_outbox WHERE status='PENDING'
-             AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1)
-           AND due_at_ms<=?`, seasonId, now);
-      if (!event) throw new ApiError("SYNC_OUTBOX_INVALID", "An export batch lost its source event.", 409);
+      const selected = selectExportLane(sql, seasonId, now);
+      if (selected.coverage !== "complete") throw new ApiError("SYNC_EVENT_INDEX_INCOMPLETE", "The dependency scan is incomplete.", 409);
+      if (season.coverage !== "complete") throw new ApiError("SYNC_EVENT_INDEX_INCOMPLETE", "The original poll dependency scan was incomplete.", 409);
+      if (Number(selected.binding_version) !== season.binding_version) {
+        results.push({ season_id: seasonId, status: "ORIGINAL_EVENT_UNAVAILABLE" });
+        continue;
+      }
+      let event = firstRow<IndexedEvent>(sql, `SELECT i.*,o.topic,o.payload_json,o.due_at_ms FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=?`, season.outbox_id!);
+      if (!event || event.payload_json !== season.event_anchor || event.payload_anchor !== season.event_anchor ||
+          event.topic !== season.topic || event.topic_anchor !== season.topic || event.season_id !== seasonId ||
+          `sha256_v1:${await sha256Base64Url(event.payload_json)}` !== season.event_digest) throw new ApiError("SYNC_EVENT_INDEX_INVALID", "The poll's original event changed.", 409);
+      // Resume an interrupted poll's original associated lane even after local block
+      // permits another practice to become today's candidate.
+      const firstInnerId = `c2_${await sha256Base64Url(`${requestId}\n${seasonId}\n0`)}`;
+      const originalAction = ["SIGNUPS_CHANGED", "SEATING_CHANGED"].includes(season.topic ?? "") ? "exportNextAssociated" : season.topic === "SCHEDULE_CHANGED" ? "exportNextSchedule" : "exportNextMember";
+      const innerIdentity = await core.createRequestIdentity("C2:EXPORT", originalAction, firstInnerId, { season_id: seasonId });
+      const original = firstRow<SqlRow>(sql, "SELECT * FROM sync_export_request_selections WHERE request_key=?", innerIdentity.requestKey);
+      if (original) {
+        const block = firstRow<SqlRow>(sql, "SELECT * FROM sync_export_event_blocks WHERE season_id=? AND binding_version=? AND outbox_id=? AND action_required=1", seasonId, original.binding_version, original.outbox_id);
+        if (block) {
+          results.push({ season_id: seasonId, status: "LOCAL_ACTION_REQUIRED", error_code: String(block.error_code) });
+          continue;
+        }
+        event = firstRow(sql, `SELECT i.*,o.topic,o.payload_json,o.due_at_ms FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=?`, String(original.outbox_id));
+      }
+      const innerCompleted = firstRow<SqlRow>(sql, "SELECT * FROM system_requests WHERE request_key=?", innerIdentity.requestKey);
+      const innerBatch = firstRow<SqlRow>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", `batch_${innerIdentity.requestKey.slice(7)}`);
+      if (selected.event?.outbox_id !== season.outbox_id && !innerCompleted && !innerBatch) {
+        results.push({ season_id: seasonId, status: "ORIGINAL_EVENT_UNAVAILABLE" });
+        continue;
+      }
+      if (!event) { results.push({ season_id: seasonId, status: "ORIGINAL_EVENT_UNAVAILABLE" }); continue; }
       const topic = String(event.topic);
       let action: unknown;
       try { action = (JSON.parse(String(event.payload_json)) as { action?: unknown }).action; }
@@ -64,17 +128,40 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
       // four-row batches in one poll; every call needs its own idempotency key.
       // Stop at the event boundary so a subsequent event gets a fresh preflight.
       let result: Record<string, unknown> = { status: "IDLE" };
+      let attemptedWork = false;
       const callLimit = associated ? 8 : 1;
       for (let index = 0; index < callLimit; index += 1) {
+        if (firstRow<{ status: string }>(sql, "SELECT status FROM sync_outbox WHERE outbox_id=?", event.outbox_id)?.status === "CONFIRMED") {
+          result = { season_id: seasonId, status: "EVENT_CONFIRMED", outbox_id: event.outbox_id };
+          break;
+        }
         const exportRequestId = `c2_${await sha256Base64Url(`${requestId}\n${seasonId}\n${index}`)}`;
+        const stepIdentity = await core.createRequestIdentity("C2:EXPORT", originalAction, exportRequestId, { season_id: seasonId });
+        const stepCompleted = firstRow(sql, "SELECT 1 AS present FROM system_requests WHERE request_key=?", stepIdentity.requestKey);
+        const stepConfirmed = firstRow(sql, "SELECT 1 AS present FROM sync_batches WHERE batch_id=? AND status='CONFIRMED'", `batch_${stepIdentity.requestKey.slice(7)}`);
+        const currentLane = selectExportLane(sql, seasonId);
+        if (!stepCompleted && !stepConfirmed && (currentLane.coverage !== "complete" || currentLane.event?.outbox_id !== event.outbox_id ||
+            Number(currentLane.binding_version) !== season.binding_version)) {
+          result = { season_id: seasonId, status: "ORIGINAL_EVENT_UNAVAILABLE", outbox_id: event.outbox_id };
+          break;
+        }
+        if (!stepCompleted && !stepConfirmed) attemptedWork = true;
         result = member
           ? await new C2MemberExportService(ctx, env).process({ request_id: exportRequestId,
             season_id: seasonId })
           : schedule ? await new C2ScheduleExportService(ctx, env).process({ request_id: exportRequestId,
             season_id: seasonId })
           : await new C2AssociatedExportService(ctx, env).process({ request_id: exportRequestId,
-            season_id: seasonId });
+            season_id: seasonId, outbox_id: event.outbox_id });
         if (!associated || result.status !== "BATCH_CONFIRMED") break;
+      }
+      if (result.status === "ORIGINAL_EVENT_UNAVAILABLE") {
+        results.push({ season_id: seasonId, status: "ORIGINAL_EVENT_UNAVAILABLE" });
+        continue;
+      }
+      if (!attemptedWork) {
+        results.push({ season_id: seasonId, status: String(result.status ?? "COMMITTED") });
+        continue;
       }
       const current = firstRow<{ binding_version: number }>(sql,
         `SELECT b.binding_version FROM sync_bindings b JOIN seasons s
@@ -87,10 +174,14 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
       ctx.storage.transactionSync(() => {
         const retryAt = Date.now();
         const unfinished = unfinishedExport(sql, seasonId);
-        const oldestOutbox = firstRow<{ due_at_ms: number }>(sql,
-          `SELECT due_at_ms FROM sync_outbox WHERE status='PENDING'
-           AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1`, seasonId);
-        const dueOutbox = oldestOutbox && Number(oldestOutbox.due_at_ms) <= retryAt;
+        const next = selectExportLane(sql, seasonId, retryAt);
+        const dueOutbox = next.event !== null || next.reason === "PAUSED" && Boolean(firstRow(sql,
+          `SELECT 1 AS present FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id
+           WHERE i.season_id=? AND o.status='PENDING' AND o.due_at_ms<=? LIMIT 1`, seasonId, retryAt));
+        const concurrentFailure = firstRow<SqlRow>(sql,
+          "SELECT * FROM sync_export_retries WHERE season_id=? AND binding_version=?", seasonId, season.binding_version);
+        if ((Number(concurrentFailure?.failure_count ?? 0) > 0 || Number(concurrentFailure?.action_required ?? 0)) &&
+            JSON.stringify(concurrentFailure) !== observedRetry) return;
         if (unfinished || dueOutbox) {
           sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
             VALUES (?,?,0,?,'',?,0) ON CONFLICT(season_id) DO UPDATE SET
@@ -111,6 +202,10 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
          WHERE b.season_id=?`, seasonId);
       if (Number(current?.binding_version) !== Number(season.binding_version)) {
         results.push({ season_id: seasonId, status: "STALE_BINDING" });
+        continue;
+      }
+      if (error instanceof LocalExportConflict && error.localBlockSaved) {
+        results.push({ season_id: seasonId, status: "LOCAL_ACTION_REQUIRED", error_code: error.code });
         continue;
       }
       if (error instanceof ApiError && error.code === "SYNC_EXPORT_PAUSED") {
@@ -136,5 +231,5 @@ export async function pollDueExports(ctx: DurableObjectState, env: Env, raw: Rec
         status: actionRequired ? "ACTION_REQUIRED" : "RETRY_REQUIRED", error_code: errorCode });
     }
   }
-  return { polled: results.length, results };
+  return remember({ polled: results.length, results });
 }

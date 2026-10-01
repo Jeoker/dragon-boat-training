@@ -1,3 +1,4 @@
+import { indexExportEvent } from "../src/c2-export-lanes";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, expect, it, vi } from "vitest";
@@ -104,6 +105,7 @@ async function seed(environment: Env): Promise<ReturnType<typeof environment.TEA
       requestKey, JSON.stringify({ action: "prepareTrainingWeek", entity: {
         season_id: seasonId, snapshot_schema: 1, season_version: 2,
         templates: [template], week, practices: [practice, secondPractice] } }), Date.now() - 1000, at).toArray();
+    indexExportEvent(sql, 'out_schedule_test_001');
     for (const group of new Set(SYNC_FIELD_DEFINITIONS.SEASON.map((field) => field.dependency_group))) {
       const baseline = Object.fromEntries(SYNC_FIELD_DEFINITIONS.SEASON
         .filter((field) => field.dependency_group === group)
@@ -206,13 +208,14 @@ it("halts a Google reference conflict until a Coach re-arms the corrected season
   expect((await poll("schedule_conflict_poll_006")).data.results[0].status).toBe("BATCH_CONFIRMED");
 });
 
-function mockSheetBridge(firstPatchFault: "LOST_REPLY" | "SERVICE_BUSY" | null) {
+function mockSheetBridge(firstPatchFault: "LOST_REPLY" | "SERVICE_BUSY" | null, firstReadFault = false) {
   const receipts = new Map<string, Record<string, unknown>>();
   let injectFault = true;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
     const envelope = JSON.parse(String(init?.body));
     const payload = JSON.parse(envelope.payload_json);
     if (envelope.action === "cloudflareReadSheetRecords") {
+      if (firstReadFault) { firstReadFault = false; throw new Error("Unknown initial Google read result"); }
       const scope = payload.entity_type as keyof typeof rows;
       return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: {
         protocol_version: envelope.protocol_version, team_id: envelope.team_id,
@@ -262,6 +265,26 @@ function mockSheetBridge(firstPatchFault: "LOST_REPLY" | "SERVICE_BUSY" | null) 
   });
 }
 
+it("pins an unknown initial direct schedule read before any batch and never switches to the later event", async () => {
+  const environment = testEnv("direct-read-pin");
+  const stub = await seed(environment);
+  mockSheetBridge(null, true);
+  const next = async (id: string, season = seasonId) => (await call(environment, "/internal/c2/export-next-schedule", { request_id: id, season_id: season })).json() as Promise<any>;
+  expect(await next("direct_schedule_unknown_001")).toMatchObject({ error: { code: "BRIDGE_UNAVAILABLE" } });
+  for (let index = 0; index < 4; index++) expect(await next(`direct_schedule_other_${index}`)).toMatchObject({ data: { status: "BATCH_CONFIRMED" } });
+  expect(await next("direct_schedule_other_final")).toMatchObject({ data: { status: "EVENT_CONFIRMED" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec("INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at) SELECT 'out_direct_schedule_later',request_key,topic,payload_json,'PENDING',?,created_at FROM sync_outbox WHERE outbox_id='out_schedule_test_001'", Date.now() - 1000).toArray();
+    indexExportEvent(sql, "out_direct_schedule_later");
+  });
+  const readsAndWrites = vi.mocked(fetch).mock.calls.length;
+  expect(await next("direct_schedule_unknown_001")).toMatchObject({ error: { code: "SYNC_OUTBOX_BLOCKED" } });
+  expect(await next("direct_schedule_unknown_001", "season_changed_pin_001")).toMatchObject({ error: { code: "IDEMPOTENCY_CONFLICT" } });
+  expect(vi.mocked(fetch).mock.calls.length).toBe(readsAndWrites);
+  expect(await next("direct_schedule_new_later_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_direct_schedule_later" } });
+});
+
 it("keeps a short retry between batches, then clears it after the final event", async () => {
   const environment = { ...testEnv("poll-clean-final"), C2_EXPORT_POLL_ENABLED: "true" } as Env;
   const stub = await seed(environment);
@@ -290,6 +313,45 @@ it("keeps a short retry between batches, then clears it after the final event", 
       .toBe("CONFIRMED");
   });
   expect((await poll("schedule_clean_idle")).data.polled).toBe(0);
+  // Model the final SEASON commit succeeding but the outer poll response being lost.
+  // A later MEMBER event must not be selected by the old outer request.
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const outer = sql.exec<{ request_key: string }>("SELECT request_key FROM system_requests WHERE action='pollDueExports' AND request_id='schedule_clean_complete'").one().request_key;
+    sql.exec("DELETE FROM audit_events WHERE request_key=?", outer).toArray();
+    sql.exec("DELETE FROM system_requests WHERE request_key=?", outer).toArray();
+    sql.exec(`INSERT INTO members(season_id,member_id,source_key,source_display_name,display_name_override,status,default_preference,member_version,created_at,updated_at)
+      VALUES (?,'member_after_schedule_001','source_after_schedule_001','New Member','','ACTIVE','LEFT',1,?,?)`, seasonId, at, at).toArray();
+    sql.exec("UPDATE seasons SET roster_version=1 WHERE season_id=?", seasonId).toArray();
+    const key = sql.exec<{ request_key: string }>("SELECT request_key FROM sync_outbox WHERE outbox_id='out_schedule_test_001'").one().request_key;
+    sql.exec("INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at) VALUES ('out_member_after_schedule_001',?,'MEMBERS_IMPORTED',?,'PENDING',?,?)", key,
+      JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId, member_ids: ["member_after_schedule_001"], roster_version: 1 } }), Date.now() - 1000, at).toArray();
+    indexExportEvent(sql, "out_member_after_schedule_001");
+  });
+  const fetchCount = vi.mocked(fetch).mock.calls.length;
+  expect((await poll("schedule_clean_complete")).data.results).toEqual([{ season_id: seasonId, status: "EVENT_CONFIRMED" }]);
+  expect(vi.mocked(fetch).mock.calls.length).toBe(fetchCount);
+  vi.restoreAllMocks();
+  let memberWrites = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const envelope = JSON.parse(String(init?.body));
+    const payload = JSON.parse(envelope.payload_json);
+    const common = { protocol_version: envelope.protocol_version, team_id: envelope.team_id,
+      season_id: seasonId, binding_version: 1, writer_epoch: envelope.writer_epoch,
+      operation_id: envelope.operation_id, payload_digest: envelope.payload_digest,
+      spreadsheet_id: spreadsheetId, tab_id: "104" };
+    if (envelope.action === "cloudflareReadSheetRecords") return Response.json({ ok: true,
+      meta: { request_id: envelope.request_id }, data: { ...common, entity_type: "MEMBER", tab_name: SHEET_SCOPES.MEMBER.tab,
+        headers: [...SHEET_SCOPES.MEMBER.headers], rows: [], secondary: null, read_at_ms: Date.now() } });
+    memberWrites++;
+    return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: { ...common, status: "verified",
+      verified_member_ids: payload.items.map((item: { member_id: string }) => item.member_id), acknowledged_at: new Date().toISOString() } });
+  });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("UPDATE sync_export_retries SET next_attempt_at_ms=0 WHERE season_id=?", seasonId).toArray();
+  });
+  expect((await poll("schedule_new_member_poll_001")).data.results).toEqual([{ season_id: seasonId, status: "BATCH_CONFIRMED" }]);
+  expect(memberWrites).toBe(1);
 });
 
 it.each([
@@ -305,11 +367,13 @@ it.each([
       SELECT ?,request_key,topic,payload_json,'PENDING',?,created_at
       FROM sync_outbox WHERE outbox_id='out_schedule_test_001'`,
     `out_schedule_next_${kind}`, Date.now() + dueOffset).toArray();
+    indexExportEvent(sql, `out_schedule_next_${kind}`);
     if (kind === "future") {
       // A newer event reaching its due time must not bypass the older one.
       sql.exec(`INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
         SELECT 'out_schedule_later_due',request_key,'MEMBERS_IMPORTED',payload_json,'PENDING',?,created_at
         FROM sync_outbox WHERE outbox_id='out_schedule_test_001'`, Date.now() - 1000).toArray();
+    indexExportEvent(sql, "out_schedule_later_due");
     }
   });
   const poll = async (requestId: string) => (await call(environment,
@@ -470,6 +534,8 @@ it("refuses a legacy schedule event without a captured snapshot before contactin
     context.storage.sql.exec(`UPDATE sync_outbox SET payload_json=?
       WHERE outbox_id='out_schedule_test_001'`, JSON.stringify({ action: "prepareTrainingWeek",
       entity: { season_id: seasonId, week_id: week.week_id } })).toArray();
+    context.storage.sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id='out_schedule_test_001'").toArray();
+    indexExportEvent(context.storage.sql, "out_schedule_test_001");
   });
   const fetchSpy = vi.spyOn(globalThis, "fetch");
   const response = await call(environment, "/internal/c2/export-next-schedule",

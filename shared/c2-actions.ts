@@ -5,6 +5,7 @@ export const C2_SYNC_ACTIONS = {
   "/internal/c2/get-sync-overview": { method: "POST", authentication: "session_token", writes: false },
   "/internal/c2/set-export-pause": { method: "POST", authentication: "session_token", writes: true },
   "/internal/c2/retry-export": { method: "POST", authentication: "session_token", writes: true },
+  "/internal/c2/list-export-blocks": { method: "POST", authentication: "session_token", writes: false },
   "/internal/c2/list-sync-conflicts": { method: "POST", authentication: "session_token", writes: false },
   "/internal/c2/get-sync-conflict": { method: "POST", authentication: "session_token", writes: false },
   "/internal/c2/list-form-reviews": { method: "POST", authentication: "session_token", writes: false },

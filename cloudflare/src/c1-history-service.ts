@@ -26,7 +26,8 @@ const BACKUP_TABLES = [
   "usage_snapshots", "sync_bindings", "sync_baselines", "source_imports", "sync_conflicts",
   "sync_batches", "sync_batch_items", "sync_migration_snapshots", "form_import_cursors",
   "form_import_receipts", "form_source_observations", "sync_export_controls",
-  "sync_export_retries", "sync_associated_cursors", "sync_associated_physical_baselines"
+  "sync_export_retries", "sync_associated_cursors", "sync_associated_physical_baselines",
+  "sync_export_event_index", "sync_export_event_blocks", "sync_export_request_selections", "sync_export_poll_plans"
 ] as const;
 
 interface HistoryJobOutcome { reschedule_at_ms?: number; }

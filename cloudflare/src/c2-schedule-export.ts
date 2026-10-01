@@ -1,3 +1,4 @@
+import { selectExportLane, assertSelectedOutbox, persistExportSelection } from "./c2-export-lanes";
 import { canonicalJson } from "../../shared/c1-rules";
 import { identifier, object, requestId } from "../../shared/c1-contract";
 import { SYNC_FIELD_DEFINITIONS, normalizeSyncValue } from "../../shared/c2-sync-rules";
@@ -157,8 +158,14 @@ export class C2ScheduleExportService {
       throw new ApiError("SCHEDULE_EXPORT_DISABLED", "The isolated schedule export is disabled.", 409);
     }
     const core = new C1Service(this.ctx, this.env);
-    const identity = await core.createRequestIdentity("C2:EXPORT", "exportNextSchedule",
+    let identity = await core.createRequestIdentity("C2:EXPORT", "exportNextSchedule",
       input.request_id, { season_id: input.season_id });
+    const pin = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM sync_export_request_selections WHERE request_key=?", identity.requestKey);
+    if (pin) {
+      if (pin.season_id !== input.season_id) throw new ApiError("IDEMPOTENCY_CONFLICT", "The original request belongs to another season.", 409);
+      identity = await core.createRequestIdentity("C2:EXPORT", "exportNextSchedule", input.request_id, { season_id: input.season_id, outbox_id: pin.outbox_id });
+      if (pin.request_digest !== identity.payloadDigest) throw new ApiError("IDEMPOTENCY_CONFLICT", "The original request digest changed.", 409);
+    }
     const replay = core.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
     const batchId = `batch_${identity.requestKey.slice(7)}`;
@@ -167,7 +174,8 @@ export class C2ScheduleExportService {
     if (ownBatch) {
       if (ownBatch.season_id !== input.season_id) throw new ApiError("IDEMPOTENCY_CONFLICT",
         "The request identifier belongs to another season.", 409);
-      return this.send(ownBatch, input.request_id, identity);
+      if (ownBatch.status === "CONFIRMED") return this.send(ownBatch, input.request_id, identity);
+      if (!["PREPARED", "SENT", "PARTIAL", "FAILED"].includes(ownBatch.status)) throw new ApiError("SYNC_BATCH_INVALID", "The original batch is not eligible for sending.", 409);
     }
     const season = firstRow<SqlRow>(sql,
       "SELECT binding_version,season_version FROM seasons WHERE season_id=?", input.season_id);
@@ -176,21 +184,38 @@ export class C2ScheduleExportService {
         Number(binding.export_paused) !== 0) {
       throw new ApiError("SYNC_EXPORT_PAUSED", "A current, unpaused season binding is required.", 409);
     }
-    const unfinished = firstRow<ExportBatch>(sql,
-      `SELECT * FROM sync_batches WHERE season_id=? AND direction='CLOUDFLARE_TO_GOOGLE'
-       AND status IN ('PREPARED','SENT','PARTIAL','FAILED') ORDER BY created_at,batch_id LIMIT 1`,
-      input.season_id);
-    if (unfinished) return this.send(unfinished, input.request_id, identity);
+    const selection = selectExportLane(sql, input.season_id);
+    if (pin && Number(pin.binding_version) !== Number(binding.binding_version)) throw new ApiError("IDEMPOTENCY_CONFLICT", "The original request binding changed.", 409);
+    if (pin) {
+      const original = firstRow<SqlRow>(sql, "SELECT i.*,o.payload_json,o.topic FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=?", String(pin.outbox_id));
+      if (!original || original.season_id !== input.season_id || original.payload_anchor !== pin.event_anchor || original.payload_json !== pin.event_anchor || original.topic_anchor !== original.topic ||
+          `sha256_v1:${await sha256Base64Url(String(original.payload_json))}` !== pin.event_digest)
+        throw new ApiError("SYNC_EVENT_INDEX_INVALID", "The original event changed.", 409);
+      if (selection.event?.outbox_id !== pin.outbox_id) throw new ApiError("SYNC_OUTBOX_BLOCKED", "The original event is unavailable; this request cannot select another event.", 409);
+    }
+    if (selection.coverage !== "complete") throw new ApiError("SYNC_EVENT_INDEX_INCOMPLETE", "The event dependency scan is incomplete.", 409);
+    if (selection.batch_id) {
+      if (selection.event!.topic !== "SCHEDULE_CHANGED") throw new ApiError("SYNC_OUTBOX_BLOCKED", "Another handler owns the unfinished batch.", 409);
+
+      if (!pin && !ownBatch) {
+        identity = await core.createRequestIdentity("C2:EXPORT", "exportNextSchedule", input.request_id, { season_id: input.season_id, outbox_id: selection.event!.outbox_id });
+        persistExportSelection(this.ctx, identity.requestKey, identity.payloadDigest, selection.event!, Number(binding.binding_version),
+          `sha256_v1:${await sha256Base64Url(selection.event!.payload_json)}`, selection.batch_id);
+      }
+      return this.send(firstRow<ExportBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", selection.batch_id)!, input.request_id, identity);
+    }
     assertExportMayPrepare(sql, input.season_id);
-    const event = firstRow<ScheduleEvent>(sql,
-      `SELECT outbox_id,payload_json,topic,due_at_ms FROM sync_outbox
-       WHERE status='PENDING' AND json_extract(payload_json,'$.entity.season_id')=?
-       ORDER BY rowid LIMIT 1`, input.season_id);
-    if (!event || Number(event.due_at_ms) > Date.now()) {
+    if (!selection.event) {
+      if (!["IDLE", "WAITING_OR_BLOCKED"].includes(selection.reason)) throw new ApiError("SYNC_OUTBOX_BLOCKED", "The season is halted.", 409);
       return this.remember(identity, input.request_id, { season_id: input.season_id, status: "IDLE" });
     }
-    if (event.topic !== "SCHEDULE_CHANGED") throw new ApiError("SYNC_OUTBOX_BLOCKED",
-      "An earlier season event needs its own export handler first.", 409);
+    const event: ScheduleEvent = selection.event;
+    // Before the first Google read, persist the original event even if no batch is created.
+    if (!pin) {
+      identity = await core.createRequestIdentity("C2:EXPORT", "exportNextSchedule", input.request_id, { season_id: input.season_id, outbox_id: event.outbox_id });
+      persistExportSelection(this.ctx, identity.requestKey, identity.payloadDigest, selection.event, Number(binding.binding_version), `sha256_v1:${await sha256Base64Url(event.payload_json)}`);
+    }
+    if (event.topic !== "SCHEDULE_CHANGED") throw new ApiError("SYNC_OUTBOX_BLOCKED", "An earlier event needs its own handler.", 409);
     const parsed = parseEvent(event, input.season_id);
     if (parsed.season_version > Number(season.season_version)) {
       throw new ApiError("SYNC_OUTBOX_INVALID", "The captured season version is ahead of Cloudflare.", 409);
@@ -257,6 +282,7 @@ export class C2ScheduleExportService {
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
       assertExportMayPrepare(sql, String(binding.season_id));
+      assertSelectedOutbox(sql, String(binding.season_id), event.outbox_id, event.payload_json, Number(binding.binding_version));
       const current = firstRow<SqlRow>(sql,
         "SELECT binding_version,export_paused,runtime_spreadsheet_id FROM sync_bindings WHERE season_id=?",
         binding.season_id);
@@ -272,7 +298,7 @@ export class C2ScheduleExportService {
           Number(currentSeason.binding_version) !== Number(binding.binding_version) ||
           Number(current.export_paused) !== 0 ||
           current.runtime_spreadsheet_id !== page.spreadsheet_id ||
-          currentEvent?.status !== "PENDING" || currentEvent.payload_json !== event.payload_json ||
+          currentEvent?.status !== "PENDING" || !firstRow(sql, "SELECT 1 AS valid FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=? AND i.season_id=? AND i.payload_anchor=o.payload_json AND i.topic_anchor=o.topic", event.outbox_id, String(binding.season_id)) || currentEvent.payload_json !== event.payload_json ||
           verifiedRows(sql, event.outbox_id, Number(binding.binding_version)).has(`${scope}:${row.row_id}`) ||
           competing || firstRow<SqlRow>(sql, "SELECT batch_id FROM sync_batches WHERE batch_id=?", batchId)) {
         throw new ApiError("SYNC_EXPORT_STALE", "The schedule export changed during inspection.", 409, true);
@@ -420,6 +446,7 @@ export class C2ScheduleExportService {
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
       assertExportMayPrepare(sql, String(binding.season_id));
+      assertSelectedOutbox(sql, String(binding.season_id), event.outbox_id, event.payload_json, Number(binding.binding_version));
       const current = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", binding.season_id);
       const currentSeason = firstRow<SqlRow>(sql,
         "SELECT binding_version,season_version FROM seasons WHERE season_id=?", binding.season_id);
@@ -432,7 +459,7 @@ export class C2ScheduleExportService {
           Number(currentSeason.binding_version) !== Number(binding.binding_version) ||
           Number(currentSeason.season_version) < eventVersion || Number(current.export_paused) !== 0 ||
           current.runtime_spreadsheet_id !== binding.runtime_spreadsheet_id ||
-          currentEvent?.status !== "PENDING" || currentEvent.payload_json !== event.payload_json ||
+          currentEvent?.status !== "PENDING" || !firstRow(sql, "SELECT 1 AS valid FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=? AND i.season_id=? AND i.payload_anchor=o.payload_json AND i.topic_anchor=o.topic", event.outbox_id, String(binding.season_id)) || currentEvent.payload_json !== event.payload_json ||
           !allRowsVerified(sql, event, String(binding.season_id), Number(binding.binding_version)) ||
           competing || firstRow<SqlRow>(sql, "SELECT batch_id FROM sync_batches WHERE batch_id=?", batchId)) {
         throw new ApiError("SYNC_EXPORT_STALE", "The season changed during schedule inspection.", 409, true);
@@ -565,7 +592,7 @@ export class C2ScheduleExportService {
           Number(currentBinding.binding_version) !==
           Number(batch.binding_version) || String(currentBinding.runtime_spreadsheet_id) !==
           target.spreadsheet_id || String(currentBatch.payload_digest) !== receipt.payload_digest ||
-          currentEvent?.status !== "PENDING" || currentEvent.payload_json !== event.payload_json) {
+          currentEvent?.status !== "PENDING" || !firstRow(sql, "SELECT 1 AS valid FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=? AND i.season_id=? AND i.payload_anchor=o.payload_json AND i.topic_anchor=o.topic", batch.first_outbox_id, batch.season_id) || currentEvent.payload_json !== event.payload_json) {
         changed = true;
         recordExportPartial(sql, batch.batch_id,
           "Google verified a schedule row, but its binding or event changed before confirmation.");
@@ -657,7 +684,7 @@ export class C2ScheduleExportService {
           String(currentBinding.runtime_spreadsheet_id) !==
             target.expected[seasonHeaders.indexOf("runtime_spreadsheet_id")] ||
           String(currentBatch.payload_digest) !== receipt.payload_digest ||
-          currentEvent?.status !== "PENDING" || currentEvent.payload_json !== event.payload_json ||
+          currentEvent?.status !== "PENDING" || !firstRow(sql, "SELECT 1 AS valid FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=? AND i.season_id=? AND i.payload_anchor=o.payload_json AND i.topic_anchor=o.topic", batch.first_outbox_id, batch.season_id) || currentEvent.payload_json !== event.payload_json ||
           !allRowsVerified(sql, event, String(batch.season_id), Number(batch.binding_version))) {
         changed = true;
         recordExportPartial(sql, batch.batch_id,

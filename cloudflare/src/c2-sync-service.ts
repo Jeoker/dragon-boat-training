@@ -1,7 +1,7 @@
 import {
   parseCheckAssociatedPhysicalDifferences, parseCheckSheetDifferences, parseGetSyncConflict,
   parseImportSyncFoundation, parseListFormReviews,
-  parseListSyncConflicts, parseSetExportPause, parseSyncOverview, type ImportSyncFoundationRequest,
+  parseListSyncConflicts, parseSetExportPause, parseSyncOverview, parseRetryExport, parseListExportBlocks, type ImportSyncFoundationRequest,
   type SourceImportSnapshot, type SyncBaselineSnapshot, type SyncBindingSnapshot
 } from "../../shared/c2-sync-contract";
 import { SYNC_FIELD_DEFINITIONS, formResponseSourceId, normalizeSyncValue } from "../../shared/c2-sync-rules";
@@ -22,6 +22,7 @@ import { C2AssociatedExportService } from "./c2-associated-export";
 import { assertNoUnfinishedExportBeforeRebinding } from "./sync-binding-guard";
 import { exportPauseRequested, unfinishedExport } from "./c2-export-control";
 import { pollDueExports } from "./c2-export-poller";
+import { selectExportLane } from "./c2-export-lanes";
 
 interface PreparedBaseline extends SyncBaselineSnapshot { baseline_digest: string; }
 
@@ -79,6 +80,7 @@ export class C2SyncService {
     if (path === "/internal/c2/get-sync-overview") return this.getOverview(raw);
     if (path === "/internal/c2/set-export-pause") return this.setExportPause(raw);
     if (path === "/internal/c2/retry-export") return this.retryExport(raw);
+    if (path === "/internal/c2/list-export-blocks") return this.listExportBlocks(raw);
     if (path === "/internal/c2/list-sync-conflicts") return this.listSyncConflicts(raw);
     if (path === "/internal/c2/get-sync-conflict") return this.getSyncConflict(raw);
     if (path === "/internal/c2/list-form-reviews") return this.listFormReviews(raw);
@@ -460,11 +462,11 @@ export class C2SyncService {
       `SELECT failure_count,next_attempt_at_ms,last_error,updated_at,action_required FROM sync_export_retries
        WHERE season_id=? AND binding_version=?`, input.season_id, Number(season.binding_version)) : null;
     const oldestOutbox = firstRow<SqlRow>(this.ctx.storage.sql,
-      `SELECT topic,created_at,due_at_ms FROM sync_outbox WHERE status='PENDING'
-       AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1`, input.season_id);
-    const due = firstRow<{ next_due_ms: number | null }>(this.ctx.storage.sql,
-      `SELECT due_at_ms AS next_due_ms FROM sync_outbox WHERE status='PENDING'
-       AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1`, input.season_id);
+      `SELECT o.topic,o.created_at,o.due_at_ms,i.event_sequence FROM sync_outbox o
+       LEFT JOIN sync_export_event_index i ON i.outbox_id=o.outbox_id WHERE o.status='PENDING'
+       AND (i.season_id=? OR CASE WHEN json_valid(o.payload_json) THEN json_extract(o.payload_json,'$.entity.season_id') END=?)
+       ORDER BY COALESCE(i.event_sequence,0),o.rowid LIMIT 1`, input.season_id, input.season_id);
+    const due = oldestOutbox ? { next_due_ms: Number(oldestOutbox.due_at_ms) } : null;
     // Older poller versions left a success-only retry row after the last event.
     // Suppress that stale presentation without mutating recovery evidence.
     const cleanIdleRetry = storedRetry && !unfinished &&
@@ -494,10 +496,21 @@ export class C2SyncService {
       ? unfinished ? "BLOCKED" : "SOURCE_PAUSED"
       : requested ? unfinished ? "PAUSING" : "PAUSED"
         : Number(retry?.action_required ?? 0) === 1 ? "ACTION_REQUIRED" : "RUNNING";
+    const lane = selectExportLane(this.ctx.storage.sql, input.season_id);
+    if (lane.coverage !== "complete") hints.push("EVENT_DEPENDENCY_SCAN_INCOMPLETE");
     return {
       season_id: input.season_id,
       binding: binding ? bindingComparable(binding) : null,
       binding_current: bindingCurrent,
+      lanes: { coverage: lane.coverage, selection_reason: lane.reason,
+        runnable_outbox_id: lane.event?.outbox_id ?? null,
+        runnable_event_sequence: lane.event?.event_sequence ?? null,
+        next_runnable_at: lane.next_due_at_ms === null ? null : new Date(lane.next_due_at_ms).toISOString(),
+        unknown_pending_events: count(`SELECT COUNT(*) AS count FROM sync_outbox o LEFT JOIN sync_export_event_index i
+          ON i.outbox_id=o.outbox_id WHERE o.status='PENDING' AND (i.outbox_id IS NULL OR i.season_id='')`),
+        local_action_required: count(`SELECT COUNT(*) AS count FROM sync_export_event_blocks b
+          JOIN sync_outbox o ON o.outbox_id=b.outbox_id WHERE b.season_id=? AND b.binding_version=?
+          AND b.action_required=1 AND o.status='PENDING'`, input.season_id, Number(binding?.binding_version ?? 0)) },
       export_control: { status: exportStatus, pause_requested: requested,
         source_paused: Number(binding?.export_paused ?? 0) === 1,
         unfinished_batch: unfinished,
@@ -524,7 +537,7 @@ export class C2SyncService {
           input.season_id),
         pending_outbox: count(
           `SELECT COUNT(*) AS count FROM sync_outbox
-           WHERE status='PENDING' AND json_extract(payload_json, '$.entity.season_id')=?`, input.season_id)
+           WHERE status='PENDING' AND CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.entity.season_id') END=?`, input.season_id)
       },
       schema_version: APPLICATION_SCHEMA_VERSION,
       generated_at: new Date().toISOString()
@@ -578,12 +591,16 @@ export class C2SyncService {
   }
 
   private async retryExport(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const input = parseContract(() => parseSyncOverview(raw));
+    const input = parseContract(() => parseRetryExport(raw));
     const coach = await this.core.authenticateSession(input.session_token);
     const identity = await this.core.createRequestIdentity(coach.coach_id, "retryExport",
-      input.request_id, { season_id: input.season_id });
+      input.request_id, { season_id: input.season_id, ...(input.outbox_id ? { outbox_id: input.outbox_id } : {}) });
     const replay = this.core.replayRequest(identity.requestKey, identity.payloadDigest);
     if (replay) return replay;
+    const inspectedBlock = input.outbox_id ? firstRow<SqlRow>(this.ctx.storage.sql,
+      "SELECT * FROM sync_export_event_blocks WHERE season_id=? AND outbox_id=? ORDER BY binding_version DESC LIMIT 1", input.season_id, input.outbox_id) : null;
+    if (inspectedBlock && `sha256_v1:${await sha256Base64Url(String(inspectedBlock.payload_anchor))}` !== inspectedBlock.payload_digest)
+      throw new ApiError("SYNC_EVENT_INDEX_INVALID", "The saved block digest changed.", 409);
     const at = new Date().toISOString();
     return this.ctx.storage.transactionSync(() => {
       this.core.assertSessionCurrent(coach);
@@ -592,6 +609,25 @@ export class C2SyncService {
          ON s.season_id=b.season_id AND s.binding_version=b.binding_version
          WHERE b.season_id=?`, input.season_id);
       if (!binding) throw new ApiError("SYNC_BINDING_NOT_FOUND", "A current Sheet binding is required.", 409);
+      if (input.outbox_id) {
+        const block = firstRow<SqlRow>(this.ctx.storage.sql, `SELECT b.*,i.payload_anchor AS indexed_anchor,
+          o.payload_json,o.status FROM sync_export_event_blocks b
+          JOIN sync_export_event_index i ON i.outbox_id=b.outbox_id JOIN sync_outbox o ON o.outbox_id=b.outbox_id
+          WHERE b.season_id=? AND b.binding_version=? AND b.outbox_id=? AND b.action_required=1`,
+        input.season_id, Number(binding.binding_version), input.outbox_id);
+        if (!block || !inspectedBlock || block.payload_digest !== inspectedBlock.payload_digest || block.payload_anchor !== inspectedBlock.payload_anchor ||
+            Number(block.binding_version) !== Number(inspectedBlock.binding_version) || block.status !== "PENDING" || block.payload_anchor !== block.payload_json ||
+            block.indexed_anchor !== block.payload_json) throw new ApiError("SYNC_EXPORT_ACTION_NOT_REQUIRED",
+          "The requested lane is not a current unchanged halted event.", 409);
+        this.ctx.storage.sql.exec(`UPDATE sync_export_event_blocks SET action_required=0,failure_count=0,
+          next_attempt_at_ms=0,updated_at=? WHERE season_id=? AND binding_version=? AND outbox_id=?`,
+        at, input.season_id, binding.binding_version, input.outbox_id).toArray();
+        const result = { operation: operationReceipt("retryExport", input.request_id, at), result: {
+          season_id: input.season_id, outbox_id: input.outbox_id, rearmed: true,
+          previous_error: String(block.error_code), next_batch_requires_fresh_comparison: true } };
+        this.core.recordRequest(identity, coach.coach_id, "retryExport", input.request_id, result, result.result, at);
+        return result;
+      }
       const previous = firstRow<SqlRow>(this.ctx.storage.sql,
         `SELECT last_error FROM sync_export_retries
          WHERE season_id=? AND binding_version=? AND action_required=1`,
@@ -613,6 +649,23 @@ export class C2SyncService {
         result, result.result, at);
       return result;
     });
+  }
+
+  private async listExportBlocks(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const input = parseContract(() => parseListExportBlocks(raw));
+    await this.core.authenticateSession(input.session_token);
+    const binding = firstRow<SqlRow>(this.ctx.storage.sql, `SELECT b.binding_version FROM sync_bindings b
+      JOIN seasons s ON s.season_id=b.season_id AND s.binding_version=b.binding_version WHERE b.season_id=?`, input.season_id);
+    if (!binding) throw new ApiError("SYNC_BINDING_NOT_FOUND", "A current binding is required.", 409);
+    const rows = this.ctx.storage.sql.exec<SqlRow>(`SELECT b.outbox_id,b.practice_id,b.payload_digest,
+      b.error_code,b.failure_count,b.next_attempt_at_ms,b.action_required,b.blocked_scope,b.blocked_entity_id,
+      b.created_at,b.updated_at,i.event_sequence FROM sync_export_event_blocks b
+      JOIN sync_export_event_index i ON i.outbox_id=b.outbox_id JOIN sync_outbox o ON o.outbox_id=b.outbox_id
+      WHERE b.season_id=? AND b.binding_version=? AND o.status='PENDING' AND i.event_sequence>?
+      ORDER BY i.event_sequence LIMIT ?`, input.season_id, binding.binding_version, Number(input.cursor ?? 0), input.limit + 1).toArray();
+    const items: Record<string, unknown>[] = rows.slice(0, input.limit).map(row => ({ ...row, action_required: Number(row.action_required) === 1 }));
+    return { season_id: input.season_id, binding_version: Number(binding.binding_version), items,
+      next_cursor: rows.length > input.limit ? String(items[items.length - 1].event_sequence) : null };
   }
 
   private async listSyncConflicts(raw: Record<string, unknown>): Promise<Record<string, unknown>> {

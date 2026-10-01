@@ -1,3 +1,4 @@
+import { selectExportLane } from "./c2-export-lanes";
 import { canonicalJson } from "../../shared/c1-rules";
 import { sha256Base64Url } from "./crypto";
 import { ApiError } from "./http";
@@ -7,6 +8,9 @@ export interface ExportBatch extends SqlRow {
   batch_id: string; season_id: string; binding_version: number; writer_epoch: number;
   status: string; direction: string; payload_digest: string; first_outbox_id: string;
 }
+// Cleanup is best effort and conservative after a crash: a fresh resend observes
+// the current retry again. Never remove a failure created while Google was awaited.
+const observedRetries = new WeakMap<ExportBatch, string>();
 
 export async function verifyStoredPatch(batch: ExportBatch, saved: SqlRow, payload: unknown,
   expected: string[] | null, target: string[], writerEpoch: number): Promise<void> {
@@ -35,9 +39,15 @@ export function beginExportSend(ctx: DurableObjectState, batch: ExportBatch): bo
     if (!["PREPARED", "SENT", "PARTIAL", "FAILED"].includes(current.status)) {
       throw new ApiError("SYNC_BATCH_INVALID", "The batch is not eligible for sending.", 409);
     }
+    const selection = selectExportLane(sql, current.season_id);
+    if (selection.coverage !== "complete") throw new ApiError("SYNC_EVENT_INDEX_INCOMPLETE", "The recovering batch has no valid indexed source.", 409);
+    if (selection.batch_id !== current.batch_id || Number(selection.binding_version) !== Number(current.binding_version))
+      throw new ApiError("SYNC_OUTBOX_BLOCKED", "The original batch is halted or another batch must drain first.", 409);
     sql.exec(
       "UPDATE sync_batches SET status='SENT',attempt_count=attempt_count+1,updated_at=? WHERE batch_id=?",
       new Date().toISOString(), batch.batch_id).toArray();
+    observedRetries.set(batch, JSON.stringify(firstRow<SqlRow>(sql,
+      "SELECT * FROM sync_export_retries WHERE season_id=? AND binding_version=?", batch.season_id, batch.binding_version)));
     return false;
   });
 }
@@ -66,8 +76,10 @@ export function confirmExportReceipt(sql: SqlStorage, batch: ExportBatch, receip
     JSON.stringify(receipt), at, batch.batch_id, itemCount).toArray();
   sql.exec("UPDATE sync_batches SET status='CONFIRMED',last_error='',updated_at=?,completed_at=? WHERE batch_id=? AND status='SENT'",
     at, at, batch.batch_id).toArray();
-  sql.exec("DELETE FROM sync_export_retries WHERE season_id=? AND binding_version=?",
-    batch.season_id, batch.binding_version).toArray();
+  const currentRetry = firstRow<SqlRow>(sql, "SELECT * FROM sync_export_retries WHERE season_id=? AND binding_version=?", batch.season_id, batch.binding_version);
+  if (observedRetries.get(batch) === JSON.stringify(currentRetry) && !Number(currentRetry?.action_required ?? 0)) {
+    sql.exec("DELETE FROM sync_export_retries WHERE season_id=? AND binding_version=?", batch.season_id, batch.binding_version).toArray();
+  }
   if (completion === "EVENT") {
     sql.exec("UPDATE sync_outbox SET status='CONFIRMED',completed_at=?,last_error='' WHERE outbox_id=? AND status='PENDING'",
       at, batch.first_outbox_id).toArray();

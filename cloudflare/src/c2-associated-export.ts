@@ -1,4 +1,5 @@
 import { canonicalJson } from "../../shared/c1-rules";
+import { selectExportLane, assertLaneSelected, blockExportLane, LocalExportConflict, type IndexedEvent } from "./c2-export-lanes";
 import { identifier, object, requestId } from "../../shared/c1-contract";
 import { SYNC_FIELD_DEFINITIONS, normalizeSyncValue } from "../../shared/c2-sync-rules";
 import { sha256Base64Url } from "./crypto";
@@ -131,22 +132,38 @@ export class C2AssociatedExportService {
   async process(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     const input = parseContract(() => {
       const value = object(raw);
-      return { request_id: requestId(value), season_id: identifier(value, "season_id") };
+      return { request_id: requestId(value), season_id: identifier(value, "season_id"),
+        outbox_id: value.outbox_id === undefined ? null : identifier(value, "outbox_id") };
     });
     if (this.env.ENVIRONMENT === "production" || this.env.C2_ASSOCIATED_EXPORT_ENABLED !== "true") {
       throw new ApiError("ASSOCIATED_EXPORT_DISABLED", "The isolated associated export is disabled.", 409);
     }
     const core = new C1Service(this.ctx, this.env);
-    const identity = await core.createRequestIdentity("C2:EXPORT", "exportNextAssociated", input.request_id,
+    const legacyIdentity = await core.createRequestIdentity("C2:EXPORT", "exportNextAssociated", input.request_id,
       { season_id: input.season_id });
-    const previous = core.replayRequest(identity.requestKey, identity.payloadDigest);
-    if (previous) return previous;
-    const batchId = `batch_${identity.requestKey.slice(7)}`;
     const sql = this.ctx.storage.sql;
-    const ownBatch = firstRow<ExportBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", batchId);
-    if (ownBatch) {
-      if (ownBatch.season_id !== input.season_id) throw new ApiError("IDEMPOTENCY_CONFLICT",
-        "This request belongs to another season.", 409);
+    const pin = firstRow<SqlRow>(sql, "SELECT * FROM sync_export_request_selections WHERE request_key=?", legacyIdentity.requestKey);
+    const completed = firstRow<SqlRow>(sql, "SELECT 1 AS present FROM system_requests WHERE request_key=?", legacyIdentity.requestKey);
+    if (completed && !pin) {
+      const replay = core.replayRequest(legacyIdentity.requestKey, legacyIdentity.payloadDigest)!;
+      if (input.outbox_id && replay.outbox_id !== input.outbox_id) throw new ApiError("IDEMPOTENCY_CONFLICT", "The supplied event differs from the original result.", 409);
+      return replay;
+    }
+    if (completed && pin) {
+      if (pin.season_id !== input.season_id || input.outbox_id && pin.outbox_id !== input.outbox_id) throw new ApiError("IDEMPOTENCY_CONFLICT", "The supplied event differs from the pinned result.", 409);
+      const identity = await core.createRequestIdentity("C2:EXPORT", "exportNextAssociated", input.request_id,
+        { season_id: input.season_id, outbox_id: pin.outbox_id });
+      return core.replayRequest(identity.requestKey, identity.payloadDigest)!;
+    }
+    const ownBatch = firstRow<ExportBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", `batch_${legacyIdentity.requestKey.slice(7)}`);
+    if (ownBatch && ownBatch.season_id !== input.season_id) throw new ApiError("IDEMPOTENCY_CONFLICT", "The original batch belongs to another season.", 409);
+    if (ownBatch?.status === "CONFIRMED") {
+      if (pin && (pin.season_id !== input.season_id || pin.outbox_id !== ownBatch.first_outbox_id))
+        throw new ApiError("IDEMPOTENCY_CONFLICT", "The original batch selection changed.", 409);
+      const identity = pin ? await core.createRequestIdentity("C2:EXPORT", "exportNextAssociated", input.request_id,
+        { season_id: input.season_id, outbox_id: pin.outbox_id }) : legacyIdentity;
+      if (input.outbox_id && ownBatch.first_outbox_id !== input.outbox_id) throw new ApiError("IDEMPOTENCY_CONFLICT", "The original batch event cannot change.", 409);
+      if (pin && pin.request_digest !== identity.payloadDigest) throw new ApiError("IDEMPOTENCY_CONFLICT", "The pinned request digest changed.", 409);
       return this.send(ownBatch, input.request_id, identity);
     }
     const binding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", input.season_id);
@@ -154,32 +171,91 @@ export class C2AssociatedExportService {
     if (!binding || !season || Number(binding.binding_version) !== Number(season.binding_version) ||
         Number(binding.export_paused) !== 0) throw new ApiError("SYNC_EXPORT_PAUSED",
       "A current, unpaused season binding is required.", 409);
-    const unfinished = firstRow<ExportBatch>(sql,
-      `SELECT * FROM sync_batches WHERE season_id=? AND direction='CLOUDFLARE_TO_GOOGLE'
-       AND status IN ('PREPARED','SENT','PARTIAL','FAILED') ORDER BY created_at,batch_id LIMIT 1`, input.season_id);
-    if (unfinished) return this.send(unfinished, input.request_id, identity);
-    assertExportMayPrepare(sql, input.season_id);
-    const outbox = firstRow<OutboxEvent>(sql,
-      `SELECT outbox_id,payload_json,topic,due_at_ms FROM sync_outbox WHERE status='PENDING'
-       AND json_extract(payload_json,'$.entity.season_id')=? ORDER BY rowid LIMIT 1`, input.season_id);
-    if (!outbox || Number(outbox.due_at_ms) > Date.now()) return this.remember(identity,
-      input.request_id, { season_id: input.season_id, status: "IDLE" });
-    if (outbox.topic !== "SIGNUPS_CHANGED" && outbox.topic !== "SEATING_CHANGED") {
-      throw new ApiError("SYNC_OUTBOX_BLOCKED", "An earlier season event needs its own export handler.", 409);
+    const selection = selectExportLane(sql, input.season_id);
+    if (selection.coverage !== "complete") throw new ApiError("SYNC_EVENT_INDEX_INCOMPLETE", "The event dependency scan is incomplete.", 409);
+    let selected = selection.event;
+    if (pin) {
+      if (pin.season_id !== input.season_id || input.outbox_id && pin.outbox_id !== input.outbox_id ||
+          Number(pin.binding_version) !== Number(binding.binding_version)) throw new ApiError("IDEMPOTENCY_CONFLICT", "The saved request selection cannot change.", 409);
+      selected = firstRow<IndexedEvent>(sql, `SELECT i.*,o.topic,o.payload_json,o.due_at_ms FROM sync_export_event_index i
+        JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=?`, String(pin.outbox_id));
+      if (!selected || selected.payload_anchor !== pin.event_anchor || selected.payload_json !== pin.event_anchor ||
+          `sha256_v1:${await sha256Base64Url(selected.payload_json)}` !== pin.event_digest) throw new ApiError("SYNC_EVENT_INDEX_INVALID", "A pinned event changed.", 409);
     }
+    const identity = selected ? await core.createRequestIdentity("C2:EXPORT", "exportNextAssociated", input.request_id,
+      { season_id: input.season_id, outbox_id: selected.outbox_id }) : legacyIdentity;
+    if (pin && pin.request_digest !== identity.payloadDigest) throw new ApiError("IDEMPOTENCY_CONFLICT", "The pinned request digest changed.", 409);
+    const previous = core.replayRequest(identity.requestKey, identity.payloadDigest);
+    if (previous) return previous;
+    if (!selected) {
+      if (input.outbox_id || !["IDLE", "WAITING_OR_BLOCKED"].includes(selection.reason)) throw new ApiError("SYNC_OUTBOX_BLOCKED", "The requested season/event is currently halted or unavailable.", 409);
+      return this.remember(identity, input.request_id, { season_id: input.season_id, status: "IDLE" });
+    }
+    if (input.outbox_id && selected.outbox_id !== input.outbox_id || selection.event?.outbox_id !== selected.outbox_id) {
+      throw new ApiError("SYNC_OUTBOX_BLOCKED", "A request cannot bypass order or change its original selected event.", 409);
+    }
+    if (!["SIGNUPS_CHANGED", "SEATING_CHANGED"].includes(selected.topic)) throw new ApiError("SYNC_OUTBOX_BLOCKED", "The selected event/batch requires its own exporter.", 409);
+    if (selection.batch_id) {
+      const batch = firstRow<ExportBatch>(sql, "SELECT * FROM sync_batches WHERE batch_id=?", selection.batch_id)!;
+      // Existing pre-v14 unfinished operations retain their old request digest.
+      if (ownBatch && !pin) return this.send(batch, input.request_id, legacyIdentity);
+      if (!pin) {
+        const digest = `sha256_v1:${await sha256Base64Url(selected.payload_json)}`;
+        this.ctx.storage.transactionSync(() => {
+          const again = selectExportLane(sql, input.season_id);
+          if (again.batch_id !== batch.batch_id || again.event?.payload_anchor !== selected!.payload_anchor ||
+              again.binding_version !== Number(binding.binding_version)) throw new ApiError("SYNC_EXPORT_STALE", "The recovering batch selection changed.", 409, true);
+          sql.exec(`INSERT OR IGNORE INTO sync_export_request_selections(request_key,season_id,binding_version,outbox_id,
+            event_anchor,event_digest,request_digest,created_at) VALUES (?,?,?,?,?,?,?,?)`, identity.requestKey,
+          input.season_id, binding.binding_version, selected!.outbox_id, selected!.payload_anchor,
+          digest, identity.payloadDigest, new Date().toISOString()).toArray();
+          const savedPin = firstRow<SqlRow>(sql, "SELECT * FROM sync_export_request_selections WHERE request_key=?", identity.requestKey)!;
+          if (savedPin.outbox_id !== selected!.outbox_id || savedPin.event_anchor !== selected!.payload_anchor ||
+              savedPin.request_digest !== identity.payloadDigest || savedPin.event_digest !== digest ||
+              Number(savedPin.binding_version) !== Number(binding.binding_version) || savedPin.season_id !== input.season_id)
+            throw new ApiError("IDEMPOTENCY_CONFLICT", "A concurrent request selected a different event.", 409);
+        });
+      }
+      return this.send(batch, input.request_id, identity);
+    }
+    const digest = `sha256_v1:${await sha256Base64Url(selected.payload_json)}`;
+    if (!pin) this.ctx.storage.transactionSync(() => {
+      assertLaneSelected(sql, selected!, Number(binding.binding_version));
+      sql.exec(`INSERT OR IGNORE INTO sync_export_request_selections(request_key,season_id,binding_version,outbox_id,
+        event_anchor,event_digest,request_digest,created_at) VALUES (?,?,?,?,?,?,?,?)`, identity.requestKey,
+      input.season_id, binding.binding_version, selected!.outbox_id, selected!.payload_anchor,
+      digest, identity.payloadDigest, new Date().toISOString()).toArray();
+          const savedPin = firstRow<SqlRow>(sql, "SELECT * FROM sync_export_request_selections WHERE request_key=?", identity.requestKey)!;
+          if (savedPin.outbox_id !== selected!.outbox_id || savedPin.event_anchor !== selected!.payload_anchor ||
+              savedPin.request_digest !== identity.payloadDigest || savedPin.event_digest !== digest ||
+              Number(savedPin.binding_version) !== Number(binding.binding_version) || savedPin.season_id !== input.season_id)
+            throw new ApiError("IDEMPOTENCY_CONFLICT", "A concurrent request selected a different event.", 409);
+    });
+    const batchId = `batch_${identity.requestKey.slice(7)}`;
+    const outbox: OutboxEvent = selected;
+    try {
     const event = parseAssociatedEvent(outbox.topic, outbox.payload_json, input.season_id);
     this.assertPractice(sql, event);
     assertCursorNext(cursor(sql, input.season_id, Number(binding.binding_version), event.practice_id), event);
     const confirmed = confirmedStages(sql, outbox.outbox_id, Number(binding.binding_version));
     const nextIndex = event.stages.findIndex((stage) => !confirmed.has(`${stage.entity_type}:${stage.row_id}`));
-    if (nextIndex < 0) return this.finalize(outbox, event, binding, input.request_id, identity);
+    if (nextIndex < 0) return await this.finalize(outbox, event, binding, input.request_id, identity);
     const scope = event.stages[nextIndex].entity_type;
     const stages: AssociatedStage[] = [];
     for (const stage of event.stages.slice(nextIndex)) {
       if (stage.entity_type !== scope || confirmed.has(`${scope}:${stage.row_id}`) || stages.length === 4) break;
       stages.push(stage);
     }
-    return this.prepare(outbox, event, stages, binding, input.request_id, batchId, identity);
+    return await this.prepare(outbox, event, stages, binding, input.request_id, batchId, identity);
+    } catch (error) {
+      if (error instanceof LocalExportConflict && selected.handler_kind === "ASSOCIATED" &&
+          !firstRow<SqlRow>(sql, `SELECT batch_id FROM sync_batches WHERE season_id=? AND direction='CLOUDFLARE_TO_GOOGLE'
+           AND status IN ('PREPARED','SENT','PARTIAL','FAILED')`, input.season_id)) {
+        blockExportLane(this.ctx, selected, Number(binding.binding_version), error, digest);
+        error.localBlockSaved = true;
+      }
+      throw error;
+    }
   }
 
   private assertPractice(sql: SqlStorage, event: AssociatedEvent): void {
@@ -363,7 +439,13 @@ export class C2AssociatedExportService {
     const stored: StoredTarget[] = [];
     for (const stage of stages) {
       const expected = page.rows.get(stage.row_id) ?? null;
-      this.assertRowBeforePatch(sql, stage, expected, Number(binding.binding_version), event.season_id);
+      try { this.assertRowBeforePatch(sql, stage, expected, Number(binding.binding_version), event.season_id); }
+      catch (error) {
+        if (error instanceof ApiError && error.code === "SYNC_ASSOCIATED_NEEDS_REVIEW") {
+          throw new LocalExportConflict(error.code, error.message, scope, stage.row_id);
+        }
+        throw error;
+      }
       const target = associatedCells(stage, expected);
       if (physicalId(scope, target) !== stage.row_id || target[0] !== event.season_id) {
         throw new ApiError("SYNC_ASSOCIATED_INVALID", "The captured associated row changed identity.", 409);
@@ -389,12 +471,13 @@ export class C2AssociatedExportService {
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
       assertExportMayPrepare(sql, event.season_id);
+      assertLaneSelected(sql, outbox as IndexedEvent, Number(binding.binding_version));
       const currentBinding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", event.season_id);
       const currentOutbox = firstRow<SqlRow>(sql, "SELECT status,payload_json FROM sync_outbox WHERE outbox_id=?", outbox.outbox_id);
       if (!currentBinding || Number(currentBinding.binding_version) !== Number(binding.binding_version) ||
           Number(currentBinding.export_paused) !== 0 ||
           String(currentBinding.runtime_spreadsheet_id) !== page.spreadsheet_id ||
-          currentOutbox?.status !== "PENDING" || currentOutbox.payload_json !== outbox.payload_json ||
+          currentOutbox?.status !== "PENDING" || currentOutbox.payload_json !== outbox.payload_json || !firstRow(sql, "SELECT 1 AS valid FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=? AND i.season_id=? AND i.payload_anchor=o.payload_json AND i.topic_anchor=o.topic", outbox.outbox_id, event.season_id) ||
           firstRow<SqlRow>(sql, `SELECT batch_id FROM sync_batches WHERE season_id=?
             AND direction='CLOUDFLARE_TO_GOOGLE' AND status IN ('PREPARED','SENT','PARTIAL','FAILED')`,
             event.season_id) ||
@@ -514,8 +597,8 @@ export class C2AssociatedExportService {
       const saved = records.find((item) => item.dependency_group === group);
       if (!saved || canonicalJson(mappedReference(scope, observed, group)) !==
           canonicalJson(JSON.parse(String(saved.baseline_json)))) {
-        throw new ApiError("SYNC_REFERENCE_NEEDS_REVIEW",
-          "A referenced Google row differs from its confirmed baseline.", 409);
+        throw new LocalExportConflict("SYNC_REFERENCE_NEEDS_REVIEW",
+          "A referenced Google row differs from its confirmed baseline.", scope, rowId);
       }
     }
   }
@@ -547,24 +630,29 @@ export class C2AssociatedExportService {
     if (!Array.isArray(seats) || !Number.isSafeInteger(seatVersion)) {
       throw new ApiError("SYNC_BASELINE_INCOMPLETE", "The confirmed draft baseline is invalid.", 409);
     }
-    if (current.length !== seats.length) throw new ApiError("SYNC_ASSOCIATED_NEEDS_REVIEW",
-      "Google draft seat cells differ from the confirmed baseline.", 409);
+    if (current.length !== seats.length) throw new LocalExportConflict("SYNC_ASSOCIATED_NEEDS_REVIEW",
+      "Google draft seat cells differ from the confirmed baseline.", "SEAT_PLAN_CURRENT", event.practice_id);
     for (const seat of seats) {
       const item = seat as Record<string, unknown>;
       const rowId = `${event.practice_id}:${item.row_number}:${item.side}`;
       const row = page.rows.get(rowId);
       if (!row || row[4] !== String(item.member_id ?? "") || Number(row[5]) !== seatVersion) {
-        throw new ApiError("SYNC_ASSOCIATED_NEEDS_REVIEW",
-          "Google draft seat cells differ from the confirmed baseline.", 409);
+        throw new LocalExportConflict("SYNC_ASSOCIATED_NEEDS_REVIEW",
+          "Google draft seat cells differ from the confirmed baseline.", "SEAT_PLAN_CURRENT", rowId);
       }
       const physical = firstRow<SqlRow>(sql,
         `SELECT cells_json FROM sync_associated_physical_baselines WHERE season_id=?
          AND binding_version=? AND scope='SEAT_PLAN_CURRENT' AND row_id=?`,
         event.season_id, binding.binding_version, rowId);
-      if (!physical || canonicalJson(row) !== String(physical.cells_json)) {
-        throw new ApiError("SYNC_BASELINE_INCOMPLETE",
-          "A confirmed draft seat has no matching full physical baseline.", 409);
-      }
+      if (!physical) throw new ApiError("SYNC_BASELINE_INCOMPLETE", "A confirmed draft seat has no full physical baseline.", 409);
+      let savedCells: unknown;
+      try { savedCells = JSON.parse(String(physical.cells_json)); } catch { savedCells = null; }
+      if (!Array.isArray(savedCells) || savedCells.length !== SHEET_SCOPES.SEAT_PLAN_CURRENT.headers.length ||
+          !savedCells.every(cell => typeof cell === "string") || savedCells[0] !== event.season_id || savedCells[1] !== event.practice_id ||
+          `${savedCells[1]}:${savedCells[2]}:${savedCells[3]}` !== rowId || !["LEFT", "RIGHT"].includes(savedCells[3]))
+        throw new ApiError("SYNC_BASELINE_INCOMPLETE", "The confirmed physical draft baseline is invalid.", 409);
+      if (canonicalJson(row) !== canonicalJson(savedCells)) throw new LocalExportConflict("SYNC_ASSOCIATED_NEEDS_REVIEW",
+        "A confirmed draft seat differs from its full physical baseline.", "SEAT_PLAN_CURRENT", rowId);
     }
   }
 
@@ -653,7 +741,7 @@ export class C2AssociatedExportService {
       if (!currentBinding || Number(currentBinding.binding_version) !== Number(batch.binding_version) ||
           String(currentBinding.runtime_spreadsheet_id) !== stored[0].spreadsheet_id ||
           String(currentBatch!.payload_digest) !== receipt.payload_digest ||
-          currentOutbox?.status !== "PENDING" || currentOutbox.payload_json !== outbox.payload_json) {
+          currentOutbox?.status !== "PENDING" || currentOutbox.payload_json !== outbox.payload_json || !firstRow(sql, "SELECT 1 AS valid FROM sync_export_event_index i JOIN sync_outbox o ON o.outbox_id=i.outbox_id WHERE i.outbox_id=? AND i.season_id=? AND i.payload_anchor=o.payload_json AND i.topic_anchor=o.topic", batch.first_outbox_id, batch.season_id)) {
         changed = true;
         recordExportPartial(sql, batch.batch_id,
           "Google verified an associated row, but its binding or event changed before confirmation.");
@@ -669,6 +757,8 @@ export class C2AssociatedExportService {
   private async finalize(outbox: OutboxEvent, event: AssociatedEvent, binding: SqlRow,
     requestId: string, identity: Identity): Promise<Record<string, unknown>> {
     const sql = this.ctx.storage.sql;
+    const observedRetry = JSON.stringify(firstRow<SqlRow>(sql,
+      "SELECT * FROM sync_export_retries WHERE season_id=? AND binding_version=?", event.season_id, binding.binding_version));
     await this.assertReferences(outbox, event, binding, requestId);
     if (event.seating && event.seating.draft_seats === null) {
       await this.assertDraftBeforeWrite(outbox, event, binding, requestId, true);
@@ -686,8 +776,8 @@ export class C2AssociatedExportService {
       }
       if (page.spreadsheet_id !== target.spreadsheet_id || page.tab_id !== target.tab_id ||
           canonicalJson(page.rows.get(stage.row_id) ?? null) !== canonicalJson(target.target)) {
-        throw new ApiError("SYNC_ASSOCIATED_NEEDS_REVIEW",
-          "A previously verified associated row changed in Google before event completion.", 409);
+        throw new LocalExportConflict("SYNC_ASSOCIATED_NEEDS_REVIEW",
+          "A previously verified associated row changed in Google before event completion.", stage.entity_type, stage.row_id);
       }
     }
     if (event.seating && Array.isArray(event.seating.draft_seats)) {
@@ -696,8 +786,8 @@ export class C2AssociatedExportService {
       const actual = [...(seats?.rows.keys() ?? [])].filter((id) => id.startsWith(`${event.practice_id}:`));
       if (!seats || actual.length !== targets.length ||
           actual.some((id) => !targets.some((stage) => stage.row_id === id))) {
-        throw new ApiError("SYNC_ASSOCIATED_NEEDS_REVIEW",
-          "The final Google draft contains an extra or missing seat cell.", 409);
+        throw new LocalExportConflict("SYNC_ASSOCIATED_NEEDS_REVIEW",
+          "The final Google draft contains an extra or missing seat cell.", "SEAT_PLAN_CURRENT", event.practice_id);
       }
     }
     const baselines: Array<{ scope: "SIGNUP" | "SEAT_PLAN_DRAFT"; id: string;
@@ -738,6 +828,7 @@ export class C2AssociatedExportService {
       seat_plan_version: event.seat_plan_version,
       published_revision: event.published_revision };
     this.ctx.storage.transactionSync(() => {
+      assertLaneSelected(sql, outbox as IndexedEvent, Number(binding.binding_version));
       const currentBinding = firstRow<SqlRow>(sql, "SELECT * FROM sync_bindings WHERE season_id=?", event.season_id);
       const currentOutbox = firstRow<SqlRow>(sql, "SELECT status,payload_json FROM sync_outbox WHERE outbox_id=?", outbox.outbox_id);
       if (!currentBinding || Number(currentBinding.binding_version) !== Number(binding.binding_version) ||
@@ -778,9 +869,14 @@ export class C2AssociatedExportService {
         at, outbox.outbox_id).toArray();
       sql.exec("UPDATE sync_bindings SET last_push_at=?,updated_at=? WHERE season_id=? AND binding_version=?",
         at, at, event.season_id, binding.binding_version).toArray();
-      sql.exec("DELETE FROM sync_export_retries WHERE season_id=? AND binding_version=?",
-        event.season_id, binding.binding_version).toArray();
+      const currentRetry = firstRow<SqlRow>(sql, "SELECT * FROM sync_export_retries WHERE season_id=? AND binding_version=?", event.season_id, binding.binding_version);
+      if (JSON.stringify(currentRetry) === observedRetry && !Number(currentRetry?.action_required ?? 0))
+        sql.exec("DELETE FROM sync_export_retries WHERE season_id=? AND binding_version=?", event.season_id, binding.binding_version).toArray();
+      sql.exec("DELETE FROM sync_export_event_blocks WHERE season_id=? AND binding_version=? AND outbox_id=?",
+        event.season_id, binding.binding_version, outbox.outbox_id).toArray();
+      new C1Service(this.ctx, this.env).recordRequest(identity, "C2:EXPORT", "exportNextAssociated", requestId,
+        result, { season_id: event.season_id, outbox_id: outbox.outbox_id, status: result.status }, at);
     });
-    return this.remember(identity, requestId, result);
+    return result;
   }
 }

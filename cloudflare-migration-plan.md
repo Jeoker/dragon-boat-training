@@ -191,7 +191,7 @@ C2.3 的检查响应最多保留 100 条，并优先展示严重诊断；`trunca
 
 C2.4 导出前置门槛：模板、周次和训练先纳入同步实体／基线／批次约束，报名与排座必须确认训练、成员及逐场版本顺序。成员／赛季导出的批次摘要、状态、失败／部分进度及回执确认骨架复用，业务规则按实体独立验证。Google 桥接请求最多四行且受签名 payload 10,000 字符上限；Worker 使用 9,500 字符预算，按实际 JSON 长度拆批。排期行及关联四表均使用与 Google 显示值稳定一致的物理投影；旧格式或缺组基线阻断目标生成。关联已有 Google 行还需完整物理行 B，包含报名、排座的审计列；没有整行 B 的既有行只能受控 bootstrap／逐行核对，不能以当前 G 推断 B。写前重读并核对 Google，部分跨表写入保留待处理事件，最终核验后才一起推进逻辑 B、物理 B、逐场游标及 outbox。旧无完整源快照事件阻断；绑定版本前进时旧版本已确认记录不能抵扣新版本，未完成批次不可随绑定升级丢弃。详见[最近代码整体审查](tests/C2-RECENT-CODE-REVIEW-2026-09-27.md)和[当前状态](CURRENT-STATUS.md)。
 
-C2.5 的已实现运维规则：运行时暂停不覆盖影子绑定 export_paused，只允许既存批次沿原身份核验，概览在未完成批次存在时显示 PAUSING，排空后 PAUSED；恢复后的新目标仍重读完整 B/C/G。可重试错误按季持久退避，最长六小时；非重试错误 ACTION_REQUIRED 等待 Coach 核查与显式重试。专用 c2test 已验证受控 Google 成员冲突停轮询、整行 CAS 恢复及 Coach retry；0.16.2／v13 本轮又真实验证关联 PARTIAL／受控空回复恢复、FAILED 原批次暂停排空、禁止提前恢复和暂停中准备新批。最终 retry 实表为零，旧历史 SUPERSEDED 冲突保留；完整备份只下载校验，未恢复。Apps Script 临时故障代码已从部署和 HEAD 撤下，原部署 v14 和原 HEAD 分别完整恢复并独立核验。自动导出 false、cron 为空。真实配额／随机断网、并发 SENT 暂停窗口、自动 cron、备份恢复、同季独立训练仍未通过，不据受控故障宣布整体完成。新 v14 独立通道仍本地收尾、未部署；见[关联训练设计](tests/C2-ASSOCIATED-LANE-DESIGN.md)、[原 ACTION_REQUIRED 验收](tests/C2-ACTION-REQUIRED-ISOLATED-ACCEPTANCE-2026-09-30.md)及[本轮实际验收](tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md)。
+C2.5 的已实现运维规则：运行时暂停不覆盖影子绑定 export_paused，只允许既存批次沿原身份核验，概览在未完成批次存在时显示 PAUSING，排空后 PAUSED；恢复后的新目标仍重读完整 B/C/G。可重试错误按季持久退避，最长六小时；非重试错误 ACTION_REQUIRED 等待 Coach 核查与显式重试。专用 c2test 已验证受控 Google 成员冲突停轮询、整行 CAS 恢复及 Coach retry；0.16.2／v13 本轮又真实验证关联 PARTIAL／受控空回复恢复、FAILED 原批次暂停排空、禁止提前恢复和暂停中准备新批。最终 retry 实表为零，旧历史 SUPERSEDED 冲突保留；完整备份只下载校验，未恢复。Apps Script 临时故障代码已从部署和 HEAD 撤下，原部署 v14 和原 HEAD 分别完整恢复并独立核验。自动导出 false、cron 为空。真实配额／随机断网、并发 SENT 暂停窗口、自动 cron、备份恢复、同季独立训练仍未通过，不据受控故障宣布整体完成。新 v14 独立通道已通过本地验收、未部署；见[关联训练设计](tests/C2-ASSOCIATED-LANE-DESIGN.md)、[原 ACTION_REQUIRED 验收](tests/C2-ACTION-REQUIRED-ISOLATED-ACCEPTANCE-2026-09-30.md)及[本轮实际验收](tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md)。
 
 2026-09-28 阶段快照：C2.2 Form 导入和 C2.3 五类 Sheet 差异检查已通过独立环境验收；C2.4 成员／名单版本写回、两行 `PARTIAL` 和成员已写后丢回执恢复也已验证。排期事务快照、三表桥接、模板／周次同步实体和有序单行导出器当时仅完成本地验证。详细证据见 [C2.2](tests/C2-FORM-IMPORT-ACCEPTANCE.md)、[C2.3](tests/C2-SHEET-DIFF-ACCEPTANCE.md)、[成员及回执验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)、[排期本地集成](tests/C2-SCHEDULE-EXPORT-LOCAL-2026-09-28.md)。
 
@@ -214,6 +214,8 @@ C2.5 的已实现运维规则：运行时暂停不覆盖影子绑定 export_paus
 2026-09-30 的本地补验保留候补取消／系统 revision 2 及成员丢回执暂停排空回归。此后候补与关联受控故障、FAILED 原批次暂停已取得真实隔离证据，见[本轮实际报告](tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md)；并发 SENT、随机网络／配额及其他运维仍须独立验收，生产／原 staging 未变更。
 
 同季独立冲突的第一版实施范围限定为不同训练的关联事件；成员和排期仍保留共享名单／赛季版本屏障，任何未完成批次先沿原批次排空。持久事件顺序、局部阻塞、共享选择器、精确重试、备份与验收门槛见[关联事件按训练继续同步的设计](tests/C2-ASSOCIATED-LANE-DESIGN.md)。ce905f8 的历史前检补丁只提前了关联引用／草稿前检并保留发送前复验，当时未增加 schema 或实现独立训练调度；该补丁不能代表 C2.5 独立冲突门槛通过。
+
+2026-09-30 后续本地训练通道：schema v14 的固定索引、局部 block、direct 请求选择和 outer poll 计划四表已实现并纳入完整备份；共享选择器保留同训练及全季屏障，不因大积压遮住独立训练。完整 Cloudflare 225／225、Node 210／210、类型、构建与打包通过，两名独立审核无未解决 P1/P2。全 pending SQL 成本随积压增长，不承诺固定 CPU。隔离远端仍为 0.16.2／v13，升级和独立训练真实 Google 验收尚未执行；升级 v14 后旧 v13 代码拒绝未来 schema，须采用审核后的向前修复或正式恢复流程，不能直接降级 Worker。详见[本地报告](tests/C2-ASSOCIATED-LANE-LOCAL-ACCEPTANCE.md)。
 
 ## C4 写入交接与回退
 

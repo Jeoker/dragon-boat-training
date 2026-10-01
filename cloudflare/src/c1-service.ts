@@ -5,6 +5,7 @@ import {
 } from "../../shared/c1-contract";
 import { canonicalJson, seasonEndsAt, validateSeasonSnapshot } from "../../shared/c1-rules";
 import { ApiError } from "./http";
+import { indexExportEvent } from "./c2-export-lanes";
 import {
   base64UrlText, constantTimeEqual, decodeBase64UrlText, hmacSha256Base64Url,
   legacyCredentialDigest, sha256Base64Url
@@ -179,6 +180,7 @@ export class C1Service {
       `out_${identity.requestKey.slice(7)}`, identity.requestKey, topic,
       JSON.stringify({ action, entity: capturedEntity }), Date.parse(at) + 600_000, at
     ).toArray();
+    indexExportEvent(this.ctx.storage.sql, `out_${identity.requestKey.slice(7)}`);
   }
 
   private validateImportGraph(input: ImportCoreSnapshotRequest): void {

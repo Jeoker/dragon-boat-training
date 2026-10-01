@@ -1,3 +1,4 @@
+import { indexExportEvent } from "../src/c2-export-lanes";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
@@ -123,6 +124,7 @@ it("hides only historical clean idle retries in overview without deleting eviden
       VALUES ('out_ops_future',?,'CORE_CHANGED',?,'PENDING',?,?)`, requestKey,
     JSON.stringify({ action: "updateMember", entity: { season_id: seasonId } }),
     Date.now() + 600_000, at).toArray();
+    indexExportEvent(sql, 'out_ops_future');
   });
   const future = await overview("ops_clean_retry_future");
   expect(future.retry).toBeNull();
@@ -198,6 +200,7 @@ it("halts a permanent unsupported event until a Coach explicitly retries it", as
       VALUES ('out_ops_unsupported',?,'HISTORY_FROZEN',?,'PENDING',?,?)`, key,
     JSON.stringify({ action: "changeSignup", entity: { season_id: seasonId } }),
     Date.now() - 1_000, at).toArray();
+    indexExportEvent(sql, 'out_ops_unsupported');
     sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at)
       VALUES (?,1,7,0,'SYNC_OUTBOX_BLOCKED',?)`, seasonId, at).toArray();
   });

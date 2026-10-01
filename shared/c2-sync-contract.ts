@@ -58,6 +58,8 @@ export interface ImportSyncFoundationRequest {
 }
 
 export interface SyncOverviewRequest extends SessionRequest { season_id: string; }
+export interface RetryExportRequest extends SyncOverviewRequest { outbox_id: string | null; }
+export interface ListExportBlocksRequest extends SyncOverviewRequest { limit: number; cursor: string | null; }
 export interface SetExportPauseRequest extends SessionRequest { season_id: string; paused: boolean; }
 export interface ListSyncConflictsRequest extends SessionRequest {
   season_id: string; limit: number; cursor: string | null; status: "OPEN" | "RESOLVED" | "SUPERSEDED";
@@ -230,6 +232,22 @@ export function parseImportSyncFoundation(value: unknown): ImportSyncFoundationR
 export function parseSyncOverview(value: unknown): SyncOverviewRequest {
   const input = object(value);
   return { ...sessionRequest(input), season_id: identifier(input, "season_id") };
+}
+
+export function parseRetryExport(value: unknown): RetryExportRequest {
+  const input = object(value);
+  return { ...parseSyncOverview(input), outbox_id: input.outbox_id === undefined ? null : identifier(input, "outbox_id") };
+}
+
+export function parseListExportBlocks(value: unknown): ListExportBlocksRequest {
+  const input = object(value);
+  const limit = input.limit === undefined ? 50 : integer(input, "limit", 1);
+  if (limit > 100) throw new ContractValidationError("limit must not exceed 100.", "limit");
+  const cursor = input.cursor == null ? null : string(input, "cursor", 1, 128);
+  if (cursor && (!/^[1-9]\d*$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))) {
+    throw new ContractValidationError("cursor must be a positive event sequence.", "cursor");
+  }
+  return { ...parseSyncOverview(input), limit, cursor };
 }
 
 export function parseSetExportPause(value: unknown): SetExportPauseRequest {

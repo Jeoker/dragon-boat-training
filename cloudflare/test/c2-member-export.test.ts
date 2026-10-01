@@ -1,3 +1,4 @@
+import { indexExportEvent } from "../src/c2-export-lanes";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, expect, it, vi } from "vitest";
@@ -68,6 +69,7 @@ async function seed(testEnvironment: Env) {
       requestKey,
       JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId, member_ids: memberIds } }),
       Date.now() - 1000, at).toArray();
+    indexExportEvent(context.storage.sql, "out_export_test_001");
     const record = Object.fromEntries(SHEET_SCOPES.SEASON.headers.map((name, index) =>
       [name, seasonCells()[index]]));
     for (const group of new Set(SYNC_FIELD_DEFINITIONS.SEASON.map((field) => field.dependency_group))) {
@@ -193,6 +195,7 @@ it("exports a multi-member event one verified target at a time and survives a lo
        VALUES ('out_export_later_003',?,'CORE_CHANGED',?,'PENDING',?,?)`, requestKey,
       JSON.stringify({ action: "updateMember", entity: { season_id: seasonId, member_id: memberIds[0] } }),
       Date.now() - 1000, new Date().toISOString()).toArray();
+    indexExportEvent(context.storage.sql, "out_export_later_003");
   });
   expect(await exportNext("export_run_005")).toMatchObject({ data: { status: "IDLE" } });
   expect(patchCalls).toBe(5);
@@ -206,6 +209,11 @@ it("drains a Google-committed batch while paused without preparing the next even
     sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id='out_export_test_001'",
       JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
         member_ids: [memberIds[0]], roster_version: 1 } })).toArray();
+    const sequence = sql.exec<{ event_sequence: number }>("SELECT event_sequence FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").one().event_sequence;
+    sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").toArray();
+    indexExportEvent(sql, "out_export_test_001");
+    sql.exec("UPDATE sync_export_event_index SET event_sequence=? WHERE outbox_id='out_export_test_001'", sequence).toArray();
+    sql.exec("UPDATE sync_export_event_index SET classification_anchor=json_array(outbox_id,event_sequence,season_id,handler_kind,practice_id)").toArray();
     const requestKey = sql.exec<{ request_key: string }>(
       "SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
     sql.exec(`INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
@@ -213,6 +221,7 @@ it("drains a Google-committed batch while paused without preparing the next even
     JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
       member_ids: [memberIds[1]], roster_version: 2 } }), Date.now() - 1000,
     "2026-09-02T12:00:00.000Z").toArray();
+    indexExportEvent(sql, 'out_export_after_pause_002');
   });
   const login = await call(environment, "/internal/c1/coach-login", {
     request_id: "paused_export_login_001", coach_code: "local-test-coach-code"
@@ -476,6 +485,11 @@ it("advances captured roster versions in order when another member joins before 
     context.storage.sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id='out_export_test_001'",
       JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
         member_ids: [memberIds[0]], roster_version: 1 } })).toArray();
+    const sequence = context.storage.sql.exec<{ event_sequence: number }>("SELECT event_sequence FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").one().event_sequence;
+    context.storage.sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").toArray();
+    indexExportEvent(context.storage.sql, "out_export_test_001");
+    context.storage.sql.exec("UPDATE sync_export_event_index SET event_sequence=? WHERE outbox_id='out_export_test_001'", sequence).toArray();
+    context.storage.sql.exec("UPDATE sync_export_event_index SET classification_anchor=json_array(outbox_id,event_sequence,season_id,handler_kind,practice_id)").toArray();
     const requestKey = context.storage.sql.exec<{ request_key: string }>(
       "SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
     context.storage.sql.exec(
@@ -484,6 +498,7 @@ it("advances captured roster versions in order when another member joins before 
       JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
         member_ids: [memberIds[1]], roster_version: 2 } }), Date.now() - 1000,
       "2026-09-02T12:00:00.000Z").toArray();
+    indexExportEvent(context.storage.sql, "out_export_rolling_002");
   });
   let seasonRow = seasonCells();
   const memberRows: string[][] = [];
@@ -544,6 +559,11 @@ it("does not overtake an earlier unsupported season event", async () => {
   const stub = await seed(environment);
   await runInDurableObject(stub, async (_instance: TeamState, context) => {
     context.storage.sql.exec("UPDATE sync_outbox SET topic='SCHEDULE_CHANGED' WHERE outbox_id='out_export_test_001'").toArray();
+    const sequence = context.storage.sql.exec<{ event_sequence: number }>("SELECT event_sequence FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").one().event_sequence;
+    context.storage.sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").toArray();
+    indexExportEvent(context.storage.sql, "out_export_test_001");
+    context.storage.sql.exec("UPDATE sync_export_event_index SET event_sequence=? WHERE outbox_id='out_export_test_001'", sequence).toArray();
+    context.storage.sql.exec("UPDATE sync_export_event_index SET classification_anchor=json_array(outbox_id,event_sequence,season_id,handler_kind,practice_id)").toArray();
     const requestKey = context.storage.sql.exec<{ request_key: string }>(
       "SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
     context.storage.sql.exec(
@@ -551,6 +571,7 @@ it("does not overtake an earlier unsupported season event", async () => {
        VALUES ('out_export_later_002',?,'CORE_CHANGED',?,'PENDING',?,?)`, requestKey,
       JSON.stringify({ action: "updateMember", entity: { season_id: seasonId, member_id: memberIds[0] } }),
       Date.now() - 1000, new Date().toISOString()).toArray();
+    indexExportEvent(context.storage.sql, "out_export_later_002");
   });
   const result = await call(environment, "/internal/c2/export-next-member",
     { request_id: "export_ordered_001", season_id: seasonId });
@@ -583,6 +604,11 @@ it("does not count a prior binding's verified member rows toward the current exp
     sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id='out_export_test_001'",
       JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
         member_ids: memberIds, roster_version: 2 } })).toArray();
+    const sequence = sql.exec<{ event_sequence: number }>("SELECT event_sequence FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").one().event_sequence;
+    sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").toArray();
+    indexExportEvent(sql, "out_export_test_001");
+    sql.exec("UPDATE sync_export_event_index SET event_sequence=? WHERE outbox_id='out_export_test_001'", sequence).toArray();
+    sql.exec("UPDATE sync_export_event_index SET classification_anchor=json_array(outbox_id,event_sequence,season_id,handler_kind,practice_id)").toArray();
   });
   const readScopes: string[] = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
@@ -664,6 +690,7 @@ it("does not partially export a legacy event when a later roster version cannot 
        VALUES ('out_export_uncaptured_002',?,'MEMBERS_IMPORTED',?,'PENDING',?,?)`, requestKey,
       JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
         member_ids: [memberIds[0]] } }), Date.now() - 1000, "2026-09-02T12:00:00.000Z").toArray();
+    indexExportEvent(context.storage.sql, "out_export_uncaptured_002");
   });
   const fetchSpy = vi.spyOn(globalThis, "fetch");
   const response = await call(environment, "/internal/c2/export-next-member",
@@ -679,6 +706,11 @@ it("rejects a member event without member targets instead of confirming its seas
     context.storage.sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id='out_export_test_001'",
       JSON.stringify({ action: "pullFormResponses", entity: { season_id: seasonId,
         member_ids: [], roster_version: 2 } })).toArray();
+    const sequence = context.storage.sql.exec<{ event_sequence: number }>("SELECT event_sequence FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").one().event_sequence;
+    context.storage.sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").toArray();
+    indexExportEvent(context.storage.sql, "out_export_test_001");
+    context.storage.sql.exec("UPDATE sync_export_event_index SET event_sequence=? WHERE outbox_id='out_export_test_001'", sequence).toArray();
+    context.storage.sql.exec("UPDATE sync_export_event_index SET classification_anchor=json_array(outbox_id,event_sequence,season_id,handler_kind,practice_id)").toArray();
   });
   const fetchSpy = vi.spyOn(globalThis, "fetch");
   const response = await call(environment, "/internal/c2/export-next-member",
@@ -745,6 +777,7 @@ it("refuses a manual Google edit before patching an existing member", async () =
     "ACTIVE", "LEFT", "1", at, at];
   let google = [...original];
   await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id='out_export_test_001'").toArray();
     context.storage.sql.exec("DELETE FROM sync_outbox WHERE outbox_id='out_export_test_001'").toArray();
     const requestKey = context.storage.sql.exec<{ request_key: string }>(
       "SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
@@ -753,6 +786,7 @@ it("refuses a manual Google edit before patching an existing member", async () =
        VALUES ('out_export_update_001',?,'CORE_CHANGED',?,'PENDING',?,?)`, requestKey,
       JSON.stringify({ action: "updateMember", entity: { season_id: seasonId, member_id: memberIds[0] } }),
       Date.now() - 1000, at).toArray();
+    indexExportEvent(context.storage.sql, "out_export_update_001");
     const record = Object.fromEntries(sheetHeaders.map((name, index) => [name, original[index]]));
     const groups = [...new Set(SYNC_FIELD_DEFINITIONS.MEMBER.map((field) => field.dependency_group))];
     for (const group of groups) {
@@ -814,4 +848,55 @@ it("refuses a manual Google edit before patching an existing member", async () =
     expect(baseline.cloud_version).toBe(2);
     expect(JSON.parse(baseline.baseline_json)).toEqual({ display_name_override: "A. Smith" });
   });
+});
+it("pins an unknown initial direct member read before any batch and never switches to a later member event", async () => {
+  const environment = testEnv("direct-read-pin");
+  const stub = await seed(environment);
+  let firstReadFault = true;
+  const memberRows: string[][] = [];
+  let seasonRow = seasonCells();
+  let writes = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const envelope = JSON.parse(String(init?.body));
+    const payload = JSON.parse(envelope.payload_json);
+    const season = payload.entity_type === "SEASON" || envelope.action === "cloudflarePatchSeasonSheet";
+    const common = { protocol_version: envelope.protocol_version, team_id: envelope.team_id, season_id: seasonId,
+      binding_version: 1, writer_epoch: envelope.writer_epoch, operation_id: envelope.operation_id, payload_digest: envelope.payload_digest,
+      spreadsheet_id: season ? "system_member_export_001" : "spreadsheet_export_test_001", tab_id: season ? "100" : "101" };
+    if (envelope.action === "cloudflareReadSheetRecords") {
+      if (firstReadFault) { firstReadFault = false; throw new Error("Unknown initial Google read result"); }
+      const scope = season ? "SEASON" : "MEMBER";
+      return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: { ...common, entity_type: scope,
+        tab_name: SHEET_SCOPES[scope].tab, headers: [...SHEET_SCOPES[scope].headers], read_at_ms: Date.now(), secondary: null,
+        rows: (season ? [seasonRow] : memberRows).map((cells, index) => ({ row_number: index + 2, cells: [...cells] })) } });
+    }
+    writes++;
+    if (season) seasonRow = [...payload.items[0].target];
+    else for (const item of payload.items) {
+      const index = memberRows.findIndex(row => row[1] === item.member_id);
+      if (index < 0) memberRows.push([...item.target]); else memberRows[index] = [...item.target];
+    }
+    return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: { ...common,
+      spreadsheet_id: payload.spreadsheet_id, tab_id: payload.tab_id, status: "verified", acknowledged_at: new Date().toISOString(),
+      ...(season ? { verified_season_ids: [seasonId] } : { verified_member_ids: payload.items.map((item: { member_id: string }) => item.member_id) }) } });
+  });
+  const next = async (id: string, season = seasonId) => (await call(environment, "/internal/c2/export-next-member", { request_id: id, season_id: season })).json() as Promise<any>;
+  expect(await next("direct_member_unknown_001")).toMatchObject({ error: { code: "BRIDGE_UNAVAILABLE" } });
+  expect(await next("direct_member_other_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED" } });
+  expect(await next("direct_member_other_002")).toMatchObject({ data: { status: "BATCH_CONFIRMED" } });
+  expect(await next("direct_member_other_final")).toMatchObject({ data: { status: "EVENT_CONFIRMED" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const key = sql.exec<{ request_key: string }>("SELECT request_key FROM sync_outbox WHERE outbox_id='out_export_test_001'").one().request_key;
+    sql.exec("UPDATE members SET display_name_override='Updated Name',member_version=2 WHERE season_id=? AND member_id=?", seasonId, memberIds[0]).toArray();
+    sql.exec("INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at) VALUES ('out_direct_member_later',?,'CORE_CHANGED',?,'PENDING',?,?)", key,
+      JSON.stringify({ action: "updateMember", entity: { season_id: seasonId, member_id: memberIds[0], roster_version: 2 } }), Date.now() - 1000, new Date().toISOString()).toArray();
+    indexExportEvent(sql, "out_direct_member_later");
+  });
+  const before = writes;
+  expect(await next("direct_member_unknown_001")).toMatchObject({ error: { code: "SYNC_OUTBOX_BLOCKED" } });
+  expect(await next("direct_member_unknown_001", "season_changed_pin_001")).toMatchObject({ error: { code: "IDEMPOTENCY_CONFLICT" } });
+  expect(writes).toBe(before);
+  expect(await next("direct_member_new_later_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_direct_member_later" } });
+  expect(writes).toBe(before + 1);
 });

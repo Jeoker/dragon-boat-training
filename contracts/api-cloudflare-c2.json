@@ -1,7 +1,7 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "C2.4 signup and seating core four-table chain passed isolated c2test acceptance on hotfix 0.16.1; waitlist, partial-write fault and same-season conflict cases remain unverified. C2.5 fault recovery remains incomplete. Production and automatic export are disabled",
+  "status": "C2.4 waitlist promotion, controlled associated PARTIAL-write and committed-receipt reply-loss recovery, and FAILED-batch pause/drain passed isolated c2test on 0.16.2/schema v13; evidence: tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md (77579e1). Different-practice associated lanes passed local schema-v14 checks only and await isolated Google acceptance. Random network/quota faults and restore drills remain unverified. Production and automatic export are disabled",
   "contract_version": "2026-09-30.c2.5-associated-export",
   "service_version": "0.16.0-c2-associated-export",
   "transport_gate": "C2 routes are absent in production. Local or staging diagnostic routes require C2_TEST_KEY; the Form notification instead verifies a fresh Google bridge HMAC, team and writer epoch before reaching the DO. This gate is independent from the Coach session required by management reads.",
@@ -34,9 +34,9 @@
     },
     "/internal/c2/retry-export": {
       "method": "POST", "authentication": "session_token", "writes": true,
-      "request": ["request_id", "session_token", "season_id"],
+      "request": ["request_id", "session_token", "season_id", "outbox_id?"],
       "response_result": ["season_id", "rearmed", "previous_error", "unfinished_batch_id", "next_batch_requires_fresh_comparison"],
-      "notes": "Coach-only explicit re-arm after a non-retryable export failure. Does not itself write Google or erase a batch/outbox; the next poll reuses any unfinished batch, while a new batch performs a fresh B/C/G comparison. Deployed to isolated c2test; only rejection when no halt exists has remote acceptance. Actual halted-state recovery remains local-test evidence."
+      "notes": "Coach-only explicit re-arm after a non-retryable export failure. Does not itself write Google or erase a batch/outbox; the next poll reuses any unfinished batch, while a new batch performs a fresh B/C/G comparison. The existing global ACTION_REQUIRED, Google CAS rejection and Coach retry recovery passed isolated schema-v13 c2test acceptance on 2026-09-30. The new outbox-scoped lane retry is local schema-v14 evidence only. Optional outbox_id rearms only that unchanged current pending local event; omitted ID retains global retry and never clears local blocks."
     },
     "/internal/c2/list-sync-conflicts": {
       "method": "POST", "authentication": "session_token", "writes": false,
@@ -92,9 +92,9 @@
       "method": "POST",
       "authentication": "transport_only",
       "writes": true,
-      "request": ["request_id", "season_id"],
+      "request": ["request_id", "season_id", "outbox_id?"],
       "response": ["season_id", "status", "optional batch_id", "optional outbox_id", "optional entity_type", "optional row_id", "optional row_ids", "optional cloud_version", "optional signup_version", "optional seat_plan_version", "optional published_revision"],
-      "notes": "C2.4 isolated signup and seating exporter. Strict immutable SIGNUPS_CHANGED or SEATING_CHANGED snapshots and per-practice cursor order. Each call sends one recoverable signed batch of up to four adjacent rows from one physical tab within the bridge payload budget, in signup, complete draft-seat, published-revision, then state order. An existing Google row must match its full physical B; first and final stages verify practice, member and actor references. The event stays pending through partial cross-tab writes. Only after final Google reread of every target and exact full-draft seat identity check do logical B, physical B, cursor and outbox advance in one SQLite transaction. A lost bridge reply retries the original batch. Old snapshots, version gaps, manual Google edits, and missing baselines stop before a new write. The core signup, full-draft and published-revision chain passed isolated c2test acceptance on service 0.16.1; the manifest service_version remains the default staging configuration 0.16.0. Waitlist, associated partial-write fault and same-season conflict cases remain unverified. Automatic export remains disabled; no production access."
+      "notes": "C2.4 isolated signup and seating exporter. Strict immutable SIGNUPS_CHANGED or SEATING_CHANGED snapshots and per-practice cursor order. Each call sends one recoverable signed batch of up to four adjacent rows from one physical tab within the bridge payload budget, in signup, complete draft-seat, published-revision, then state order. An existing Google row must match its full physical B; first and final stages verify practice, member and actor references. The event stays pending through partial cross-tab writes. Only after final Google reread of every target and exact full-draft seat identity check do logical B, physical B, cursor and outbox advance in one SQLite transaction. A lost bridge reply retries the original batch. Old snapshots, version gaps, manual Google edits, and missing baselines stop before a new write. The core signup, full-draft and published-revision chain passed isolated c2test acceptance on service 0.16.1; the manifest service_version remains the default staging configuration 0.16.0. Waitlist promotion, controlled first-row PARTIAL interruption, committed-receipt reply loss and FAILED-batch pause/drain passed isolated c2test on 0.16.2/schema v13; see tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md (77579e1). Per-practice independent lanes are local schema-v14 evidence only and await isolated Google acceptance. Random network/quota faults and restore drills remain unverified. Automatic export remains disabled; no production access."
     },
     "/internal/c2/poll-due-exports": {
       "method": "POST", "authentication": "transport_only", "writes": true,
@@ -132,6 +132,12 @@
       "request": ["request_id", "session_token", "season_id", "response_id", "member_id", "source_version"],
       "response_result": ["season_id", "response_id", "member_id", "source_version"],
       "notes": "Coach resolution for a reviewed Form answer. Requires current source version, an existing same-season member and no prior Form mapping for that member; it preserves the member identity and name override. It is a protected C2 staging action, not a normal join approval."
+    },
+    "/internal/c2/list-export-blocks": {
+      "method": "POST", "authentication": "session_token", "writes": false,
+      "request": ["request_id", "session_token", "season_id", "limit?", "cursor?"],
+      "response_result": ["season_id", "binding_version", "items", "next_cursor"],
+      "notes": "Lists current pending local lane blocks by immutable event sequence; no raw Google cells."
     }
   },
   "errors": [
@@ -150,11 +156,12 @@
     "SYNC_SCHEDULE_INVALID", "SYNC_SCHEDULE_NEEDS_REVIEW", "SYNC_BASELINE_MAPPING_STALE",
     "SYNC_ASSOCIATED_INVALID", "SYNC_ASSOCIATED_NEEDS_REVIEW", "SYNC_ASSOCIATED_STALE", "SYNC_ASSOCIATED_VERSION_GAP",
     "SYNC_REFERENCE_INVALID", "SYNC_REFERENCE_MISSING", "SYNC_REFERENCE_NEEDS_REVIEW", "SYNC_VERSION_REGRESSION",
-    "SHEET_PATCH_STRUCTURE", "SHEET_PATCH_CONFLICT", "SHEET_PATCH_UNVERIFIED", "INTERNAL_ERROR"
+    "SHEET_PATCH_STRUCTURE", "SHEET_PATCH_CONFLICT", "SHEET_PATCH_UNVERIFIED", "INTERNAL_ERROR",
+    "SYNC_EVENT_INDEX_INCOMPLETE", "SYNC_EVENT_INDEX_INVALID"
   ],
   "not_yet_in_this_slice": [
-    "Frozen-history Sheet inspection", "signup waitlist and seating partial-write remote acceptance", "production automatic export scheduling",
-    "business conflict resolution or import", "same-season independent-entity progress around a blocked conflict", "annual Google export",
+    "Frozen-history Sheet inspection", "random network or quota fault acceptance and backup restore drills", "production automatic export scheduling",
+    "business conflict resolution or import", "remote acceptance of same-season independent-practice progress around a blocked conflict", "annual Google export",
     "production or Pages routing", "browser CORS"
   ]
 }

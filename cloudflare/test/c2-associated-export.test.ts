@@ -6,6 +6,8 @@ import { TeamState } from "../src/team-state";
 import { SHEET_SCOPES, type SheetScope } from "../src/c2-sheet-bridge";
 import { SYNC_FIELD_DEFINITIONS, normalizeSyncValue } from "../../shared/c2-sync-rules";
 import worker from "../src/index";
+import { exportClassificationAnchor, indexExportEvent, selectExportLane } from "../src/c2-export-lanes";
+import { applySchema } from "../src/schema";
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 const seasonId = "season_associated_export_001";
@@ -93,6 +95,19 @@ async function next(testEnv: Env, id: string): Promise<any> {
   return (await call(testEnv, "/internal/c2/export-next-associated",
     { request_id: id, season_id: seasonId })).json();
 }
+async function rearm(testEnv: Env, outboxId = "out_associated_001") {
+  const login = await (await call(testEnv, "/internal/c1/coach-login", {
+    request_id: `lane_login_${outboxId}`, coach_code: "local-test-coach-code" }, true)).json() as any;
+  const token = login.data.result.session_token;
+  try {
+    const result = await (await call(testEnv, "/internal/c2/retry-export", {
+      request_id: `lane_retry_${outboxId}`, session_token: token, season_id: seasonId, outbox_id: outboxId })).json() as any;
+    expect(result).toMatchObject({ data: { result: { rearmed: true, outbox_id: outboxId } } });
+    return token;
+  } finally {
+    await call(testEnv, "/internal/c1/coach-logout", { request_id: `lane_logout_${outboxId}`, session_token: token }, true);
+  }
+}
 async function seed(testEnv: Env, payload: Record<string, unknown>, topic = "SIGNUPS_CHANGED",
     leftCapacity = 1, rightCapacity = 1) {
   const coach = { coach_id: coachId, display_name: "Associated Coach",
@@ -158,6 +173,7 @@ async function seed(testEnv: Env, payload: Record<string, unknown>, topic = "SIG
     sql.exec(`INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
       VALUES ('out_associated_001',?, ?,?,'PENDING',?,?)`, key, topic,
       JSON.stringify(payload), Date.now() - 1000, at).toArray();
+    indexExportEvent(sql, "out_associated_001");
     const addBaselines = (scope: "MEMBER" | "PRACTICE", rowId: string, row: Record<string, unknown>) => {
       const sheet = Object.fromEntries(SHEET_SCOPES[scope].headers.map((header) =>
         [header, String(row[header] ?? "")]));
@@ -185,6 +201,7 @@ class SheetMirror {
   loseFirstReply = false;
   partialFirstSeatBeforeLoss = false;
   beforeRead: ((scope: SheetScope) => void) | null = null;
+  afterPatch: (() => Promise<void>) | null = null;
   constructor(leftCapacity = 1, rightCapacity = 1) {
     for (const scope of Object.keys(SHEET_SCOPES) as SheetScope[]) this.rows.set(scope, []);
     this.rows.set("PRACTICE", [cells("PRACTICE", capacity(leftCapacity, rightCapacity))]);
@@ -243,12 +260,648 @@ class SheetMirror {
         this.receipts.set(envelope.operation_id, receipt);
       }
       if (this.loseFirstReply) { this.loseFirstReply = false; throw new Error("Reply lost after Sheet commit"); }
+      await this.afterPatch?.();
       return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: receipt });
     });
   }
 }
 
 afterEach(() => vi.restoreAllMocks());
+
+function fixtureBlock(sql: SqlStorage, id: string) {
+  sql.exec(`INSERT INTO sync_export_event_blocks
+    SELECT season_id,1,outbox_id,practice_id,payload_anchor,'sha256_v1:fixture','SYNC_REFERENCE_NEEDS_REVIEW',
+      1,0,1,'PRACTICE',practice_id,?,? FROM sync_export_event_index WHERE outbox_id=?`, at, at, id).toArray();
+}
+it.each(["successors", "heads"])("finds B after 250 blocked A %s without bypassing any practice head", async (shape) => {
+  const testEnv = environment(`sql-heads-${shape}`), mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await largeQueue(stub, 250);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    if (shape === "heads") {
+      for (let n = 2; n <= 250; n++) {
+        const id = `out_large_${n}`, p = `practice_blocked_head_${n}`;
+        const event = signupEvent(1, [{ ...signup(members[0], 1), practice_id: p }]);
+        event.entity.practice_id = p;
+        sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id=?", id).toArray();
+        sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id=?", JSON.stringify(event), id).toArray();
+        indexExportEvent(sql, id);
+        fixtureBlock(sql, id);
+      }
+    }
+    fixtureBlock(sql, "out_associated_001");
+  });
+  await secondPractice(stub, mirror);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(selectExportLane(context.storage.sql, seasonId)).toMatchObject({ coverage: "complete", event: { practice_id: secondPracticeId } });
+  });
+  mirror.install();
+  expect(await next(testEnv, `sql_head_batch_${shape}`)).toMatchObject({ data: { status: "BATCH_CONFIRMED" } });
+  expect(await next(testEnv, `sql_head_final_${shape}`)).toMatchObject({ data: { status: "EVENT_CONFIRMED" } });
+  expect(mirror.writes).toBe(1);
+});
+it("keeps a future A head ahead of due A successors while independent B can run", async () => {
+  const testEnv = environment("future-head"), mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await largeQueue(stub, 250);
+  await secondPractice(stub, mirror);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec("UPDATE sync_outbox SET due_at_ms=? WHERE outbox_id='out_associated_001'", Date.now()+60000).toArray();
+    expect(selectExportLane(sql, seasonId)).toMatchObject({ event: { practice_id: secondPracticeId }, coverage: "complete" });
+    fixtureBlock(sql, "out_associated_002");
+    expect(selectExportLane(sql, seasonId)).toMatchObject({ event: null, reason: "WAITING_OR_BLOCKED", coverage: "complete" });
+  });
+});
+it("rejects a damaged block outside the selected head globally", async () => {
+  const testEnv = environment("late-block-anchor"), mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await secondPractice(stub, mirror);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const id = sql.exec<{ outbox_id: string }>("SELECT outbox_id FROM sync_export_event_index WHERE practice_id=?", secondPracticeId).one().outbox_id;
+    fixtureBlock(sql, id);
+    sql.exec("UPDATE sync_export_event_blocks SET payload_anchor='damaged' WHERE outbox_id=?",id).toArray();
+    expect(selectExportLane(sql, seasonId)).toMatchObject({ event: null, coverage: "incomplete", reason: "BLOCK_INVALID" });
+  });
+  const fetchSpy = vi.spyOn(globalThis,"fetch");
+  expect(await next(testEnv,"late_block_proof_001")).toMatchObject({ error: { code: "SYNC_EVENT_INDEX_INCOMPLETE" } });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+it("matches SQLite classification encoding for ASCII, null and maximum safe sequences", async () => {
+  const stub = await seed(environment("anchor-encoding"), signupEvent(1,[signup(members[0],1)]));
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    for (const seq of [1,9007199254740991]) for (const p of [null,practiceId]) {
+      const anchor = exportClassificationAnchor("out_ascii_001",seq,seasonId,p?"ASSOCIATED":"BARRIER",p);
+      expect(sql.exec<{ anchor:string }>("SELECT json_array(?,CAST(? AS INTEGER),?,?,?) AS anchor","out_ascii_001",seq,seasonId,p?"ASSOCIATED":"BARRIER",p).one().anchor).toBe(anchor);
+    }
+  });
+});
+it("rejects a single oversized candidate instead of materializing it", async () => {
+  const stub = await seed(environment("single-oversized"),signupEvent(1,[signup(members[0],1)]));
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec("DELETE FROM sync_export_event_index").toArray();
+    sql.exec("UPDATE sync_outbox SET payload_json=?",JSON.stringify({...signupEvent(1,[signup(members[0],1)]),padding:"x".repeat(2_000_000)})).toArray();
+    indexExportEvent(sql,"out_associated_001");
+    expect(selectExportLane(sql,seasonId)).toMatchObject({ event:null,coverage:"incomplete",reason:"SCAN_LIMIT" });
+  });
+});
+it("uses UTF-8 bytes for the single-event prefetch bound", async () => {
+  const stub = await seed(environment("unicode-oversized"),signupEvent(1,[signup(members[0],1)]));
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const payload = JSON.stringify({...signupEvent(1,[signup(members[0],1)]),padding:"船".repeat(700_000)});
+    expect(payload.length).toBeLessThan(2_000_000);
+    sql.exec("DELETE FROM sync_export_event_index").toArray();
+    sql.exec("UPDATE sync_outbox SET payload_json=?",payload).toArray();
+    indexExportEvent(sql,"out_associated_001");
+    expect(selectExportLane(sql,seasonId)).toMatchObject({ event:null,coverage:"incomplete",reason:"SCAN_LIMIT" });
+  });
+});
+it("drains the fixed batch ahead of unrelated damaged pending ownership but rejects its own classification drift", async () => {
+  const testEnv = environment("drain-source-anchor"), mirror = new SheetMirror();
+  const stub = await seed(testEnv,signupEvent(1,[signup(members[0],1)]));
+  await secondPractice(stub,mirror);
+  mirror.loseFirstReply=true;
+  mirror.install();
+  expect(await next(testEnv,"drain_anchor_original_001")).toMatchObject({ error:{code:"BRIDGE_UNAVAILABLE"} });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec("UPDATE sync_outbox SET payload_json='{}' WHERE outbox_id='out_associated_002'").toArray();
+    expect(selectExportLane(sql,seasonId)).toMatchObject({ reason:"DRAIN_BATCH",coverage:"complete",event:{outbox_id:"out_associated_001"} });
+    sql.exec("UPDATE sync_export_event_index SET event_sequence=1000 WHERE outbox_id='out_associated_001'").toArray();
+    expect(selectExportLane(sql,seasonId)).toMatchObject({ reason:"INDEX_INCOMPLETE",coverage:"incomplete",event:null });
+  });
+  const writes=mirror.writes;
+  expect(await next(testEnv,"drain_anchor_original_001")).toMatchObject({ error:{code:"SYNC_EVENT_INDEX_INCOMPLETE"} });
+  expect(mirror.writes).toBe(writes);
+});
+
+const secondPracticeId = "practice_associated_export_002";
+async function largeQueue(stub: ReturnType<Env["TEAM_STATE"]["getByName"]>, count = 205, padding = 0) {
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const key = sql.exec<{ request_key: string }>("SELECT request_key FROM sync_outbox WHERE outbox_id='out_associated_001'").one().request_key;
+    for (let number = 2; number <= count; number++) {
+      const payload = { ...signupEvent(number, [signup(members[0], 1)]), ...(padding ? { diagnostic_padding: "x".repeat(padding) } : {}) };
+      sql.exec("INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at) VALUES (?,?,'SIGNUPS_CHANGED',?,'PENDING',?,?)", `out_large_${number}`, key, JSON.stringify(payload), Date.now() - 1000, at).toArray();
+      indexExportEvent(sql, `out_large_${number}`);
+    }
+    sql.exec("UPDATE practice_versions SET signup_version=? WHERE season_id=? AND practice_id=?", count, seasonId, practiceId).toArray();
+  });
+}
+
+it.each([0, 15000])("drains a proved prefix of 205 events with padding=%s instead of freezing on row or byte budgets", async (padding) => {
+  const testEnv = environment(`large-queue-${padding}`);
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await largeQueue(stub, 205, padding);
+  mirror.install();
+  for (let number = 1; number <= 3; number++) {
+    const outbox = number === 1 ? "out_associated_001" : `out_large_${number}`;
+    expect(await next(testEnv, `large_batch_${padding}_${number}`)).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: outbox } });
+    expect(await next(testEnv, `large_final_${padding}_${number}`)).toMatchObject({ data: { status: "EVENT_CONFIRMED", outbox_id: outbox, signup_version: number } });
+  }
+  expect(mirror.writes).toBe(3);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(selectExportLane(context.storage.sql, seasonId)).toMatchObject({ coverage: "complete", event: { outbox_id: "out_large_4" } });
+    expect(context.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM sync_outbox WHERE status='PENDING'").one().count).toBe(202);
+  });
+});
+
+it("keeps late barriers after safe prefixes, early barriers ahead, and blocked successors sealed", async () => {
+  const testEnv = environment("large-barrier-proof");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await largeQueue(stub);
+  await enqueue(stub, "UNKNOWN_BUSINESS_EVENT", { entity: { season_id: seasonId } }, "out_large_barrier", 205, 0, 0);
+  await secondPractice(stub, mirror);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(selectExportLane(context.storage.sql, seasonId)).toMatchObject({ event: { outbox_id: "out_associated_001" }, coverage: "complete" });
+  });
+  mirror.rows.get("PRACTICE")![0][SHEET_SCOPES.PRACTICE.headers.indexOf("location")] = "A manual conflict";
+  mirror.install();
+  expect(await next(testEnv, "large_block_A_001")).toMatchObject({ error: { code: "SYNC_REFERENCE_NEEDS_REVIEW" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    expect(selectExportLane(sql, seasonId)).toMatchObject({ event: null, coverage: "complete", reason: "WAITING_OR_BLOCKED" });
+    // A barrier at the first persisted sequence can be selected, never bypassed.
+    sql.exec("DELETE FROM sync_export_event_blocks").toArray();
+    sql.exec("UPDATE sync_export_event_index SET event_sequence=1000 WHERE outbox_id='out_associated_001'").toArray();
+    sql.exec("UPDATE sync_export_event_index SET classification_anchor=json_array(outbox_id,event_sequence,season_id,handler_kind,practice_id)").toArray();
+    sql.exec("UPDATE sync_export_event_index SET event_sequence=1 WHERE outbox_id='out_large_barrier'").toArray();
+    sql.exec("UPDATE sync_export_event_index SET classification_anchor=json_array(outbox_id,event_sequence,season_id,handler_kind,practice_id)").toArray();
+    expect(selectExportLane(sql, seasonId)).toMatchObject({ event: { outbox_id: "out_large_barrier", handler_kind: "BARRIER" }, coverage: "complete" });
+  });
+  expect(await next(testEnv, "large_barrier_stop_001")).toMatchObject({ error: { code: "SYNC_OUTBOX_BLOCKED" } });
+  expect(mirror.writes).toBe(0);
+});
+
+it.each(["missing-index", "unknown-owner", "anchor", "C0-sentinel", "classification", "kind", "sequence", "practice"])("rejects late %s damage beyond the candidate prefix globally", async (damage) => {
+  const testEnv = environment(`large-damage-${damage}`);
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await largeQueue(stub);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    if (damage === "missing-index") sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id='out_large_205'").toArray();
+    if (damage === "unknown-owner") {
+      sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id='out_large_205'").toArray();
+      sql.exec("UPDATE sync_outbox SET payload_json='{}' WHERE outbox_id='out_large_205'").toArray();
+      indexExportEvent(sql, "out_large_205");
+    }
+    if (damage === "anchor") sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id='out_large_205'", JSON.stringify(signupEvent(206, [signup(members[0], 1)]))).toArray();
+    if (damage === "C0-sentinel") sql.exec("UPDATE sync_export_event_index SET season_id='@NON_SEASON_C0' WHERE outbox_id='out_large_205'").toArray();
+    if (damage === "classification") sql.exec("UPDATE sync_export_event_index SET practice_id=NULL WHERE outbox_id='out_large_205'").toArray();
+    if (damage === "kind") sql.exec("UPDATE sync_export_event_index SET handler_kind='BARRIER',practice_id=NULL WHERE outbox_id='out_large_205'").toArray();
+    if (damage === "sequence") sql.exec("UPDATE sync_export_event_index SET event_sequence=9000000000000000 WHERE outbox_id='out_large_205'").toArray();
+    if (damage === "practice") sql.exec("UPDATE sync_export_event_index SET practice_id=? WHERE outbox_id='out_large_205'", secondPracticeId).toArray();
+    expect(selectExportLane(sql, seasonId)).toMatchObject({ coverage: "incomplete", event: null, reason: "INDEX_INCOMPLETE" });
+  });
+  const fetchSpy = vi.spyOn(globalThis, "fetch");
+  expect(await next(testEnv, `large_damage_${damage}_001`)).toMatchObject({ error: { code: "SYNC_EVENT_INDEX_INCOMPLETE" } });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+async function secondPractice(stub: ReturnType<Env["TEAM_STATE"]["getByName"]>, mirror: SheetMirror, memberId = members[1]) {
+  const second = { ...practice, practice_id: secondPracticeId, generation_key: "generation_associated_002" };
+  mirror.rows.get("PRACTICE")!.push(cells("PRACTICE", second));
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const original = sql.exec<Record<string, string | number | null>>("SELECT * FROM practices WHERE practice_id=?", practiceId).one();
+    const row = { ...original, practice_id: secondPracticeId, generation_key: second.generation_key };
+    sql.exec(`INSERT INTO practices(${Object.keys(row).join(",")}) VALUES (${Object.keys(row).map(() => "?").join(",")})`, ...Object.values(row)).toArray();
+    sql.exec("INSERT INTO practice_versions(season_id,practice_id,signup_version,seat_plan_version,published_revision) VALUES (?,?,1,0,0)", seasonId, secondPracticeId).toArray();
+    const sheet = Object.fromEntries(SHEET_SCOPES.PRACTICE.headers.map((header) => [header, String(second[header as keyof typeof second] ?? "")]));
+    for (const group of new Set(SYNC_FIELD_DEFINITIONS.PRACTICE.map((field) => field.dependency_group))) {
+      const value = Object.fromEntries(SYNC_FIELD_DEFINITIONS.PRACTICE.filter((field) => field.dependency_group === group)
+        .map((field) => [field.field, normalizeSyncValue(sheet[field.field], field.kind, field.allowed_values)]));
+      sql.exec("INSERT INTO sync_baselines VALUES (?,1,'PRACTICE',?,?,?,?,?,?,?)", seasonId, secondPracticeId, group, JSON.stringify(value), "sha256_v1:fixture_digest", 1, "sha256_v1:fixture_digest", at).toArray();
+    }
+    const payload = signupEvent(1, [{ ...signup(memberId, 1), practice_id: secondPracticeId }]);
+    payload.entity.practice_id = secondPracticeId;
+    const registered = { ...signup(memberId, 1), practice_id: secondPracticeId };
+    sql.exec("INSERT INTO signups(season_id,practice_id,member_id,preference,status,queue_at,queue_sequence,updated_at,last_request_id) VALUES (?,?,?,?,?,?,?,?,?)",
+      seasonId, secondPracticeId, memberId, registered.preference, registered.status, at, 1, at, registered.last_request_id).toArray();
+    const key = sql.exec<{ request_key: string }>("SELECT request_key FROM system_requests WHERE action='importSyncFoundation'").one().request_key;
+    sql.exec("INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at) VALUES ('out_associated_002',?,'SIGNUPS_CHANGED',?,'PENDING',?,?)", key, JSON.stringify(payload), Date.now() - 1000, at).toArray();
+    indexExportEvent(sql, "out_associated_002");
+  });
+}
+
+it("blocks A durably while B confirms and A successors retain order and Coach retry", async () => {
+  const testEnv = environment("independent-lanes");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await secondPractice(stub, mirror);
+  await enqueue(stub, "SIGNUPS_CHANGED", signupEvent(2, [signup(members[0], 1, "CANCELLED")]), "out_associated_A_later", 2, 0, 0);
+  mirror.rows.get("PRACTICE")![0][SHEET_SCOPES.PRACTICE.headers.indexOf("location")] = "Manual A edit";
+  mirror.install();
+  const firstRequest = "lane_A_original_001";
+  expect(await next(testEnv, firstRequest)).toMatchObject({ error: { code: "SYNC_REFERENCE_NEEDS_REVIEW" } });
+  expect(mirror.writes).toBe(0);
+  // The original request is permanently pinned to A, even though it has no batch yet.
+  expect(await next(testEnv, firstRequest)).toMatchObject({ error: { code: "SYNC_OUTBOX_BLOCKED" } });
+  expect(await next(testEnv, "lane_B_batch_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_associated_002" } });
+  expect(await next(testEnv, "lane_B_final_001")).toMatchObject({ data: { status: "EVENT_CONFIRMED", outbox_id: "out_associated_002" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(selectExportLane(context.storage.sql, seasonId)).toMatchObject({ event: null, reason: "WAITING_OR_BLOCKED", coverage: "complete" });
+    expect(context.storage.sql.exec("SELECT * FROM sync_export_event_blocks WHERE action_required=1").toArray()).toHaveLength(1);
+    expect(context.storage.sql.exec<{ status: string }>("SELECT status FROM sync_outbox WHERE outbox_id='out_associated_A_later'").one().status).toBe("PENDING");
+  });
+  mirror.rows.get("PRACTICE")![0][SHEET_SCOPES.PRACTICE.headers.indexOf("location")] = practice.location;
+  await rearm(testEnv);
+  expect(await next(testEnv, firstRequest)).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_associated_001" } });
+  expect(await next(testEnv, "lane_A_final_001")).toMatchObject({ data: { status: "EVENT_CONFIRMED", signup_version: 1 } });
+  expect(await next(testEnv, "lane_A_later_batch_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_associated_A_later" } });
+});
+
+it("independently preflights the same shared member in B after A is locally blocked", async () => {
+  const testEnv = environment("shared-reference-lanes");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await secondPractice(stub, mirror, members[0]);
+  mirror.rows.get("MEMBER")![0][SHEET_SCOPES.MEMBER.headers.indexOf("status")] = "INACTIVE";
+  mirror.install();
+  expect(await next(testEnv, "shared_member_A_001")).toMatchObject({ error: { code: "SYNC_REFERENCE_NEEDS_REVIEW" } });
+  expect(await next(testEnv, "shared_member_B_001")).toMatchObject({ error: { code: "SYNC_REFERENCE_NEEDS_REVIEW" } });
+  expect(mirror.writes).toBe(0);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const blocks = context.storage.sql.exec<{ blocked_entity_id: string }>("SELECT blocked_entity_id FROM sync_export_event_blocks").toArray();
+    expect(blocks).toEqual([{ blocked_entity_id: members[0] }, { blocked_entity_id: members[0] }]);
+    expect(selectExportLane(context.storage.sql, seasonId).event).toBeNull();
+  });
+});
+
+it.each(["MEMBERS_IMPORTED", "SCHEDULE_CHANGED", "UNKNOWN_BUSINESS_EVENT"])("keeps a %s barrier ahead of a later independent practice", async (topic) => {
+  const testEnv = environment(`barrier-${topic}`);
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await enqueue(stub, topic, { entity: { season_id: seasonId } }, "out_associated_barrier", 1, 0, 0);
+  await secondPractice(stub, mirror);
+  mirror.rows.get("PRACTICE")![0][SHEET_SCOPES.PRACTICE.headers.indexOf("location")] = "Manual A edit";
+  mirror.install();
+  expect(await next(testEnv, `barrier_A_${topic}`)).toMatchObject({ error: { code: "SYNC_REFERENCE_NEEDS_REVIEW" } });
+  expect(await next(testEnv, `barrier_B_${topic}`)).toMatchObject({ data: { status: "IDLE" } });
+  expect(mirror.writes).toBe(0);
+});
+
+it("stops missing indices, changed anchors, unknown ownership and incomplete scan before Google", async () => {
+  const testEnv = environment("incomplete-index");
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  const fetchSpy = vi.spyOn(globalThis, "fetch");
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec("DELETE FROM sync_export_event_index WHERE outbox_id='out_associated_001'").toArray();
+  });
+  for (const [index, path] of ["associated", "member", "schedule"].entries()) {
+    expect(await (await call(testEnv, `/internal/c2/export-next-${path}`, { request_id: `missing_index_${index}_001`, season_id: seasonId })).json()).toMatchObject({ error: { code: "SYNC_EVENT_INDEX_INCOMPLETE" } });
+  }
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    indexExportEvent(sql, "out_associated_001");
+    sql.exec("UPDATE sync_outbox SET payload_json=? WHERE outbox_id='out_associated_001'", JSON.stringify({ entity: { season_id: seasonId } })).toArray();
+    expect(selectExportLane(sql, seasonId).coverage).toBe("incomplete");
+  });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+it("captures v13 rowid once at migration and never reorders the persisted index", async () => {
+  const testEnv = environment("lane-upgrade");
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await enqueue(stub, "SIGNUPS_CHANGED", signupEvent(2, [signup(members[0], 1)]), "out_associated_later", 2, 0, 0);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    for (const table of ["sync_export_poll_plans", "sync_export_request_selections", "sync_export_event_blocks", "sync_export_event_index"]) sql.exec(`DROP TABLE ${table}`).toArray();
+    sql.exec("UPDATE app_meta SET value='13' WHERE key='schema_version'").toArray();
+    applySchema(context.storage);
+    const before = sql.exec("SELECT * FROM sync_export_event_index ORDER BY event_sequence").toArray();
+    expect(before.map((row) => row.outbox_id)).toEqual(["out_associated_001", "out_associated_later"]);
+    sql.exec("UPDATE sync_outbox SET rowid=100 WHERE outbox_id='out_associated_001'").toArray();
+    sql.exec("UPDATE sync_outbox SET rowid=1 WHERE outbox_id='out_associated_later'").toArray();
+    sql.exec("UPDATE sync_outbox SET rowid=2 WHERE outbox_id='out_associated_001'").toArray();
+    expect(selectExportLane(sql, seasonId).event?.outbox_id).toBe("out_associated_001");
+    applySchema(context.storage);
+    expect(sql.exec("SELECT * FROM sync_export_event_index ORDER BY event_sequence").toArray()).toEqual(before);
+  });
+});
+
+it("accepts indexed C0 counter events while unowned damaged events stop every season", async () => {
+  const testEnv = environment("nonseason-proof");
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const key = sql.exec<{ request_key: string }>("SELECT request_key FROM system_requests LIMIT 1").one().request_key;
+    sql.exec("INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at) VALUES ('out_c0_proof_001',?,'C0_MOCK_SYNC',?,'PENDING',?,?)", key,
+      JSON.stringify({ amount: 1, enqueue_job: true, fail_attempts: 0, job_due_at_ms: 0, retry_delay_ms: 1000 }), Date.now(), at).toArray();
+    indexExportEvent(sql, "out_c0_proof_001");
+    expect(selectExportLane(sql, seasonId)).toMatchObject({ coverage: "complete", event: { outbox_id: "out_associated_001" } });
+    sql.exec("INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at) VALUES ('out_unknown_owner_001',?,'C0_MOCK_SYNC','{}','PENDING',?,?)", key, Date.now(), at).toArray();
+    indexExportEvent(sql, "out_unknown_owner_001");
+    expect(selectExportLane(sql, seasonId)).toMatchObject({ coverage: "incomplete", event: null });
+  });
+});
+
+it("recovers the same concurrent request without changing event or allocating a second batch", async () => {
+  const testEnv = environment("same-request-race");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  mirror.install();
+  const results = await Promise.all([next(testEnv, "concurrent_same_request_001"), next(testEnv, "concurrent_same_request_001")]);
+  expect(results.some((result) => result.data?.status === "BATCH_CONFIRMED")).toBe(true);
+  for (const result of results) if (result.error) expect(["SYNC_EXPORT_STALE", "SYNC_OUTBOX_BLOCKED"]).toContain(result.error.code);
+  expect(await next(testEnv, "concurrent_same_request_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_associated_001" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec("SELECT * FROM sync_export_request_selections").toArray()).toHaveLength(1);
+    expect(context.storage.sql.exec("SELECT * FROM sync_batches").toArray()).toHaveLength(1);
+  });
+});
+
+it("preserves global ACTION_REQUIRED ahead of batch drain and allows runtime pause recovery after explicit clear", async () => {
+  const testEnv = environment("global-before-drain");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await secondPractice(stub, mirror);
+  mirror.loseFirstReply = true;
+  mirror.install();
+  expect(await next(testEnv, "drain_original_request_001")).toMatchObject({ error: { code: "BRIDGE_UNAVAILABLE" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec("INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required) VALUES (?,1,1,0,'SYNC_REFERENCE_NEEDS_REVIEW',?,1)", seasonId, at).toArray();
+    sql.exec("INSERT INTO sync_export_controls(season_id,pause_requested,updated_at) VALUES (?,1,?)", seasonId, at).toArray();
+    expect(selectExportLane(sql, seasonId)).toMatchObject({ reason: "GLOBAL_ACTION_REQUIRED", batch_id: null });
+  });
+  expect(await next(testEnv, "drain_original_request_001")).toMatchObject({ error: { code: "SYNC_OUTBOX_BLOCKED" } });
+  const login = await (await call(testEnv, "/internal/c1/coach-login", { request_id: "drain_coach_login_001", coach_code: "local-test-coach-code" }, true)).json() as any;
+  const token = login.data.result.session_token;
+  expect(await (await call(testEnv, "/internal/c2/retry-export", { request_id: "drain_coach_clear_001", session_token: token, season_id: seasonId })).json()).toMatchObject({ data: { result: { rearmed: true } } });
+  expect(await next(testEnv, "drain_original_request_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_associated_001" } });
+  expect(mirror.patchOperationIds[0]).toBe(mirror.patchOperationIds[1]);
+  expect(await next(testEnv, "drain_B_paused_001")).toMatchObject({ error: { code: "SYNC_OUTBOX_BLOCKED" } });
+  await call(testEnv, "/internal/c1/coach-logout", { request_id: "drain_coach_logout_001", session_token: token }, true);
+});
+
+it("exposes paginated local blocks and includes all four durable lane tables in a verified backup", async () => {
+  const testEnv = { ...environment("lane-management-backup"), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await secondPractice(stub, mirror, members[0]);
+  mirror.rows.get("MEMBER")![0][SHEET_SCOPES.MEMBER.headers.indexOf("status")] = "INACTIVE";
+  mirror.install();
+  await call(testEnv, "/internal/c2/poll-due-exports", { request_id: "backup_block_A_001" });
+  await next(testEnv, "backup_block_B_001");
+  const login = await (await call(testEnv, "/internal/c1/coach-login", { request_id: "backup_lane_login_001", coach_code: "local-test-coach-code" }, true)).json() as any;
+  const token = login.data.result.session_token;
+  const page = await (await call(testEnv, "/internal/c2/list-export-blocks", { request_id: "block_page_001", session_token: token, season_id: seasonId, limit: 1 })).json() as any;
+  expect(page.data.items).toHaveLength(1);
+  expect(page.data.items[0]).toMatchObject({ outbox_id: "out_associated_001", action_required: true });
+  const second = await (await call(testEnv, "/internal/c2/list-export-blocks", { request_id: "block_page_002", session_token: token, season_id: seasonId, limit: 1, cursor: page.data.next_cursor })).json() as any;
+  expect(second.data.items[0].outbox_id).toBe("out_associated_002");
+  expect(second.data.next_cursor).toBeNull();
+  const overview = await (await call(testEnv, "/internal/c2/get-sync-overview", { request_id: "lane_overview_001", session_token: token, season_id: seasonId })).json() as any;
+  expect(overview.data.lanes).toMatchObject({ coverage: "complete", runnable_outbox_id: null, local_action_required: 2 });
+  expect(overview.data.counts.pending_outbox).toBe(2);
+  // Omitted outbox does not silently clear local blocks.
+  expect(await (await call(testEnv, "/internal/c2/retry-export", { request_id: "lane_legacy_retry_001", session_token: token, season_id: seasonId })).json()).toMatchObject({ error: { code: "SYNC_EXPORT_ACTION_NOT_REQUIRED" } });
+  expect(await (await call(testEnv, "/internal/c2/retry-export", { request_id: "backup_rearm_B_001", session_token: token, season_id: seasonId, outbox_id: "out_associated_002" })).json()).toMatchObject({ data: { result: { rearmed: true } } });
+  mirror.rows.get("MEMBER")![0][SHEET_SCOPES.MEMBER.headers.indexOf("status")] = "ACTIVE";
+  mirror.loseFirstReply = true;
+  expect(await next(testEnv, "backup_partial_B_001")).toMatchObject({ error: { code: "BRIDGE_UNAVAILABLE" } });
+  const backup = await (await call(testEnv, "/internal/c1/create-backup-snapshot", { request_id: "lane_backup_001", session_token: token }, true)).json() as any;
+  expect(backup.data.result.manifest.schema_version).toBe(14);
+  const tables = backup.data.result.manifest.tables as Array<{ name: string; row_count: number; chunk_indices: number[] }>;
+  for (const table of ["sync_export_event_index", "sync_export_event_blocks", "sync_export_request_selections", "sync_export_poll_plans"]) {
+    const entry = tables.find((row) => row.name === table)!;
+    expect(entry.row_count).toBe(table === "sync_export_request_selections" ? 3 : table === "sync_export_poll_plans" ? 1 : 2);
+    const chunk = await (await call(testEnv, "/internal/c1/get-backup-chunk", { request_id: `lane_chunk_${table}`, session_token: token, snapshot_id: backup.data.result.snapshot_id, chunk_index: entry.chunk_indices[0] }, true)).json() as any;
+    expect(chunk.data.chunk.payload.rows).toHaveLength(entry.row_count);
+  }
+  expect(tables.find((entry) => entry.name === "sync_batches")?.row_count).toBe(1);
+  expect(await (await call(testEnv, "/internal/c1/verify-backup-snapshot", { request_id: "lane_backup_verify_001", session_token: token, snapshot_id: backup.data.result.snapshot_id, content_digest: backup.data.result.manifest.content_digest }, true)).json()).toMatchObject({ data: { verified: true } });
+  await call(testEnv, "/internal/c1/coach-logout", { request_id: "backup_lane_logout_001", session_token: token }, true);
+});
+
+it("poll replay retains A's local result while a new poll can complete B", async () => {
+  const testEnv = { ...environment("poll-local-replay"), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await secondPractice(stub, mirror);
+  mirror.rows.get("PRACTICE")![0][SHEET_SCOPES.PRACTICE.headers.indexOf("location")] = "A local edit";
+  mirror.install();
+  const poll = async (id: string) => (await (await call(testEnv, "/internal/c2/poll-due-exports", { request_id: id })).json()) as any;
+  const first = await poll("poll_original_local_001");
+  expect(first.data.results).toMatchObject([{ status: "LOCAL_ACTION_REQUIRED" }]);
+  expect((await poll("poll_original_local_001")).data).toEqual(first.data);
+  expect(mirror.writes).toBe(0);
+  // Model a crash after the inner block was saved, before the outer result commit.
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const key = sql.exec<{ request_key: string }>("SELECT request_key FROM system_requests WHERE action='pollDueExports'").one().request_key;
+    sql.exec("DELETE FROM audit_events WHERE request_key=?", key).toArray();
+    sql.exec("DELETE FROM system_requests WHERE request_key=?", key).toArray();
+  });
+  expect((await poll("poll_original_local_001")).data).toEqual(first.data);
+  expect(mirror.writes).toBe(0);
+  expect((await poll("poll_new_B_001")).data.results).toMatchObject([{ status: "EVENT_CONFIRMED" }]);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec("SELECT * FROM sync_export_retries WHERE action_required=1").toArray()).toEqual([]);
+    expect(context.storage.sql.exec("SELECT * FROM sync_export_event_blocks WHERE action_required=1").toArray()).toHaveLength(1);
+  });
+});
+
+it("returns overview coverage and persisted oldest sequence after rowid reversal and damaged JSON", async () => {
+  const testEnv = environment("overview-index-proof");
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await enqueue(stub, "UNKNOWN_BUSINESS_EVENT", { entity: { season_id: seasonId } }, "out_associated_unknown_later", 1, 0, 0);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec("UPDATE sync_outbox SET rowid=100 WHERE outbox_id='out_associated_001'").toArray();
+    sql.exec("UPDATE sync_outbox SET rowid=1 WHERE outbox_id='out_associated_unknown_later'").toArray();
+  });
+  const login = await (await call(testEnv, "/internal/c1/coach-login", { request_id: "overview_proof_login_001", coach_code: "local-test-coach-code" }, true)).json() as any;
+  const token = login.data.result.session_token;
+  const overview = async (id: string) => (await (await call(testEnv, "/internal/c2/get-sync-overview", { request_id: id, session_token: token, season_id: seasonId })).json()) as any;
+  expect((await overview("overview_order_001")).data.export_control.oldest_pending).toMatchObject({ topic: "SIGNUPS_CHANGED" });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec("PRAGMA ignore_check_constraints=ON").toArray();
+    sql.exec("UPDATE sync_outbox SET payload_json='{' WHERE outbox_id='out_associated_unknown_later'").toArray();
+    sql.exec("PRAGMA ignore_check_constraints=OFF").toArray();
+  });
+  expect((await overview("overview_damaged_001")).data.lanes).toMatchObject({ coverage: "incomplete", runnable_outbox_id: null });
+  await call(testEnv, "/internal/c1/coach-logout", { request_id: "overview_proof_logout_001", session_token: token }, true);
+});
+
+it("keeps a partially verified A locally stopped while B completes with independent physical baselines", async () => {
+  const testEnv = environment("verified-stage-local-lane");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await secondPractice(stub, mirror);
+  mirror.install();
+  expect(await next(testEnv, "partial_A_batch_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED" } });
+  mirror.rows.get("SIGNUP")![0][SHEET_SCOPES.SIGNUP.headers.indexOf("last_request_id")] = "manual_google_audit_001";
+  expect(await next(testEnv, "partial_A_final_001")).toMatchObject({ error: { code: "SYNC_ASSOCIATED_NEEDS_REVIEW" } });
+  expect(await next(testEnv, "partial_B_batch_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_associated_002" } });
+  expect(await next(testEnv, "partial_B_final_001")).toMatchObject({ data: { status: "EVENT_CONFIRMED", outbox_id: "out_associated_002" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    expect(sql.exec("SELECT * FROM sync_associated_physical_baselines WHERE row_id LIKE ?", `${practiceId}:%`).toArray()).toHaveLength(0);
+    expect(sql.exec("SELECT * FROM sync_associated_physical_baselines WHERE row_id LIKE ?", `${secondPracticeId}:%`).toArray()).toHaveLength(1);
+    expect(sql.exec("SELECT * FROM sync_export_event_blocks WHERE outbox_id='out_associated_001' AND action_required=1").toArray()).toHaveLength(1);
+  });
+});
+
+it.each(["audit", "invalid-baseline"])("classifies draft %s using a trusted physical baseline", async (kind) => {
+  const testEnv = environment(`draft-physical-${kind}`);
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, draftOnlyEvent(), "SEATING_CHANGED");
+  mirror.install();
+  await batchesThrough(testEnv, `draft_first_${kind}`, "SEAT_PLAN_DRAFT");
+  expect(await next(testEnv, `draft_first_final_${kind}`)).toMatchObject({ data: { status: "EVENT_CONFIRMED" } });
+  const payload = draftOnlyEvent();
+  payload.entity.seat_plan_version = 2;
+  payload.entity.seating_snapshot.state.seat_plan_version = 2;
+  await enqueue(stub, "SEATING_CHANGED", payload, "out_draft_next_002", 0, 2, 0);
+  if (kind === "audit") mirror.rows.get("SEAT_PLAN_CURRENT")![0][SHEET_SCOPES.SEAT_PLAN_CURRENT.headers.indexOf("updated_at")] = "2099-01-01T00:00:00.000Z";
+  else await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("UPDATE sync_associated_physical_baselines SET cells_json='{}' WHERE scope='SEAT_PLAN_CURRENT'").toArray();
+  });
+  const writes = mirror.writes;
+  expect(await next(testEnv, `draft_second_${kind}`)).toMatchObject({ error: { code: kind === "audit" ? "SYNC_ASSOCIATED_NEEDS_REVIEW" : "SYNC_BASELINE_INCOMPLETE" } });
+  expect(mirror.writes).toBe(writes);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec("SELECT * FROM sync_export_event_blocks WHERE action_required=1").toArray()).toHaveLength(kind === "audit" ? 1 : 0);
+  });
+});
+
+it("an interrupted old poll stops on its original event after another poll completes it", async () => {
+  const testEnv = { ...environment("poll-interleaved-completion"), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await secondPractice(stub, mirror);
+  mirror.loseFirstReply = true;
+  mirror.install();
+  const poll = async (id: string) => (await (await call(testEnv, "/internal/c2/poll-due-exports", { request_id: id })).json()) as any;
+  expect((await poll("poll_interrupted_001")).data.results).toMatchObject([{ status: "RETRY_REQUIRED" }]);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const key = sql.exec<{ request_key: string }>("SELECT request_key FROM system_requests WHERE action='pollDueExports'").one().request_key;
+    sql.exec("DELETE FROM audit_events WHERE request_key=?", key).toArray();
+    sql.exec("DELETE FROM system_requests WHERE request_key=?", key).toArray();
+  });
+  // An unknown outer response during existing global backoff cannot turn that
+  // recoverable network failure into ACTION_REQUIRED or send another operation.
+  const beforeBackoff = mirror.writes;
+  expect((await poll("poll_interrupted_001")).data.results).toMatchObject([{ status: "ORIGINAL_EVENT_UNAVAILABLE" }]);
+  expect(mirror.writes).toBe(beforeBackoff);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    expect(sql.exec<{ action_required: number; failure_count: number }>("SELECT action_required,failure_count FROM sync_export_retries").one()).toEqual({ action_required: 0, failure_count: 1 });
+    const key = sql.exec<{ request_key: string }>("SELECT request_key FROM system_requests WHERE action='pollDueExports'").one().request_key;
+    sql.exec("DELETE FROM audit_events WHERE request_key=?", key).toArray();
+    sql.exec("DELETE FROM system_requests WHERE request_key=?", key).toArray();
+    sql.exec("UPDATE sync_export_retries SET failure_count=0,next_attempt_at_ms=0,last_error=''").toArray();
+  });
+  expect((await poll("poll_other_completes_A_001")).data.results).toMatchObject([{ status: "EVENT_CONFIRMED" }]);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
+      VALUES (?,1,2,?,'SERVICE_BUSY',?,0) ON CONFLICT(season_id) DO UPDATE SET failure_count=2,next_attempt_at_ms=excluded.next_attempt_at_ms,last_error='SERVICE_BUSY',updated_at=excluded.updated_at`, seasonId, Date.now() + 600_000, at).toArray();
+  });
+  const writes = mirror.writes;
+  expect((await poll("poll_interrupted_001")).data.results).toMatchObject([{ status: "EVENT_CONFIRMED" }]);
+  expect(mirror.writes).toBe(writes);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec("SELECT * FROM sync_export_retries WHERE action_required=1").toArray()).toEqual([]);
+    expect(context.storage.sql.exec<{ failure_count: number }>("SELECT failure_count FROM sync_export_retries").one().failure_count).toBe(2);
+    expect(context.storage.sql.exec<{ status: string }>("SELECT status FROM sync_outbox WHERE outbox_id='out_associated_002'").one().status).toBe("PENDING");
+    expect(context.storage.sql.exec("SELECT * FROM sync_export_poll_plans").toArray()).toHaveLength(2);
+  });
+});
+
+it.each(["direct", "poll"])("clears an expired retry after successful natural %s recovery", async (mode) => {
+  const testEnv = { ...environment(`natural-retry-${mode}`), C2_EXPORT_POLL_ENABLED: "true" } as Env;
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  mirror.loseFirstReply = true;
+  mirror.install();
+  const first = mode === "direct" ? await next(testEnv, "natural_direct_001") : await (await call(testEnv, "/internal/c2/poll-due-exports", { request_id: "natural_poll_001" })).json() as any;
+  if (mode === "direct") expect(first).toMatchObject({ error: { code: "BRIDGE_UNAVAILABLE" } });
+  else expect(first.data.results).toMatchObject([{ status: "RETRY_REQUIRED" }]);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    sql.exec(`INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required)
+      VALUES (?,1,1,?,'BRIDGE_UNAVAILABLE',?,0) ON CONFLICT(season_id) DO UPDATE SET next_attempt_at_ms=excluded.next_attempt_at_ms`, seasonId, Date.now() - 1000, at).toArray();
+  });
+  if (mode === "direct") {
+    expect(await next(testEnv, "natural_direct_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED" } });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec("INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required) VALUES (?,1,1,0,'BRIDGE_UNAVAILABLE',?,0)", seasonId, at).toArray();
+    });
+    expect(await next(testEnv, "natural_direct_final_001")).toMatchObject({ data: { status: "EVENT_CONFIRMED" } });
+  } else expect(await (await call(testEnv, "/internal/c2/poll-due-exports", { request_id: "natural_poll_recover_002" })).json()).toMatchObject({ data: { results: [{ status: "EVENT_CONFIRMED" }] } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec("SELECT * FROM sync_export_retries").toArray()).toEqual([]);
+  });
+});
+
+it("locally blocks final extra draft seats and permits an independent practice to continue", async () => {
+  const testEnv = environment("final-extra-seat-lane");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, draftOnlyEvent(), "SEATING_CHANGED");
+  await secondPractice(stub, mirror);
+  mirror.install();
+  await batchesThrough(testEnv, "extra_seat_A_batch", "SEAT_PLAN_DRAFT");
+  mirror.rows.get("SEAT_PLAN_CURRENT")!.push(cells("SEAT_PLAN_CURRENT", {
+    season_id: seasonId, practice_id: practiceId, row_number: 2, side: "LEFT", member_id: "",
+    seat_plan_version: 1, updated_by: coachId, updated_at: at
+  }));
+  expect(await next(testEnv, "extra_seat_A_final_001")).toMatchObject({ error: { code: "SYNC_ASSOCIATED_NEEDS_REVIEW" } });
+  expect(await next(testEnv, "extra_seat_B_batch_001")).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_associated_002" } });
+});
+
+it.each([true, false])("guards a confirmed batch recovery gap against another season with pin=%s", async (keepPin) => {
+  const testEnv = environment(`confirmed-batch-gap-${keepPin}`);
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  mirror.install();
+  const id = `confirmed_gap_original_${keepPin}`;
+  expect(await next(testEnv, id)).toMatchObject({ data: { status: "BATCH_CONFIRMED" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    const sql = context.storage.sql;
+    const key = sql.exec<{ request_key: string }>("SELECT request_key FROM system_requests WHERE request_id=?", id).one().request_key;
+    sql.exec("DELETE FROM audit_events WHERE request_key=?", key).toArray();
+    sql.exec("DELETE FROM system_requests WHERE request_key=?", key).toArray();
+    if (!keepPin) sql.exec("DELETE FROM sync_export_request_selections WHERE request_key=?", key).toArray();
+  });
+  const writes = mirror.writes;
+  expect(await (await call(testEnv, "/internal/c2/export-next-associated", { request_id: id, season_id: "season_wrong_recovery_001" })).json()).toMatchObject({ error: { code: "IDEMPOTENCY_CONFLICT" } });
+  expect(await next(testEnv, id)).toMatchObject({ data: { status: "BATCH_CONFIRMED", outbox_id: "out_associated_001" } });
+  expect(mirror.writes).toBe(writes);
+});
+
+it("preserves a new concurrent failure while an earlier Google batch confirms", async () => {
+  const testEnv = environment("concurrent-global-failure");
+  const mirror = new SheetMirror();
+  const stub = await seed(testEnv, signupEvent(1, [signup(members[0], 1)]));
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required) VALUES (?,1,1,0,'BRIDGE_UNAVAILABLE',?,0)", seasonId, at).toArray();
+  });
+  let reached = false;
+  mirror.afterPatch = async () => { reached = true; await new Promise(resolve => setTimeout(resolve, 200)); };
+  mirror.install();
+  const pending = next(testEnv, "concurrent_failure_batch_001");
+  for (let count = 0; count < 20 && !reached; count++) await new Promise(resolve => setTimeout(resolve, 5));
+  expect(reached).toBe(true);
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    context.storage.sql.exec("UPDATE sync_export_retries SET failure_count=2,next_attempt_at_ms=?,last_error='SERVICE_BUSY',updated_at=?", Date.now() + 600_000, "2026-10-01T01:00:00.000Z").toArray();
+  });
+  expect(await pending).toMatchObject({ data: { status: "BATCH_CONFIRMED" } });
+  await runInDurableObject(stub, async (_instance: TeamState, context) => {
+    expect(context.storage.sql.exec<{ failure_count: number; last_error: string }>("SELECT failure_count,last_error FROM sync_export_retries").one()).toEqual({ failure_count: 2, last_error: "SERVICE_BUSY" });
+    expect(context.storage.sql.exec<{ status: string }>("SELECT status FROM sync_batches").one().status).toBe("CONFIRMED");
+  });
+});
 
 async function preflightEvidence(stub: ReturnType<Env["TEAM_STATE"]["getByName"]>) {
   return runInDurableObject(stub, async (_instance: TeamState, context) => {
@@ -283,6 +936,7 @@ it.each(["PRACTICE", "MEMBER"] as const)(
     expect(await preflightEvidence(stub)).toEqual(before);
 
     row[index] = original;
+    await rearm(testEnv);
     expect(await next(testEnv, `associated_early_${scope}_002`)).toMatchObject({ data: {
       status: "BATCH_CONFIRMED", entity_type: "SIGNUP" } });
     expect(await next(testEnv, `associated_early_${scope}_003`)).toMatchObject({ data: {
@@ -412,6 +1066,7 @@ async function enqueue(stub: ReturnType<Env["TEAM_STATE"]["getByName"]>,
     sql.exec(`INSERT INTO sync_outbox(outbox_id,request_key,topic,payload_json,status,due_at_ms,created_at)
       VALUES (?,?,?,?,'PENDING',?,?)`, outboxId, key, topic,
       JSON.stringify(payload), Date.now() - 1000, at).toArray();
+    indexExportEvent(sql, outboxId);
   });
 }
 
@@ -939,6 +1594,7 @@ it("keeps an already verified signup unconfirmed if Google changes it before lin
       .one().count).toBe(0);
   });
   mirror.rows.get("SIGNUP")![0][statusIndex] = "CONFIRMED";
+  await rearm(testEnv);
   expect(await next(testEnv, "associated_manual_final_002")).toMatchObject({
     data: { status: "EVENT_CONFIRMED" } });
 });

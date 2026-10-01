@@ -101,7 +101,7 @@ test("the C2 manifest lists every error raised directly by its business services
     "../cloudflare/src/c2-member-export.ts", "../cloudflare/src/c2-schedule-export.ts",
     "../cloudflare/src/c2-schedule-projection.ts", "../cloudflare/src/c2-associated-export.ts",
     "../cloudflare/src/c2-associated-projection.ts", "../cloudflare/src/c2-sheet-bridge.ts",
-    "../cloudflare/src/c2-form-bridge.ts", "../cloudflare/src/c2-sheet-diff.ts"
+    "../cloudflare/src/c2-export-lanes.ts", "../cloudflare/src/c2-form-bridge.ts", "../cloudflare/src/c2-sheet-diff.ts"
   ].map((file) => readFile(new URL(file, import.meta.url), "utf8")));
   const raised = new Set(sources.flatMap((source) =>
     [...source.matchAll(/new ApiError\("([A-Z0-9_]+)"/g)].map((match) => match[1])));

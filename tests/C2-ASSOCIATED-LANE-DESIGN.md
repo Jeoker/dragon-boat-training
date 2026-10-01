@@ -1,14 +1,16 @@
 # C2 关联事件按训练继续同步的设计与实施门槛
 
-> 2026-09-30。本文是后续实现的设计入口，描述已授权的 C2.5 目标如何安全分步完成。当前补丁仅提前前检，全季排序仍然保留；本文提出的事件索引、持久阻塞、选择器及管理接口均尚未实现。
+> 2026-09-30。本文是本地实现与后续隔离验收的设计入口，描述已授权的 C2.5 目标如何安全分步完成。当前源码完成 schema v14 第一版训练通道，本地验收见 C2-ASSOCIATED-LANE-LOCAL-ACCEPTANCE.md。隔离远端仍为 0.16.2/schema v13；新训练通道尚未部署或真实 Google 验收。
 
-## 1. 问题及当前可独立交付的修补
+## 1. 历史：ce905f8 提前前检补丁与当时限制
 
-迁移计划要求单实体冲突不阻塞其他独立记录。当前轮询按季保存 `ACTION_REQUIRED`，选择全季最早 outbox；成员、排期和关联 exporter 又各自检查最早事件及未完成批次。因此只让 poller 跳过最早事件不会解除阻塞，也不能保证安全。
+以下四段仅记录先行补丁 ce905f8 的历史行为。第 2 节开始是当前 v14 完整训练通道；历史描述中的“仅前检、未增 schema”不适用于当前源码。
 
-本次仅调整 `c2-associated-export.ts`：在创建 `PREPARED` 批次前执行该阶段适用的引用及草稿前检，并保留发送前再次执行相同前检。首次引用已经冲突、或草稿已无可信基线时，不再留下一个从未发送的未完成批次。引用或草稿在准备期间发生变化时，第二次前检仍停止发送，保留已准备批次以便恢复。
+迁移计划要求单实体冲突不阻塞其他独立记录。当时轮询按季保存 `ACTION_REQUIRED`，选择全季最早 outbox；成员、排期和关联 exporter 又各自检查最早事件及未完成批次。因此只让 poller 跳过最早事件不会解除阻塞，也不能保证安全。
 
-前检规则没有扩大：只有事件尚无确认阶段时检查训练、成员及 Coach 引用；进入首个排座阶段前检查先前草稿；已发送批次仍沿原批次恢复，不重新把部分写入误认成外部漂移。当前补丁未增加 schema、未改变事件顺序、未建立局部 `ACTION_REQUIRED`，也没有放行被阻塞事件之后的其他训练。
+先行补丁仅调整 `c2-associated-export.ts`：在创建 `PREPARED` 批次前执行该阶段适用的引用及草稿前检，并保留发送前再次执行相同前检。首次引用已经冲突、或草稿已无可信基线时，不再留下一个从未发送的未完成批次。引用或草稿在准备期间发生变化时，第二次前检仍停止发送，保留已准备批次以便恢复。
+
+前检规则没有扩大：只有事件尚无确认阶段时检查训练、成员及 Coach 引用；进入首个排座阶段前检查先前草稿；已发送批次仍沿原批次恢复，不重新把部分写入误认成外部漂移。该先行补丁未增加 schema、未改变事件顺序、未建立局部 `ACTION_REQUIRED`，也没有放行被阻塞事件之后的其他训练。
 
 提前前检会增加有界 Google 读取：首次阶段多读训练、涉及的成员／Coach，以及适用的草稿船位；发送前复验继续保留。它让已经存在的冲突更早停止，但 Google 与 Cloudflare 之间没有跨服务原子事务，第二次前检之后的极窄人工编辑窗口仍不能宣称消失。当前补丁也不替代完整训练通道的 schema、调度及隔离验收门槛。
 
@@ -28,12 +30,18 @@
 
 ## 3. 持久结构方案
 
-后续单独进行 additive schema 迁移，不改变 `sync_outbox` 的既有状态集合。建议新增以下两表，并纳入完整私有备份：
+当前本地源码采用 additive schema v14 迁移，不改变 `sync_outbox` 的既有状态集合。新增以下四表，并纳入完整私有备份：
 
 | 表 | 必需字段及约束 | 用途 |
 |---|---|---|
-| `sync_export_event_index` | `outbox_id` 主键／外键；`event_sequence` 唯一正整数；`season_id`；`payload_digest`；`handler_kind` 为 `ASSOCIATED` 或 `BARRIER`；可空 `practice_id`；`created_at` | 保存不可变全季事件顺序及可信分类，避免恢复后依赖重新分配的 SQLite rowid |
-| `sync_export_event_blocks` | 主键 `(season_id,binding_version,outbox_id)`；外键 `outbox_id`；`practice_id`；`payload_digest`；`error_code`；`failure_count`；`next_attempt_at_ms`；`action_required`；`blocked_scope`／`blocked_entity_id`；`created_at`／`updated_at` | 保存局部阻塞、退避及管理员重试证据，允许其他训练继续 |
+| `sync_export_event_index` | `outbox_id` 主键／外键；`event_sequence` 唯一正整数；`season_id`；`payload_anchor`／`topic_anchor` 保存原文本；`handler_kind` 为 `ASSOCIATED` 或 `BARRIER`；可空 `practice_id`；`classification_anchor` 保存 `[outbox_id,event_sequence,season_id,handler_kind,practice_id]` 的不可变 JSON 文本；`created_at` | 保存不可变全季事件顺序及可信分类，避免恢复后依赖重新分配的 SQLite rowid |
+| `sync_export_event_blocks` | 主键 `(season_id,binding_version,outbox_id)`；外键 `outbox_id`；`practice_id`；`payload_anchor`／`payload_digest`；`error_code`；`failure_count`；`next_attempt_at_ms`；`action_required`；`blocked_scope`／`blocked_entity_id`；`created_at`／`updated_at` | 保存局部阻塞、退避及管理员重试证据，允许其他训练继续 |
+| `sync_export_request_selections` | `request_key` 主键；`season_id`／`binding_version`；`outbox_id` 外键；`event_anchor`、`event_digest`、`request_digest`、`created_at` | 首次选择即绑定请求；前检失败且未创建批次也不能改选。旧已完成请求先按原摘要重放 |
+| `sync_export_poll_plans` | `request_key` 主键；`request_digest`、`plan_json`、`plan_digest`、`created_at` | 第一次 Google 前固定最多四季的绑定／事件／处理器／原文本锚／事件摘要；结果未知时沿原计划，不因新候选或新季改变目标 |
+
+事务内使用原 payload_json 与 topic exact text 作为不可变锚，不引入同步 SHA 实现。摘要使用现有 sha256Base64Url 在事务外生成；进入事务重新检查文本、绑定及候选后持久选择。相同请求并发 INSERT OR IGNORE 后必须完整核验已存记录。poll 先在同步事务复选并保存 outer plan（原请求并发先读已有 plan），完成结果保存到 system_requests。未知结果只恢复原计划和原 inner IDs；每一个 inner 调用前再次检查 selector。只有既有 completed result／CONFIRMED batch 可只读重放，原 event 已 CONFIRMED 时只读结束。原目标暂不可运行且没有原已完成结果时返回 ORIGINAL_EVENT_UNAVAILABLE，保留原退避／暂停／全季 halt，不改选或升级错误。新 poll ID 才建立新计划。
+
+归属证明使用 SQL 检查全 DO 的所有 pending。SQL 的扫描及 JSON／精确文本比较成本仍随总积压行数和字符量增长；此方案限制物化及 Google 调用，不承诺无限积压下固定 CPU 延迟。检查项目：缺索引、JSON、season 归属、原 payload／topic 文本、序号／分类锚均必须通过，当前绑定的全部局部阻塞也核对 practice 与文本锚。随后 SQL 先取每个 practice 的最早 pending，再过滤 due／局部阻塞／退避，选择最早全季 BARRIER 之前的首个可运行 head；BARRIER 本身仅在没有更早 pending 时可运行。先取 head 后过滤，使未来到期或被阻塞的 head 始终封住本训练后续事件，250 条同训练后继或 250 个独立阻塞 head 均不会遮住其他合法训练。只物化一个候选；读取前 UTF-8 原 payload 限制为 2,000,000 bytes，单个候选超限则 fail closed／incomplete。未完成批次仍优先对账，只核该批次源事件的完整文本、序号／分类锚，不让其他尚未准备事件的损坏挡住固定已写批次恢复。poller 最多覆盖 100 个当前绑定、每轮 4 季、每个关联事件 8 次拆批调用；超绑定或单事件预算 fail closed，并报告 incomplete，不能自动重建索引。唯一证明非赛季业务是固定 C0_MOCK_SYNC topic 且五字段完整吻合已验证计数测试合同，索引 season_id 标记 @NON_SEASON_C0；新 C0 也同业务事务捕获索引。其他无法归属、损坏 JSON、缺索引、锚／分类漂移保持全局 incomplete；可信 season 下无效／未知事件是该季 BARRIER。SQL 中的 JSON 提取全部由 CASE json_valid 保护，无法证明的事件不能被筛掉。class anchor 用 JS JSON.stringify 捕获，SQL json_array 精确比较，同步事务不引入自研 hash。成员／排期 direct API 也在第一次 Google 读取前持久锁定原 selection；读失败且其他请求已确认原事件后，同 ID 明确不可用或只读原确认结果，绝不能转向后序事件。
 
 索引建议覆盖 `(season_id,event_sequence)`、`(season_id,practice_id,event_sequence)` 和 `(season_id,binding_version,action_required,next_attempt_at_ms)`。旧 outbox 在同一迁移事务内按当前 rowid 捕获固定 `event_sequence`；新 outbox 必须在原业务事务内分配序号并写索引。历史 payload 保持原样；验证失败的关联事件分类为 `BARRIER`，不能悄悄忽略。绑定版本只属于阻塞记录及导出确认域，事件本身的固定顺序不能在换绑定时重新排序。
 
@@ -43,20 +51,20 @@
 
 ## 4. 共享选择器与调度
 
-新选择器必须同时供 poller、关联 exporter、概览及事务内复核使用，返回选中事件 ID、固定序号、payload digest、绑定版本和选择原因。仅改其中一个入口不成立。
+共享选择器同时供 poller、关联／成员／排期 exporter、概览及事务内复核使用，返回选中事件 ID、固定序号、payload digest、绑定版本和选择原因。仅改其中一个入口不成立。
 
 1. 当前绑定不可用、影子暂停或全季 `ACTION_REQUIRED` 时停止；运行时暂停仅允许恢复现存未完成批次。
 2. 任意未完成批次优先，禁止生成其他目标。批次处理器按其源事件决定，不能让另一 exporter 收下它。
 3. 按固定序号读取待处理事件，找到最早 `BARRIER`；屏障之后的事件全部不可选。屏障之前只在各训练的最早待处理事件中选已到期且没有局部停用／退避的候选。
 4. 同训练最早事件未到期或被阻塞时，该训练后序事件也不可选。其他训练可以继续；最早屏障只有在所有更早事件完成后才能执行。
-5. 按候选固定序号选择，设置每轮扫描／批次数预算。扫描上限达到且不能证明更早依赖完整时停止并报告覆盖不完整，不能以截断结果宣称独立。
+5. 按候选固定序号选择，仅物化首个合法候选，单事件 UTF-8 2,000,000 bytes／每轮季数与批次数有界。全 pending SQL 证明不能被截断；未知归属或任意后部分类锚损坏仍停止并报告 incomplete。
 6. Google 前检返回后、插入批次的事务内重新运行同一选择校验并核对 payload／绑定。新增较早屏障、局部状态变化、并发准备或暂停时返回可重试 stale，禁止发送旧选择。
 
 关联 exporter 内部接口可以接收选中 `outbox_id`，但必须自身验证选择有效性；外部调用不能任意指定绕序。请求身份摘要应包含选中事件 ID，使重复请求始终对应同一事件。每轮关联有界拆批仍沿当前事件推进，事件完成后下一事件获得全新的前检。
 
 ## 5. 概览、重试与成功清理
 
-`sync_export_retries` 继续保存全季错误与调度。独立事件完成只清理其局部 block，不能删除另一个训练的阻塞；现有 `confirmExportReceipt` 和关联 `finalize` 删除全季 retry 的逻辑需要与此规则一并审核。
+`sync_export_retries` 继续保存全季错误与调度。独立事件完成只清理其局部 block，不能删除另一个训练的阻塞。真正发送或最终核验前捕获全季 retry 完整指纹（绑定、failure count、nextAt、error、action、updatedAt 等），成功事务仅 CAS 清掉该已观察的旧重试；Google await 期间另起的新 failure 保留。原 batch CONFIRMED／已完成请求的只读重放与 ORIGINAL_EVENT_UNAVAILABLE 不清其他失败。shared send 的临时观察证据丢失时保守保留 retry，下次沿固定 batch 重发可重新捕获，不改变持久业务状态。
 
 概览应保留总积压与真实最早事件时间，同时独立返回全季停止状态、局部阻塞数量、可运行事件的下一到期时间及阻塞分页。不能把“最早事件被阻塞”显示成整个赛季空闲，也不能因为训练 B 成功就隐藏训练 A 的错误。运行时暂停状态仍按未完成批次显示 `PAUSING`／`PAUSED`。
 
@@ -64,7 +72,7 @@ Coach 重试建议增加可选 `outbox_id`：指定 ID 只重新启用该局部�
 
 ## 6. 升级、备份与恢复
 
-现有私有备份表清单位于 `c1-history-service.ts`。新增索引／阻塞表必须一并捕获、计数、摘要校验；本地测试验证有局部阻塞和部分确认事件的备份内容完整。schema 升级前后保存私有快照，确认旧业务、游标、物理 B、batch 和请求结果保留。
+现有私有备份表清单位于 `c1-history-service.ts`。新增索引／阻塞／请求选择／poll 计划四表必须一并捕获、计数、摘要校验；本地测试验证有局部阻塞和部分确认事件的备份内容完整。schema 升级前后保存私有快照，确认旧业务、游标、物理 B、batch 和请求结果保留。v14 是 additive 升级，但旧 schema v13 代码会拒绝 future schema；升级后直接切回 0.16.2 Worker 不构成无损回滚。需要修复时采用后续经审核版本向前修复，或按正式恢复流程处理，保留升级前后备份。
 
 从旧备份恢复后必须受控重建固定索引并检查顺序、重复 ID 和事件分类；存在任何缺口时禁止导出。恢复不能自动解锁 block，不能因 Google 副作用不在恢复点内而重放旧批次。两端先暂停、归属代次前进并完成已生效批次对账的既有恢复门槛继续生效。本设计不把备份下载校验说成已完成恢复演练。
 

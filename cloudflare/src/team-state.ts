@@ -1,3 +1,4 @@
+import { indexExportEvent } from "./c2-export-lanes";
 import { DurableObject } from "cloudflare:workers";
 import { sha256Base64Url } from "./crypto";
 import { ApiError, apiFailure, apiSuccess, optionalBoolean, optionalInteger, readJsonObject, requireRequestId, requireString } from "./http";
@@ -299,6 +300,7 @@ export class TeamState extends DurableObject<Env> {
           effectiveJobDueAt,
           committedAt
         ).toArray();
+        indexExportEvent(sql, outboxId);
         sql.exec(
           `INSERT INTO scheduled_jobs(
              job_id, job_type, payload_json, status, due_at_ms, created_at, updated_at
