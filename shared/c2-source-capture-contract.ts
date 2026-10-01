@@ -32,6 +32,15 @@ export function sourceCanonical(value:SourceJson):string {
 
 /** Check bytes/depth/decoded duplicate keys before JSON.parse can discard any field. */
 export function parseSourceJson(text:unknown):SourceJson {
+  return parseSourceJsonWithDepth(text, SOURCE_LIMITS.depth);
+}
+
+/** Generated wrappers have a separate fixed budget; the raw entry point remains depth 32. */
+export function parseGeneratedSourceJson(text:unknown):SourceJson {
+  return parseSourceJsonWithDepth(text, SOURCE_LIMITS.depth + 8);
+}
+
+function parseSourceJsonWithDepth(text:unknown,maxDepth:number):SourceJson {
   sourceAssert(typeof text==="string","RAW_JSON_REQUIRED");
   sourceAssert(text.length<=SOURCE_LIMITS.input_bytes&&sourceBytes(text)<=SOURCE_LIMITS.input_bytes,"INPUT_BYTES_EXCEEDED");
   let at=0;
@@ -47,7 +56,7 @@ export function parseSourceJson(text:unknown):SourceJson {
   const value=(depth:number):void=>{
     whitespace();sourceAssert(at<text.length,"INVALID_JSON");const c=text[at];
     if(c==="{"||c==="["){
-      sourceAssert(depth<SOURCE_LIMITS.depth,"DEPTH_EXCEEDED");at++;whitespace();const close=c==="{"?"}":"]";
+      sourceAssert(depth<maxDepth,"DEPTH_EXCEEDED");at++;whitespace();const close=c==="{"?"}":"]";
       if(text[at]===close){at++;return;}const keys=new Set<string>();
       while(true){if(c==="{"){whitespace();const key=tokenString();sourceAssert(!keys.has(key),"DUPLICATE_JSON_KEY");keys.add(key);
         whitespace();sourceAssert(text[at++]===':',"INVALID_JSON");}
@@ -104,8 +113,90 @@ export interface ParsedSourceInput {
   schema_supported:boolean;question_ids:Set<string>;input_bytes:number;
 }
 
+export function sourcePinnedContext(value: unknown): SourcePinnedContext {
+  const row = sourceObject(value as SourceJson);
+  exactSourceKeys(row, ["source_operation_id", "team_id", "season_id", "binding_version", "backend_generation",
+    "writer_epoch", "form_id", "spreadsheet_id", "sheet_id", "season_ends_at"]);
+  const pinned = {
+    source_operation_id: sourceText(row.source_operation_id, 1, 512),
+    team_id: sourceText(row.team_id, 1, 512),
+    season_id: sourceText(row.season_id, 1, 512),
+    binding_version: sourceInteger(row.binding_version, 1),
+    backend_generation: sourceText(row.backend_generation, 1, 512),
+    writer_epoch: sourceInteger(row.writer_epoch),
+    form_id: sourceText(row.form_id, 1, 512),
+    spreadsheet_id: sourceText(row.spreadsheet_id, 1, 512),
+    sheet_id: sourceInteger(row.sheet_id),
+    season_ends_at: sourceText(row.season_ends_at, 1),
+  };
+  sourceInstant(pinned.season_ends_at);
+  return pinned;
+}
+
+export function sourceSheetCoverage(schema: SourceObject, rows: SourceObject[], pinned: SourcePinnedContext) {
+  sourceAssert(schema.spreadsheetId === pinned.spreadsheet_id && schema.sheetId === pinned.sheet_id,
+    "SOURCE_IDENTITY_MISMATCH");
+  sourceText(schema.title);
+  sourceText(schema.locale, 1);
+  sourceText(schema.timeZone, 1);
+  const rowCount = sourceInteger(schema.rowCount, 1, SOURCE_LIMITS.records);
+  const columnCount = sourceInteger(schema.columnCount, 1, SOURCE_LIMITS.cells);
+  sourceAssert(sourceInteger(schema.headerRowIndex) === 0, "HEADER_POSITION_UNSUPPORTED");
+  sourceAssert(rowCount * columnCount <= SOURCE_LIMITS.cells, "CELL_COUNT_EXCEEDED");
+  sourceAssert(sourceArray(schema.headers).length === columnCount && rows.length === rowCount - 1,
+    "SHEET_COVERAGE_INCOMPLETE");
+  for (const [index, row] of rows.entries()) {
+    sourceAssert(sourceInteger(row.row_index, 1) === index + 1 && sourceArray(row.cells).length === columnCount,
+      "SHEET_COVERAGE_INCOMPLETE");
+  }
+  return { rowCount, columnCount };
+}
+
+export function sourceResponseIdentity(row: SourceObject, pinned: SourcePinnedContext, observedEnd: bigint) {
+  const id = sourceText(row.responseId, 1, 512);
+  sourceAssert(!has(row, "formId") || row.formId === pinned.form_id, "SOURCE_IDENTITY_MISMATCH");
+  sourceAssert(sourceInstant(sourceText(row.lastSubmittedTime, 1)) <= observedEnd, "RESPONSE_AFTER_OBSERVATION");
+  return id;
+}
+
+export function sourceKnownSources(rows: SourceObject[], pinned: SourcePinnedContext): void {
+  const known = new Set<string>();
+  for (const row of rows) {
+    const type = sourceText(row.kind, 1);
+    const allowed = type === "FORM_RESPONSE" ? ["kind", "form_id", "response_id", "status"] :
+      type === "LEGACY_ROW" ? ["kind", "source_key", "status"] :
+        type === "UNMAPPED_MEMBER" ? ["kind", "member_id"] : [];
+    sourceAssert(allowed.length > 0, "CENSUS_KIND_UNSUPPORTED");
+    exactSourceKeys(row, allowed);
+    if (type !== "UNMAPPED_MEMBER") {
+      sourceAssert(row.status === "IMPORTED" || row.status === "REVIEW_REQUIRED", "CENSUS_STATUS_INVALID");
+    }
+    if (type === "FORM_RESPONSE") sourceAssert(row.form_id === pinned.form_id, "SOURCE_IDENTITY_MISMATCH");
+    const keyField = type === "FORM_RESPONSE" ? "response_id" : type === "LEGACY_ROW" ? "source_key" : "member_id";
+    const id = sourceText(row[keyField], 1, 512);
+    const key = sourceCanonical([type, id]);
+    sourceAssert(!known.has(key), "DUPLICATE_CENSUS_ID");
+    known.add(key);
+  }
+}
+
+export function sourceDeclaredMappings(mappings: SourceObject[], rowCount: number): void {
+  const rows = new Set<number>();
+  const ids = new Set<string>();
+  for (const mapping of mappings) {
+    exactSourceKeys(mapping, ["state", "row_index", "response_id", "evidence_id"]);
+    sourceAssert(mapping.state === "DECLARED_ONLY", "MAPPING_STATE_INVALID");
+    const row = sourceInteger(mapping.row_index, 1, rowCount - 1);
+    const id = sourceText(mapping.response_id, 1, 512);
+    sourceText(mapping.evidence_id, 1, 512);
+    sourceAssert(!rows.has(row) && !ids.has(id), "DUPLICATE_DECLARED_MAPPING");
+    rows.add(row);
+    ids.add(id);
+  }
+}
+
 // A deliberately explicit supported schema. Unhandled image/video/grading/format constructs stay complete in pending.
-function formSchema(schema:SourceObject):{supported:boolean;questions:Set<string>} {
+export function sourceFormSchema(schema:SourceObject):{supported:boolean;questions:Set<string>} {
   let supported=fieldsKnown(schema,["formId","info","settings","items","revisionId","responderUri","linkedSheetId","publishSettings"]);
   sourceText(schema.formId,1,512);optionalText(schema,["revisionId","responderUri","linkedSheetId"]);
   const info=sourceObject(schema.info);supported=fieldsKnown(info,["title","description","documentTitle"])&&supported;
@@ -173,11 +264,7 @@ export function responseSupported(row:SourceObject,questions:Set<string>):{suppo
 }
 
 export function parseSourceCaptureInput(text:unknown,context:unknown):ParsedSourceInput {
-  const raw=sourceObject(parseSourceJson(text)),p=sourceObject(context as SourceJson);
-  exactSourceKeys(p,["source_operation_id","team_id","season_id","binding_version","backend_generation","writer_epoch","form_id","spreadsheet_id","sheet_id","season_ends_at"]);
-  const pinned:SourcePinnedContext={source_operation_id:sourceText(p.source_operation_id,1,512),team_id:sourceText(p.team_id,1,512),season_id:sourceText(p.season_id,1,512),
-    binding_version:sourceInteger(p.binding_version,1),backend_generation:sourceText(p.backend_generation,1,512),writer_epoch:sourceInteger(p.writer_epoch),
-    form_id:sourceText(p.form_id,1,512),spreadsheet_id:sourceText(p.spreadsheet_id,1,512),sheet_id:sourceInteger(p.sheet_id),season_ends_at:sourceText(p.season_ends_at,1)};
+  const raw=sourceObject(parseSourceJson(text)),pinned=sourcePinnedContext(context);
   const cutoff=sourceInstant(pinned.season_ends_at);
   exactSourceKeys(raw,["format","observed_start_at","observed_end_at","form_schema","form_responses","sheet_schema","sheet_rows","known_sources","declared_mappings"]);
   sourceAssert(raw.format==="c2-source-input-v1","INPUT_FORMAT");const start=sourceInstant(sourceText(raw.observed_start_at,1)),end=sourceInstant(sourceText(raw.observed_end_at,1));
@@ -189,32 +276,12 @@ export function parseSourceCaptureInput(text:unknown,context:unknown):ParsedSour
   const [form_responses,sheet_rows,known_sources,declared_mappings]=arrays.map(rows=>rows.map(sourceObject));
   for(const row of [form_schema,sheet_schema,...form_responses,...sheet_rows,...known_sources,...declared_mappings])
     sourceAssert(sourceBytes(sourceCanonical(row))<=SOURCE_LIMITS.record_bytes,"RECORD_BYTES_EXCEEDED");
-  sourceAssert(sheet_schema.spreadsheetId===pinned.spreadsheet_id&&sheet_schema.sheetId===pinned.sheet_id,"SOURCE_IDENTITY_MISMATCH");
-  sourceText(sheet_schema.title);sourceText(sheet_schema.locale,1);sourceText(sheet_schema.timeZone,1);
-  const rowCount=sourceInteger(sheet_schema.rowCount,1,SOURCE_LIMITS.records),columnCount=sourceInteger(sheet_schema.columnCount,1,SOURCE_LIMITS.cells);
-  sourceAssert(sourceInteger(sheet_schema.headerRowIndex)===0,"HEADER_POSITION_UNSUPPORTED");
-  sourceAssert(rowCount*columnCount<=SOURCE_LIMITS.cells,"CELL_COUNT_EXCEEDED");
-  sourceAssert(sourceArray(sheet_schema.headers).length===columnCount&&sheet_rows.length===rowCount-1,"SHEET_COVERAGE_INCOMPLETE");
-  for(const [index,row] of sheet_rows.entries()){
-    sourceAssert(sourceInteger(row.row_index,1)===index+1&&sourceArray(row.cells).length===columnCount,"SHEET_COVERAGE_INCOMPLETE");
-  }
+  const {rowCount}=sourceSheetCoverage(sheet_schema,sheet_rows,pinned);
   const seen=new Set<string>();for(const row of form_responses){const id=sourceText(row.responseId,1,512);sourceAssert(!seen.has(id),"DUPLICATE_RESPONSE_ID");seen.add(id);
-    sourceAssert(!has(row,"formId")||row.formId===pinned.form_id,"SOURCE_IDENTITY_MISMATCH");
-    sourceAssert(sourceInstant(sourceText(row.lastSubmittedTime,1))<=end,"RESPONSE_AFTER_OBSERVATION");}
-  const known=new Set<string>();for(const row of known_sources){const type=sourceText(row.kind,1),allowed=type==="FORM_RESPONSE"?["kind","form_id","response_id","status"]:
-    type==="LEGACY_ROW"?["kind","source_key","status"]:type==="UNMAPPED_MEMBER"?["kind","member_id"]:[];
-    sourceAssert(allowed.length>0,"CENSUS_KIND_UNSUPPORTED");exactSourceKeys(row,allowed);
-    if(type!=="UNMAPPED_MEMBER")sourceAssert(row.status==="IMPORTED"||row.status==="REVIEW_REQUIRED","CENSUS_STATUS_INVALID");
-    if(type==="FORM_RESPONSE")sourceAssert(row.form_id===pinned.form_id,"SOURCE_IDENTITY_MISMATCH");
-    const id=sourceText(row[type==="FORM_RESPONSE"?"response_id":type==="LEGACY_ROW"?"source_key":"member_id"],1,512),key=sourceCanonical([type,id]);
-    sourceAssert(!known.has(key),"DUPLICATE_CENSUS_ID");known.add(key);
-  }
-  const rows=new Set<number>(),ids=new Set<string>();for(const mapping of declared_mappings){
-    exactSourceKeys(mapping,["state","row_index","response_id","evidence_id"]);sourceAssert(mapping.state==="DECLARED_ONLY","MAPPING_STATE_INVALID");
-    const row=sourceInteger(mapping.row_index,1,rowCount-1),id=sourceText(mapping.response_id,1,512);sourceText(mapping.evidence_id,1,512);
-    sourceAssert(!rows.has(row)&&!ids.has(id),"DUPLICATE_DECLARED_MAPPING");rows.add(row);ids.add(id);
-  }
-  const schema=formSchema(form_schema);
+    sourceResponseIdentity(row,pinned,end);}
+  sourceKnownSources(known_sources,pinned);
+  sourceDeclaredMappings(declared_mappings,rowCount);
+  const schema=sourceFormSchema(form_schema);
   return {pinned,raw,form_schema,form_responses,sheet_schema,sheet_rows,known_sources,declared_mappings,
     schema_supported:schema.supported,question_ids:schema.questions,input_bytes:sourceBytes(text as string)};
 }

@@ -1,6 +1,6 @@
 # C2.6 原 source plan 完整验证 adapter - 设计
 
-日期：2026-10-01。仅设计，等待 supervisor 与独立审核后授权实施。本轮没有修改现有 source／人工审核代码、入口、schema、Google、存储或公开接口。
+日期：2026-10-01。原设计经双独审后，supervisor已授权最小共享抽取及本地纯validator；本地实现与双审已完成，事实见[本地验收](C2-SOURCE-PLAN-VALIDATION-LOCAL-ACCEPTANCE.md)。旧source canonical字节与人工审核入口保持兼容，没有schema、Google、存储或公开／runtime接线。
 
 目标是验证完整原 `c2-source-plan-v1` canonical core 及其中全部 chunks，而不需要原 `c2-source-input-v1` 文本。迟到 Form 完整正文已从 plan 排除，不能为了重建长期保存它、制造空答案或重新读活来源。现行人工审核仍使用原 input＋plan 双文本重建；本设计不提前更换其入口。
 
@@ -77,7 +77,7 @@ declared_mappings没有独立metadata数组：其完整原对象保存在每个S
 
 ## 6. 最小共享实现，避免 synthetic input 或第二套业务规则
 
-后续实施先最小抽取现有纯规则，让原builder与新validator共用；本轮不实施抽取。
+本地实施采用最小抽取现有纯规则，让原builder与新validator共用；以下保留原设计约束，实际交付见验收记录。
 
 1. 从现contract／projection抽取schema、pinned身份、response、Sheet/cell、known census、声明mapping的有界 typed验证与分类 helper。支持范围、omitted defaults、unknown union整拒／unknown完整pending、finite IEEE754／纳秒规则保持不变；原builder的19专项作为兼容oracle。
 2. 共享record wrapper／理由／条件构造和v1 chunk assembler，保留现输出原字节。新adapter验证原record序列并比较共享期望wrapper／条件／chunks，不复制整套buildlogic，也不调用buildLocalSourcePlan构造伪input。开发时从已提交 `8fed6a9` 的Git tree独立加载原builder及其依赖，生成并提交固定输入的前版canonical golden文本／digests，对照core／metadata／全部chunks原字节；测试运行不依赖旧Git对象可用，避免CI shallow checkout缺历史对象。必要的独立旧helper只可作为明确版本化的测试oracle，不在生产重复业务规则。不能以新builder与新adapter调用同一helper自比代替旧字节oracle。
@@ -108,4 +108,4 @@ private validated输出实际canonical另限≤2MB；若未来review再展开vie
 | 预算与隐私 | 合法输入导致private输出越界整失败；控制与错误无raw／URL／expectedactual；original bytes未改变，source status恒NOT_VERIFIED，不产生receipt或公开年度chunks |
 | 未实施事实 | 不提供原input、late完整body仍成功验证retained plan；明确input_bytes只是原声明，三门槛分开；不得把通过纯测试标为SOURCE_FIXED／实际读取／持久CAS／Google通过 |
 
-先提交共享抽取＋plan-core-only纯validator与独立Node对抗测试／报告，经两人审核后，再讨论将现review切换到这个private validated port。真实IO／manifest／权限／存储协议不随这个最小纯切片自动获授权。
+共享抽取、plan-core-only纯validator、独立Node对抗测试及报告已完成双审。将完整原plan接入私有人审是下一独立切片；真实IO／manifest／权限／存储协议不随这个最小纯切片自动接线。
