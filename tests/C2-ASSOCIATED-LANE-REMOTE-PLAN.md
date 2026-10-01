@@ -1,6 +1,6 @@
 # C2 独立训练通道真实 Google 验收计划
 
-> 2026-09-30。执行前计划，尚未运行。仅供专用 `c2test`；不能据此宣布 C2.5 完成或启用生产同步。脚本实现及独立审核通过后才补充可执行命令。
+> 2026-09-30。执行前计划，尚未运行。仅供专用 `c2test`；不能据此宣布 C2.5 完成或启用生产同步。runner 已实现，本地检查与独立审核是执行命令前的门槛。
 
 ## 1. 执行边界与入口门槛
 
@@ -13,6 +13,10 @@
 - 当前绑定、系统、签名 bridge、Form/response source 均为既有固定隔离来源，writer epoch0；schema14、目标 Worker 版本、pollfalse 与无 cron 均实读一致。无待审核来源、open conflict、global action required、退避、未完成 batch、未确认旧 outbox 或运行时暂停。
 - 基线 roster为11名虚构成员；旧候补训练 cursor为12/2/2，Google关联行11/1/20/2；这些仅为执行门槛，不能从本文当作当前远端已确认事实。roster行数不等于 `roster_version`，后者实读并保存。
 - 完整备份 manifest 和逐页 chunk/digest 均核验；全部原业务行、旧训练 cursor、逻辑/物理 B、immutable revision1/2、请求结果及 Google 全表行保存至忽略目录的私有 journal。
+
+升级证据同时保留候补 final 的完整 v13 包及其摘要。若 supervisor 已保存 `cloudflare/.acceptance-artifacts/c2-lane-upgrade-reference.json`，capture 必须核验该引用绑定的 fresh 完整 v13 包、旧 final 摘要、fresh 摘要和每项明确指标变化，再用 fresh 包证明 v13→v14 迁移。引用缺失时只允许以旧 final 为锚，私有证据明确 `fresh_reference=null`；仍须通过完整旧业务保护，不声称已取得 fresh 升级锚。
+
+43 张旧表和四张新表均完整下载并核验 manifest、全部 chunk 顺序、逐表索引/offset/行数及摘要。42 张旧业务/历史/元数据表原行 exact retained，唯一升级元数据例外是 `app_meta.schema_version` 13→14；新审计/请求行可以追加。`usage_snapshots` 是小时采样，允许已审核字段随运营刷新，保存完整 before/after、键、单调 captured_at、非负安全整数及 sampling age。请求/审计计数不超过备份总量，历史计数与不变业务相符；jobs 依 created/completed 时间重建采样时状态，outbox 仅采样晚于最后业务及导出确认后才与当前 pending 比较。不得把历史采样称为当前实时值，也不得忽略任务原行变化。fresh 引用的指标 age 由 reference.created_at 精确推导，不在复核时用当前时钟重算。
 
 任何前提不足仅输出受控 `DATA_PRECONDITION_REQUIRED` 与条件代码，不打印私有 ID、原行、凭据或 assert expected/actual。不得自动改绑定、清 retry、修改 due_at、补索引或提交表单以满足门槛。
 
@@ -42,21 +46,23 @@ restore 是 target整行到原expected整行的 CAS，必须从 journal 取原�
 | 阶段 | 动作 | 验收条件 |
 |---|---|---|
 | preflight / capture | 只读门槛、完整私有 backup及Google基线 | 无业务写；原数据证据完整 |
-| prepare / create-B / open | 创建专用新周、A/B并开放 | 原周/模板/训练不变；每次请求和 snapshot 在 journal固定 |
+| prepare / create-b / open | 创建专用新周、A/B并开放 | 原周/模板/训练不变；每次请求和 snapshot 在 journal固定 |
 | export-schedule | 原 due_at 到期后逐事件、逐批次确认排期 | 所有全季屏障先完成；A/B的PRACTICE物理 B/G齐全且一致 |
-| signup-A1 / signup-B1 | Alpha在A/B真实报名LEFT | 两事件原 snapshot及sequence固定；每场 signup_version1；未改旧训练 |
-| drift-practice-A | 对A单行 location 做签名 CAS | 精确单行变化，B引用仍干净 |
-| block-A1 | 固定原 A1 export request 前检 | `LocalExportConflict`；A1局部block；零batch、零Google业务写、零cursor/B推进；全季不halt |
-| signup-A2 / probe-successor | A真实偏好改RIGHT，尝试指定A2的新受控probe | A2为原A1之后的真实snapshot；不得绕过A1；probe不占用B1的执行请求、不创建batch、不改原selection |
-| export-B1 | 原B1逐批次及event确认 | B1完整EVENT_CONFIRMED；B cursor1；A1/A2保持pending，A1 block仍在，A cursor0；overview/page/backup保留block |
-| restore-practice / retry-A1 / export-A1 | 原PRACTICE整行恢复；Coach retry仅A1；原A1请求恢复确认 | retry不创建Google patch，不更换事件/请求；A1 EVENT_CONFIRMED、A cursor1；A2仍原snapshot pending |
-| signup-B2 / drift-shared-member | B偏好改RIGHT；Alpha MEMBER单行CAS为INACTIVE | A2/B2都引用同一已确认member基线；未产生真实member屏障 |
-| block-A2 / block-B2 | 各自固定原请求前检 | 两场分别localblock；均零batch/业务写；A/B cursor仍1；全季无halt，后序不越过 |
-| restore-member / retry-A2 / retry-B2 | 原MEMBER整行恢复；两个受控Coach重试 | 精确解除各自block；retry omitted outbox_id不能作为替代；不修改snapshot/queue/sequence |
-| export-A2 / export-B2 | 沿各自原请求和原event依顺序确认 | 每场cursor signup2，其它版本按真实snapshot；确认后仅各自block清理 |
-| final / evidence | 完整backup、Google全部目标及原基线核对 | 两场无待处理事件/block/batch；所有旧业务历史与旧cursor/revision保持；无globalhalt；pollfalse/crons[] |
+| signup-a1 / signup-b1 | Alpha在A/B真实报名LEFT | 两事件原 snapshot及sequence固定；每场 signup_version1；未改旧训练 |
+| drift-practice | 对A单行 location 做签名 CAS | 精确单行变化，B引用仍干净 |
+| block-a1 | 固定原 A1 export request 前检 | `LocalExportConflict`；A1局部block；零batch、零Google业务写、零cursor/B推进；全季不halt |
+| signup-a2 / probe-successor | A真实偏好改RIGHT，尝试指定A2的新受控probe | 原 A2 due 自然到期且原 A1 有效 block 后才执行；A2为原A1之后的真实snapshot；不得绕过A1；probe不占用B1的执行请求、不创建batch、不改原selection |
+| export-b1 | 原B1逐批次及event确认 | B1完整EVENT_CONFIRMED；B cursor1；A1/A2保持pending，A1 block仍在，A cursor0；overview/page/backup保留block |
+| restore-practice / retry-a1 / export-a1 | 原PRACTICE整行恢复；Coach retry仅A1；原A1请求恢复确认 | retry不创建Google patch，不更换事件/请求；A1 EVENT_CONFIRMED、A cursor1；A2仍原snapshot pending |
+| signup-b2 / drift-member | B偏好改RIGHT；Alpha MEMBER单行CAS为INACTIVE | A2/B2都引用同一已确认member基线；未产生真实member屏障 |
+| block-a2 / block-b2 | 各自固定原请求前检 | 各自原 due 自然到期后，两场分别localblock；均零batch/业务写；A/B cursor仍1；全季无halt，后序不越过 |
+| restore-member / retry-a2 / retry-b2 | 原MEMBER整行恢复；两个受控Coach重试 | 精确解除各自block；retry omitted outbox_id不能作为替代；不修改snapshot/queue/sequence |
+| export-a2 / export-b2 | 沿各自原请求和原event依顺序确认 | 每场cursor signup2，其它版本按真实snapshot；确认后仅各自block清理 |
+| final | 完整backup、Google全部目标及原基线核对 | 两场无待处理事件/block/batch；所有旧业务历史与旧cursor/revision保持；无globalhalt；pollfalse/crons[] |
 
 事件实际确认期间可拆成显式单call步骤，保存每个返回值。BATCH_CONFIRMED 不等于 EVENT_CONFIRMED；只在最终 event 再核验成功后断言完整 projection/cursor。上一个已确认步骤重跑只读复核当前已确认进度，不要求 Google 回到旧 snapshot。已发送/结果未知的批次仍是全季 drain 屏障，禁止让另一个训练越过。
+
+runner 每次 export 最多发送一个调用。已知 BATCH_CONFIRMED 或 EVENT_CONFIRMED 保存原结果和 `evidence_pending` 后，完整核验当前 backup、immutable snapshot 投影、完整 Google receipt、旧行/B、cursor、block page 与 overview；全部通过才清除 checkpoint。若回复已知而证据失败，下次同 phase 仅只读复核该 checkpoint，成功后本次返回，仍不发送下一批或下一事件。后一次显式执行才允许推进。回复未知则保留原 inflight ID 和 payload，与已知待核验状态分别处理。
 
 对于 local conflict，要同时核对四张新增表：固定 index anchor/sequence、独立 block字段、原request selection、无新增或改变的poll plan。使用受保护的 paginated block API 从头读到尾并对照完整备份，不把 overview 的数量当作完整列表，也不能因B成功隐藏A的错误。block的原identity与error context保存，retry核对原绑定、payload digest和 PENDING 状态。
 
@@ -67,3 +73,32 @@ runner必须为每个阶段持久化 intended request/payload，再调用 API；
 最终报告区分已实现、本地通过、隔离真实Google通过与尚未验收。此次仅证明同季不同训练的关联事件可独立推进、共同成员引用仍会分别阻塞，以及同训练顺序和全季屏障仍成立。没有验证自动poll、生产迁移、恢复演练、同实体字段合并或成员/排期事件独立推进，不能由本文扩大结论。
 
 如果执行中门槛失败，保留两个系统现状和原journal，给出具体受控条件及必要恢复步骤。人为漂移恢复后也必须等事件核验、block/page/backup及旧记录保护全部通过，才由supervisor更新当前状态。
+
+## 6. 本地工具检查与 supervisor 命令
+
+入口为 [live-c2-associated-lane-acceptance.mjs](live-c2-associated-lane-acceptance.mjs)，本地纯构造/恢复测试为 [c2-associated-lane-acceptance.test.mjs](c2-associated-lane-acceptance.test.mjs)。导入模块不读凭据、不调用网络。检查命令：
+
+```powershell
+node --check tests/live-c2-associated-lane-acceptance.mjs
+node --test tests/c2-associated-lane-acceptance.test.mjs
+```
+
+以下仅供 supervisor 在代码/工具独审、真实候补 final、双 clean 恢复、完整升级前参考、隔离 Worker 升级全部完成后执行。若本地仍为旧版本配置，runner 会在网络前返回 `WORKER_UPGRADE_NOT_CONFIGURED`；远端版本/schema不匹配也停止。
+
+在项目根目录执行，凭据始终使用既有私有 acceptance.env：
+
+```powershell
+node --env-file="D:\agents\dev-master\.c2-form-test\acceptance.env" tests/live-c2-associated-lane-acceptance.mjs --phase=preflight
+node --env-file="D:\agents\dev-master\.c2-form-test\acceptance.env" tests/live-c2-associated-lane-acceptance.mjs --phase=capture --week-date=2026-10-19 --capture-private-backup
+node --env-file="D:\agents\dev-master\.c2-form-test\acceptance.env" tests/live-c2-associated-lane-acceptance.mjs --phase=prepare --capture-private-backup --write-test-data
+```
+
+Oct5 和 Oct12 已有旧周，候选为 Oct19；capture 必须重新实读证明未占用，确认真实模板 day/time、A/B完整季内日期与未来 cutoff。不得因日期冲突自动选择其它周或附加旧 DRAFT。
+
+之后用同一命令，将 `--phase=prepare` 逐次替换为表内准确的小写 phase，严格按表顺序执行。所有非 preflight 命令保留 `--capture-private-backup`；除 capture/final 外保留 `--write-test-data`。最终：
+
+```powershell
+node --env-file="D:\agents\dev-master\.c2-form-test\acceptance.env" tests/live-c2-associated-lane-acceptance.mjs --phase=final --capture-private-backup
+```
+
+export phase 返回 BATCH_PROGRESS 时，下次仍执行同一 phase。不得用循环自动进下一 phase；必须先看受控结果和私有证据。NATURAL_DUE_NOT_REACHED 保留原 due 并自然等待。成功输出在 Coach logout 成功后才发出，带 `coach_logged_out=true`。私有 journal 固定为 `cloudflare/.acceptance-artifacts/c2-associated-lane-journal.json`，不删除/换名来重跑未知请求，不覆盖其它验收 journal。本文没有远端执行结果。
