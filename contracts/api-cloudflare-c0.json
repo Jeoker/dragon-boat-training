@@ -1,8 +1,16 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "document_type": "api-contract-manifest",
+  "conventions": "contracts/README.md; descriptive action inventory, not an executable JSON Schema",
   "status": "migration draft; not the production API",
   "contract_version": "2026-09-19.c0",
   "service": "dragon-boat-training-cloudflare",
+  "envelope": {
+    "success": "ok:true, data:object, meta:object",
+    "failure": "ok:false, error:{code:string,message:string,retryable:boolean}, meta:object",
+    "meta": ["contract_version", "service_version", "backend_instance", "backend_generation", "writer_epoch", "environment", "server_time", "request_id"],
+    "request_id": "Validated request ID on handled requests; null if absent on reads or rejected before parsing/validating an ID",
+    "validation": "JSON numeric fields must be safe-integer numbers within their declared bounds; flags must be booleans. Omission uses documented defaults, null does not."
+  },
   "identity": {
     "backend_instance": "identifies the environment and dataset",
     "backend_generation": "isolates browser cache, sessions and unknown requests across backend changes",
@@ -11,15 +19,16 @@
   "public_endpoints": {
     "GET /health": {
       "writes_data": false,
-      "response": [
-        "status",
+      "response_data": ["status"],
+      "response_meta": [
         "contract_version",
         "service_version",
         "backend_instance",
         "backend_generation",
         "writer_epoch",
         "environment",
-        "server_time"
+        "server_time",
+        "request_id"
       ]
     }
   },
@@ -35,7 +44,8 @@
     "protocol": "2026-09-19.bridge.v1",
     "c0_scenarios": ["valid", "expired", "tampered_payload", "wrong_team", "wrong_binding", "wrong_epoch"],
     "signed_scope": ["direction", "team_id", "binding_version", "writer_epoch", "timestamp_ms", "nonce", "operation_id", "payload_digest"],
-    "status": "C0 transport and replay proof only; no Form or Sheet business mutation"
+    "status": "C0 transport and replay proof only; no Form or Sheet business mutation",
+    "receipt_validation": "Match request ID, verified status, protocol, team, binding, writer epoch, operation, challenge and payload digest; require an acknowledgement timestamp before accepting success."
   },
   "request_id": {
     "format": "8 to 128 ASCII letters, numbers, underscores or hyphens",

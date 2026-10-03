@@ -1,4 +1,4 @@
 {
   "extends": "astro/tsconfigs/strict",
-  "exclude": ["cloudflare"]
+  "exclude": ["cloudflare", "dist", "backend/.build", "node_modules"]
 }

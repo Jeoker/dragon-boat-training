@@ -1,77 +1,699 @@
-export const APPLICATION_SCHEMA_VERSION = 1;
+import { indexExportEvent } from "./c2-export-lanes";
+
+export const APPLICATION_SCHEMA_VERSION = 16;
+
+function applyC0Schema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS c0_counters (counter_name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS system_requests (
+      request_key TEXT PRIMARY KEY, actor_scope TEXT NOT NULL, action TEXT NOT NULL,
+      request_id TEXT NOT NULL, payload_digest TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('COMPLETED')), result_json TEXT NOT NULL,
+      created_at TEXT NOT NULL, completed_at TEXT NOT NULL,
+      UNIQUE (actor_scope, action, request_id)
+    );
+    CREATE TABLE IF NOT EXISTS audit_events (
+      event_id TEXT PRIMARY KEY, request_key TEXT NOT NULL, actor_scope TEXT NOT NULL,
+      action TEXT NOT NULL, details_json TEXT NOT NULL, created_at TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+    CREATE TABLE IF NOT EXISTS sync_outbox (
+      outbox_id TEXT PRIMARY KEY, request_key TEXT NOT NULL, topic TEXT NOT NULL,
+      payload_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('PENDING', 'CONFIRMED', 'FAILED')),
+      due_at_ms INTEGER NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, completed_at TEXT,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+    CREATE INDEX IF NOT EXISTS sync_outbox_due_idx ON sync_outbox(status, due_at_ms);
+    CREATE TABLE IF NOT EXISTS scheduled_jobs (
+      job_id TEXT PRIMARY KEY, job_type TEXT NOT NULL, payload_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED')),
+      due_at_ms INTEGER NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0,
+      lease_token TEXT, lease_until_ms INTEGER, last_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS scheduled_jobs_due_idx ON scheduled_jobs(status, due_at_ms, lease_until_ms);
+  `).toArray();
+}
+
+function applyC1CoreSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS coaches (
+      coach_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, code_salt TEXT NOT NULL,
+      code_digest TEXT NOT NULL, credential_version INTEGER NOT NULL CHECK (credential_version >= 1),
+      active INTEGER NOT NULL CHECK (active IN (0, 1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS coach_sessions (
+      session_id TEXT PRIMARY KEY, coach_id TEXT NOT NULL, credential_version INTEGER NOT NULL,
+      issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT,
+      backend_generation TEXT NOT NULL, writer_epoch INTEGER NOT NULL,
+      FOREIGN KEY (coach_id) REFERENCES coaches(coach_id)
+    );
+    CREATE INDEX IF NOT EXISTS coach_sessions_coach_idx ON coach_sessions(coach_id, expires_at);
+    CREATE TABLE IF NOT EXISTS settings (
+      setting_key TEXT PRIMARY KEY, value_json TEXT NOT NULL,
+      settings_version INTEGER NOT NULL CHECK (settings_version >= 0), updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS seasons (
+      season_id TEXT PRIMARY KEY, name TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+      timezone TEXT NOT NULL, season_ends_at TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('DRAFT', 'OPEN', 'COMPLETED', 'ARCHIVED')),
+      binding_version INTEGER NOT NULL CHECK (binding_version >= 0),
+      season_version INTEGER NOT NULL CHECK (season_version >= 0),
+      roster_version INTEGER NOT NULL CHECK (roster_version >= 0),
+      created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS seasons_status_idx ON seasons(status, start_date, season_id);
+    CREATE TABLE IF NOT EXISTS members (
+      season_id TEXT NOT NULL, member_id TEXT NOT NULL, source_key TEXT NOT NULL,
+      source_display_name TEXT NOT NULL, display_name_override TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'INACTIVE')),
+      default_preference TEXT NOT NULL CHECK (default_preference IN ('LEFT', 'AMBIENT', 'RIGHT')),
+      member_version INTEGER NOT NULL CHECK (member_version >= 1),
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, member_id), UNIQUE (season_id, source_key),
+      FOREIGN KEY (season_id) REFERENCES seasons(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS members_roster_idx ON members(season_id, status, source_display_name, member_id);
+    CREATE TABLE IF NOT EXISTS migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+  `).toArray();
+}
+
+function applyC1ScheduleSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS schedule_templates (
+      season_id TEXT NOT NULL, template_id TEXT NOT NULL,
+      day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
+      start_time TEXT NOT NULL, end_time TEXT NOT NULL, timezone TEXT NOT NULL,
+      location TEXT NOT NULL, address TEXT NOT NULL, map_url TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL CHECK (active IN (0, 1)),
+      template_version INTEGER NOT NULL CHECK (template_version >= 1),
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, template_id),
+      FOREIGN KEY (season_id) REFERENCES seasons(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS schedule_templates_active_idx
+      ON schedule_templates(season_id, active, day_of_week, start_time, template_id);
+    CREATE TABLE IF NOT EXISTS training_weeks (
+      season_id TEXT NOT NULL, week_id TEXT NOT NULL, week_start_date TEXT NOT NULL,
+      scheduled_open_at TEXT, status TEXT NOT NULL CHECK (status IN ('DRAFT', 'SCHEDULED', 'OPENED')),
+      week_version INTEGER NOT NULL CHECK (week_version >= 1), confirmed_version INTEGER,
+      confirmed_by TEXT, confirmed_at TEXT, published_at TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, week_id), UNIQUE (season_id, week_start_date),
+      FOREIGN KEY (season_id) REFERENCES seasons(season_id),
+      FOREIGN KEY (confirmed_by) REFERENCES coaches(coach_id)
+    );
+    CREATE INDEX IF NOT EXISTS training_weeks_status_idx
+      ON training_weeks(season_id, status, scheduled_open_at, week_start_date);
+    CREATE TABLE IF NOT EXISTS practices (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL, week_id TEXT NOT NULL,
+      template_id TEXT, generation_key TEXT,
+      start_at TEXT NOT NULL, end_at TEXT NOT NULL, timezone TEXT NOT NULL,
+      location TEXT NOT NULL, address TEXT NOT NULL, map_url TEXT NOT NULL DEFAULT '',
+      left_capacity INTEGER NOT NULL CHECK (left_capacity >= 1),
+      right_capacity INTEGER NOT NULL CHECK (right_capacity >= 1),
+      signup_cutoff_at TEXT NOT NULL,
+      practice_version INTEGER NOT NULL CHECK (practice_version >= 1),
+      cancelled_at TEXT, cancelled_by TEXT, schedule_published_at TEXT, schedule_published_by TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id), UNIQUE (season_id, generation_key),
+      FOREIGN KEY (season_id, week_id) REFERENCES training_weeks(season_id, week_id),
+      FOREIGN KEY (cancelled_by) REFERENCES coaches(coach_id),
+      FOREIGN KEY (schedule_published_by) REFERENCES coaches(coach_id)
+    );
+    CREATE INDEX IF NOT EXISTS practices_week_idx ON practices(season_id, week_id, start_at, practice_id);
+    CREATE INDEX IF NOT EXISTS practices_public_idx
+      ON practices(season_id, schedule_published_at, cancelled_at, start_at, practice_id);
+    CREATE TABLE IF NOT EXISTS practice_versions (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      signup_version INTEGER NOT NULL DEFAULT 0 CHECK (signup_version >= 0),
+      seat_plan_version INTEGER NOT NULL DEFAULT 0 CHECK (seat_plan_version >= 0),
+      published_revision INTEGER NOT NULL DEFAULT 0 CHECK (published_revision >= 0),
+      PRIMARY KEY (season_id, practice_id),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id)
+    );
+    CREATE TABLE IF NOT EXISTS schedule_migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+  `).toArray();
+}
+
+function applyC1SignupSchema(sql: SqlStorage): void {
+  const columns = sql.exec<{ name: string }>("PRAGMA table_info(practice_versions)").toArray();
+  if (!columns.some((column) => column.name === "signup_sequence")) {
+    sql.exec(`ALTER TABLE practice_versions ADD COLUMN signup_sequence INTEGER NOT NULL DEFAULT 0
+      CHECK (signup_sequence >= 0);`).toArray();
+  }
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS signups (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL, member_id TEXT NOT NULL,
+      preference TEXT NOT NULL CHECK (preference IN ('LEFT', 'AMBIENT', 'RIGHT')),
+      status TEXT NOT NULL CHECK (status IN ('CONFIRMED', 'WAITLISTED', 'CANCELLED')),
+      queue_at TEXT NOT NULL, queue_sequence INTEGER NOT NULL CHECK (queue_sequence >= 1),
+      updated_at TEXT NOT NULL, last_request_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (season_id, practice_id, member_id),
+      UNIQUE (season_id, practice_id, queue_sequence),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id),
+      FOREIGN KEY (season_id, member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE INDEX IF NOT EXISTS signups_practice_queue_idx
+      ON signups(season_id, practice_id, status, queue_at, queue_sequence);
+    CREATE INDEX IF NOT EXISTS signups_member_active_idx
+      ON signups(season_id, member_id, status, practice_id);
+    CREATE TABLE IF NOT EXISTS signup_rate_limits (
+      season_id TEXT NOT NULL, member_id TEXT NOT NULL, minute_bucket INTEGER NOT NULL,
+      attempt_count INTEGER NOT NULL CHECK (attempt_count >= 1), updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, member_id, minute_bucket)
+    );
+    CREATE TABLE IF NOT EXISTS signup_migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+  `).toArray();
+}
+
+function applyC1SeatingSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS seat_plan_states (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      coach_member_id TEXT, steerer_member_id TEXT,
+      updated_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id),
+      FOREIGN KEY (season_id, coach_member_id) REFERENCES members(season_id, member_id),
+      FOREIGN KEY (season_id, steerer_member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE TABLE IF NOT EXISTS seat_plan_draft_seats (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      side TEXT NOT NULL CHECK (side IN ('LEFT', 'RIGHT')),
+      row_number INTEGER NOT NULL CHECK (row_number >= 1), member_id TEXT,
+      seat_plan_version INTEGER NOT NULL CHECK (seat_plan_version >= 1),
+      updated_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id, side, row_number),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id),
+      FOREIGN KEY (season_id, member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE INDEX IF NOT EXISTS seat_plan_draft_member_idx
+      ON seat_plan_draft_seats(season_id, member_id, practice_id);
+    CREATE TABLE IF NOT EXISTS seat_plan_revisions (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      revision_number INTEGER NOT NULL CHECK (revision_number >= 1), revision_id TEXT NOT NULL UNIQUE,
+      source TEXT NOT NULL, seat_plan_version INTEGER NOT NULL CHECK (seat_plan_version >= 0),
+      coach_member_id TEXT, steerer_member_id TEXT,
+      published_by TEXT NOT NULL, published_at TEXT NOT NULL, request_id TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id, revision_number),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id),
+      FOREIGN KEY (season_id, coach_member_id) REFERENCES members(season_id, member_id),
+      FOREIGN KEY (season_id, steerer_member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE TABLE IF NOT EXISTS seat_plan_revision_seats (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL, revision_number INTEGER NOT NULL,
+      side TEXT NOT NULL CHECK (side IN ('LEFT', 'RIGHT')),
+      row_number INTEGER NOT NULL CHECK (row_number >= 1), member_id TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id, revision_number, side, row_number),
+      UNIQUE (season_id, practice_id, revision_number, member_id),
+      FOREIGN KEY (season_id, practice_id, revision_number)
+        REFERENCES seat_plan_revisions(season_id, practice_id, revision_number),
+      FOREIGN KEY (season_id, member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE INDEX IF NOT EXISTS seat_plan_revision_member_idx
+      ON seat_plan_revision_seats(season_id, member_id, practice_id, revision_number);
+    CREATE TABLE IF NOT EXISTS seat_plan_revision_names (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL, revision_number INTEGER NOT NULL,
+      member_id TEXT NOT NULL, display_name TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id, revision_number, member_id),
+      FOREIGN KEY (season_id, practice_id, revision_number)
+        REFERENCES seat_plan_revisions(season_id, practice_id, revision_number)
+    );
+    CREATE TABLE IF NOT EXISTS seating_migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+  `).toArray();
+}
+
+function applyC1HistorySchema(sql: SqlStorage): void {
+  const auditColumns = sql.exec<{ name: string }>("PRAGMA table_info(audit_events)").toArray();
+  if (!auditColumns.some((column) => column.name === "season_id")) {
+    sql.exec("ALTER TABLE audit_events ADD COLUMN season_id TEXT;").toArray();
+    sql.exec(`UPDATE audit_events SET season_id=json_extract(details_json, '$.season_id')
+      WHERE json_valid(details_json) AND json_type(details_json, '$.season_id')='text'`).toArray();
+  }
+  sql.exec(`
+    CREATE INDEX IF NOT EXISTS audit_events_season_idx
+      ON audit_events(season_id, created_at DESC, event_id DESC);
+    CREATE TABLE IF NOT EXISTS practice_history (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      history_version INTEGER NOT NULL CHECK (history_version >= 1),
+      final_status TEXT NOT NULL CHECK (final_status IN ('FROZEN', 'UNPUBLISHED')),
+      frozen_revision INTEGER NOT NULL CHECK (frozen_revision >= 0),
+      snapshot_json TEXT NOT NULL, frozen_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practices(season_id, practice_id)
+    );
+    CREATE INDEX IF NOT EXISTS practice_history_season_idx
+      ON practice_history(season_id, frozen_at DESC, practice_id DESC);
+    CREATE INDEX IF NOT EXISTS practices_history_maintenance_idx
+      ON practices(season_id, end_at, practice_id)
+      WHERE schedule_published_at IS NOT NULL AND cancelled_at IS NULL;
+    CREATE TABLE IF NOT EXISTS history_corrections (
+      season_id TEXT NOT NULL, practice_id TEXT NOT NULL,
+      correction_id TEXT NOT NULL UNIQUE,
+      history_version INTEGER NOT NULL CHECK (history_version >= 2),
+      note TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, practice_id, history_version),
+      FOREIGN KEY (season_id, practice_id) REFERENCES practice_history(season_id, practice_id)
+    );
+    CREATE TABLE IF NOT EXISTS season_history (
+      season_id TEXT PRIMARY KEY, archive_year INTEGER NOT NULL,
+      practice_count INTEGER NOT NULL CHECK (practice_count >= 0),
+      published_practice_count INTEGER NOT NULL CHECK (published_practice_count >= 0),
+      snapshot_json TEXT NOT NULL, archived_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES seasons(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS season_history_public_idx
+      ON season_history(archive_year DESC, archived_at DESC, season_id DESC);
+    CREATE TABLE IF NOT EXISTS history_migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+    CREATE TABLE IF NOT EXISTS usage_snapshots (
+      usage_date TEXT PRIMARY KEY, captured_at TEXT NOT NULL,
+      database_size_bytes INTEGER NOT NULL CHECK (database_size_bytes >= 0),
+      request_count INTEGER NOT NULL CHECK (request_count >= 0),
+      audit_count INTEGER NOT NULL CHECK (audit_count >= 0),
+      outbox_pending INTEGER NOT NULL CHECK (outbox_pending >= 0),
+      jobs_pending INTEGER NOT NULL CHECK (jobs_pending >= 0),
+      history_practice_count INTEGER NOT NULL CHECK (history_practice_count >= 0),
+      history_season_count INTEGER NOT NULL CHECK (history_season_count >= 0)
+    );
+    CREATE TABLE IF NOT EXISTS backup_snapshots (
+      snapshot_id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK (status IN ('BUILDING', 'READY')),
+      schema_version INTEGER NOT NULL, request_key TEXT NOT NULL, request_id TEXT NOT NULL,
+      actor_scope TEXT NOT NULL, payload_digest TEXT NOT NULL, event_id TEXT NOT NULL,
+      table_count INTEGER NOT NULL CHECK (table_count >= 0),
+      record_count INTEGER NOT NULL CHECK (record_count >= 0),
+      chunk_count INTEGER NOT NULL CHECK (chunk_count >= 0),
+      content_digest TEXT NOT NULL DEFAULT '', manifest_json TEXT NOT NULL,
+      created_at TEXT NOT NULL, completed_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS backup_snapshot_chunks (
+      snapshot_id TEXT NOT NULL, chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+      table_name TEXT NOT NULL, row_offset INTEGER NOT NULL CHECK (row_offset >= 0),
+      row_count INTEGER NOT NULL CHECK (row_count >= 0), payload_json TEXT NOT NULL,
+      payload_digest TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (snapshot_id, chunk_index),
+      FOREIGN KEY (snapshot_id) REFERENCES backup_snapshots(snapshot_id)
+    );
+  `).toArray();
+}
+
+function applyC2SyncFoundationSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS sync_bindings (
+      season_id TEXT PRIMARY KEY, binding_version INTEGER NOT NULL CHECK (binding_version >= 1),
+      form_id TEXT NOT NULL UNIQUE, runtime_spreadsheet_id TEXT NOT NULL UNIQUE,
+      response_sheet_id TEXT NOT NULL, response_sheet_name TEXT NOT NULL,
+      field_mapping_json TEXT NOT NULL CHECK (json_valid(field_mapping_json)), schema_fingerprint TEXT NOT NULL,
+      export_paused INTEGER NOT NULL DEFAULT 0 CHECK (export_paused IN (0, 1)),
+      last_pull_at TEXT, last_push_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES seasons(season_id)
+    );
+    CREATE TABLE IF NOT EXISTS sync_baselines (
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      entity_type TEXT NOT NULL CHECK (entity_type IN
+        ('SEASON', 'MEMBER', 'SIGNUP', 'PRACTICE', 'SEAT_PLAN_DRAFT', 'HISTORY')),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      baseline_json TEXT NOT NULL CHECK (json_valid(baseline_json)), baseline_digest TEXT NOT NULL,
+      cloud_version INTEGER NOT NULL CHECK (cloud_version >= 0), sheet_digest TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, binding_version, entity_type, entity_id, dependency_group),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS sync_baselines_entity_idx
+      ON sync_baselines(season_id, entity_type, entity_id, dependency_group);
+    CREATE TABLE IF NOT EXISTS source_imports (
+      stable_source_id TEXT PRIMARY KEY, season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      source_type TEXT NOT NULL CHECK (source_type IN ('FORM_RESPONSE', 'LEGACY_ROW')),
+      source_external_id TEXT NOT NULL, source_digest TEXT NOT NULL,
+      source_version INTEGER NOT NULL CHECK (source_version >= 1), member_id TEXT,
+      status TEXT NOT NULL CHECK (status IN ('IMPORTED', 'REVIEW_REQUIRED')),
+      imported_at TEXT, updated_at TEXT NOT NULL,
+      CHECK ((status = 'IMPORTED' AND member_id IS NOT NULL AND imported_at IS NOT NULL) OR
+             (status = 'REVIEW_REQUIRED' AND member_id IS NULL AND imported_at IS NULL)),
+      UNIQUE (season_id, binding_version, source_type, source_external_id),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id),
+      FOREIGN KEY (season_id, member_id) REFERENCES members(season_id, member_id)
+    );
+    CREATE INDEX IF NOT EXISTS source_imports_status_idx
+      ON source_imports(season_id, status, updated_at, stable_source_id);
+    CREATE TABLE IF NOT EXISTS sync_conflicts (
+      conflict_id TEXT PRIMARY KEY, season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      entity_type TEXT NOT NULL CHECK (entity_type IN
+        ('SEASON', 'MEMBER', 'SIGNUP', 'PRACTICE', 'SEAT_PLAN_DRAFT', 'HISTORY')),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      baseline_json TEXT NOT NULL CHECK (json_valid(baseline_json)),
+      cloud_json TEXT NOT NULL CHECK (json_valid(cloud_json)),
+      google_json TEXT NOT NULL CHECK (json_valid(google_json)),
+      cloud_version INTEGER NOT NULL CHECK (cloud_version >= 0), google_digest TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('OPEN', 'RESOLVED', 'SUPERSEDED')),
+      created_at TEXT NOT NULL, resolved_at TEXT,
+      resolution_json TEXT CHECK (resolution_json IS NULL OR json_valid(resolution_json)),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS sync_conflicts_open_idx
+      ON sync_conflicts(season_id, status, created_at, conflict_id);
+    CREATE TABLE IF NOT EXISTS sync_batches (
+      batch_id TEXT PRIMARY KEY, season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      writer_epoch INTEGER NOT NULL CHECK (writer_epoch >= 0),
+      direction TEXT NOT NULL CHECK (direction IN ('CLOUDFLARE_TO_GOOGLE', 'GOOGLE_TO_CLOUDFLARE')),
+      status TEXT NOT NULL CHECK (status IN
+        ('PREPARED', 'SENT', 'PARTIAL', 'CONFIRMED', 'FAILED', 'SUPERSEDED')),
+      payload_digest TEXT NOT NULL, first_outbox_id TEXT, last_outbox_id TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      completed_at TEXT,
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE INDEX IF NOT EXISTS sync_batches_status_idx
+      ON sync_batches(season_id, status, updated_at, batch_id);
+    CREATE TABLE IF NOT EXISTS sync_batch_items (
+      batch_id TEXT NOT NULL, item_index INTEGER NOT NULL CHECK (item_index >= 0),
+      entity_type TEXT NOT NULL CHECK (entity_type IN
+        ('SEASON', 'MEMBER', 'SIGNUP', 'PRACTICE', 'SEAT_PLAN_DRAFT', 'HISTORY')),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      expected_sheet_digest TEXT NOT NULL,
+      target_json TEXT NOT NULL CHECK (json_valid(target_json)), target_digest TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPLIED', 'VERIFIED', 'FAILED', 'SUPERSEDED')),
+      receipt_json TEXT CHECK (receipt_json IS NULL OR json_valid(receipt_json)), updated_at TEXT NOT NULL,
+      PRIMARY KEY (batch_id, item_index),
+      FOREIGN KEY (batch_id) REFERENCES sync_batches(batch_id)
+    );
+    CREATE TABLE IF NOT EXISTS sync_migration_snapshots (
+      source_snapshot_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL,
+      imported_at TEXT NOT NULL, request_key TEXT NOT NULL,
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+  `).toArray();
+}
+
+function applyC2FormImportSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS form_import_cursors (
+      season_id TEXT PRIMARY KEY, binding_version INTEGER NOT NULL CHECK (binding_version >= 1),
+      watermark_ms INTEGER NOT NULL DEFAULT 0 CHECK (watermark_ms >= 0),
+      window_start_ms INTEGER, scan_baseline_ms INTEGER,
+      after_at_ms INTEGER NOT NULL DEFAULT 0 CHECK (after_at_ms >= 0),
+      after_id TEXT NOT NULL DEFAULT '', last_read_at_ms INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE TABLE IF NOT EXISTS form_import_receipts (
+      operation_id TEXT PRIMARY KEY, request_key TEXT NOT NULL UNIQUE,
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      request_digest TEXT NOT NULL, response_digest TEXT NOT NULL,
+      result_json TEXT NOT NULL CHECK (json_valid(result_json)), committed_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id),
+      FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
+    );
+    CREATE INDEX IF NOT EXISTS form_import_receipts_season_idx
+      ON form_import_receipts(season_id, committed_at, operation_id);
+    CREATE TABLE IF NOT EXISTS form_source_observations (
+      stable_source_id TEXT PRIMARY KEY, season_id TEXT NOT NULL,
+      submitted_at TEXT NOT NULL, display_name TEXT NOT NULL,
+      source_digest TEXT NOT NULL, review_reason TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL,
+      FOREIGN KEY (stable_source_id) REFERENCES source_imports(stable_source_id)
+    );
+  `).toArray();
+}
+
+function applyC2SheetInspectionSchema(sql: SqlStorage): void {
+  const existing = new Set(sql.exec<{ name: string }>("PRAGMA table_info(sync_conflicts)")
+    .toArray().map((column) => column.name));
+  if (!existing.has("finding_outcome")) sql.exec(`ALTER TABLE sync_conflicts
+    ADD COLUMN finding_outcome TEXT NOT NULL DEFAULT 'CONFLICT'
+    CHECK (finding_outcome IN ('CONFLICT', 'REVIEW_REQUIRED', 'REJECTED'))`).toArray();
+  if (!existing.has("reason")) sql.exec(
+    "ALTER TABLE sync_conflicts ADD COLUMN reason TEXT NOT NULL DEFAULT ''").toArray();
+  if (!existing.has("row_number")) sql.exec(
+    "ALTER TABLE sync_conflicts ADD COLUMN row_number INTEGER").toArray();
+  if (!existing.has("fingerprint")) sql.exec(
+    "ALTER TABLE sync_conflicts ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''").toArray();
+}
+
+// SQLite cannot widen a CHECK constraint in place. Rebuild only the three sync tables
+// that constrain entity_type, inside applySchema's transaction, preserving every row.
+function applyC2ScheduleEntitySchema(sql: SqlStorage): void {
+  const entities = "'SEASON', 'MEMBER', 'SCHEDULE_TEMPLATE', 'TRAINING_WEEK', 'SIGNUP', 'PRACTICE', 'SEAT_PLAN_DRAFT', 'HISTORY'";
+  sql.exec(`
+    CREATE TABLE sync_baselines_v10 (
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      entity_type TEXT NOT NULL CHECK (entity_type IN (${entities})),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      baseline_json TEXT NOT NULL CHECK (json_valid(baseline_json)), baseline_digest TEXT NOT NULL,
+      cloud_version INTEGER NOT NULL CHECK (cloud_version >= 0), sheet_digest TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, binding_version, entity_type, entity_id, dependency_group),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    INSERT INTO sync_baselines_v10 (
+      season_id, binding_version, entity_type, entity_id, dependency_group,
+      baseline_json, baseline_digest, cloud_version, sheet_digest, updated_at
+    ) SELECT season_id, binding_version, entity_type, entity_id, dependency_group,
+      baseline_json, baseline_digest, cloud_version, sheet_digest, updated_at FROM sync_baselines;
+    DROP TABLE sync_baselines;
+    ALTER TABLE sync_baselines_v10 RENAME TO sync_baselines;
+    CREATE INDEX sync_baselines_entity_idx
+      ON sync_baselines(season_id, entity_type, entity_id, dependency_group);
+
+    CREATE TABLE sync_conflicts_v10 (
+      conflict_id TEXT PRIMARY KEY, season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      entity_type TEXT NOT NULL CHECK (entity_type IN (${entities})),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      baseline_json TEXT NOT NULL CHECK (json_valid(baseline_json)),
+      cloud_json TEXT NOT NULL CHECK (json_valid(cloud_json)),
+      google_json TEXT NOT NULL CHECK (json_valid(google_json)),
+      cloud_version INTEGER NOT NULL CHECK (cloud_version >= 0), google_digest TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('OPEN', 'RESOLVED', 'SUPERSEDED')),
+      created_at TEXT NOT NULL, resolved_at TEXT,
+      resolution_json TEXT CHECK (resolution_json IS NULL OR json_valid(resolution_json)),
+      finding_outcome TEXT NOT NULL DEFAULT 'CONFLICT'
+        CHECK (finding_outcome IN ('CONFLICT', 'REVIEW_REQUIRED', 'REJECTED')),
+      reason TEXT NOT NULL DEFAULT '', row_number INTEGER, fingerprint TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    INSERT INTO sync_conflicts_v10 (
+      conflict_id, season_id, binding_version, entity_type, entity_id, dependency_group,
+      baseline_json, cloud_json, google_json, cloud_version, google_digest, status,
+      created_at, resolved_at, resolution_json, finding_outcome, reason, row_number, fingerprint
+    ) SELECT conflict_id, season_id, binding_version, entity_type, entity_id, dependency_group,
+      baseline_json, cloud_json, google_json, cloud_version, google_digest, status,
+      created_at, resolved_at, resolution_json, finding_outcome, reason, row_number, fingerprint
+      FROM sync_conflicts;
+    DROP TABLE sync_conflicts;
+    ALTER TABLE sync_conflicts_v10 RENAME TO sync_conflicts;
+    CREATE INDEX sync_conflicts_open_idx
+      ON sync_conflicts(season_id, status, created_at, conflict_id);
+
+    CREATE TABLE sync_batch_items_v10 (
+      batch_id TEXT NOT NULL, item_index INTEGER NOT NULL CHECK (item_index >= 0),
+      entity_type TEXT NOT NULL CHECK (entity_type IN (${entities})),
+      entity_id TEXT NOT NULL, dependency_group TEXT NOT NULL,
+      expected_sheet_digest TEXT NOT NULL,
+      target_json TEXT NOT NULL CHECK (json_valid(target_json)), target_digest TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPLIED', 'VERIFIED', 'FAILED', 'SUPERSEDED')),
+      receipt_json TEXT CHECK (receipt_json IS NULL OR json_valid(receipt_json)), updated_at TEXT NOT NULL,
+      PRIMARY KEY (batch_id, item_index),
+      FOREIGN KEY (batch_id) REFERENCES sync_batches(batch_id)
+    );
+    INSERT INTO sync_batch_items_v10 (
+      batch_id, item_index, entity_type, entity_id, dependency_group,
+      expected_sheet_digest, target_json, target_digest, status, receipt_json, updated_at
+    ) SELECT batch_id, item_index, entity_type, entity_id, dependency_group,
+      expected_sheet_digest, target_json, target_digest, status, receipt_json, updated_at
+      FROM sync_batch_items;
+    DROP TABLE sync_batch_items;
+    ALTER TABLE sync_batch_items_v10 RENAME TO sync_batch_items;
+  `).toArray();
+}
+
+function applyC2ExportOperationsSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS sync_export_controls (
+      season_id TEXT PRIMARY KEY,
+      pause_requested INTEGER NOT NULL DEFAULT 0 CHECK (pause_requested IN (0, 1)),
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE TABLE IF NOT EXISTS sync_export_retries (
+      season_id TEXT PRIMARY KEY,
+      binding_version INTEGER NOT NULL CHECK (binding_version >= 1),
+      failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+      next_attempt_at_ms INTEGER NOT NULL DEFAULT 0 CHECK (next_attempt_at_ms >= 0),
+      last_error TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+  `).toArray();
+}
+
+function applyC2ExportActionRequiredSchema(sql: SqlStorage): void {
+  const columns = sql.exec<{ name: string }>("PRAGMA table_info(sync_export_retries)").toArray();
+  if (!columns.some((column) => column.name === "action_required")) {
+    sql.exec(`ALTER TABLE sync_export_retries ADD COLUMN action_required INTEGER NOT NULL DEFAULT 0
+      CHECK (action_required IN (0, 1));`).toArray();
+  }
+}
+
+function applyC2AssociatedExportSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS sync_associated_cursors (
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      practice_id TEXT NOT NULL, signup_version INTEGER NOT NULL DEFAULT 0,
+      seat_plan_version INTEGER NOT NULL DEFAULT 0,
+      published_revision INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, binding_version, practice_id),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+    CREATE TABLE IF NOT EXISTS sync_associated_physical_baselines (
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      scope TEXT NOT NULL CHECK (scope IN
+        ('SIGNUP', 'SEAT_PLAN_DRAFT', 'SEAT_PLAN_CURRENT', 'SEAT_PLAN_REVISION')),
+      row_id TEXT NOT NULL, cells_json TEXT NOT NULL CHECK (json_valid(cells_json)),
+      cells_digest TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (season_id, binding_version, scope, row_id),
+      FOREIGN KEY (season_id) REFERENCES sync_bindings(season_id)
+    );
+  `).toArray();
+}
+
+function applyC2ExportLaneSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS sync_export_event_index (
+      outbox_id TEXT PRIMARY KEY REFERENCES sync_outbox(outbox_id),
+      event_sequence INTEGER NOT NULL UNIQUE CHECK(event_sequence>0),
+      season_id TEXT NOT NULL, payload_anchor TEXT NOT NULL, topic_anchor TEXT NOT NULL,
+      handler_kind TEXT NOT NULL CHECK(handler_kind IN ('ASSOCIATED','BARRIER')),
+      practice_id TEXT, classification_anchor TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS sync_export_event_season_idx ON sync_export_event_index(season_id,event_sequence);
+    CREATE INDEX IF NOT EXISTS sync_export_event_practice_idx ON sync_export_event_index(season_id,practice_id,event_sequence);
+    CREATE TABLE IF NOT EXISTS sync_export_event_blocks (
+      season_id TEXT NOT NULL, binding_version INTEGER NOT NULL CHECK(binding_version>=1),
+      outbox_id TEXT NOT NULL REFERENCES sync_outbox(outbox_id), practice_id TEXT NOT NULL,
+      payload_anchor TEXT NOT NULL, payload_digest TEXT NOT NULL, error_code TEXT NOT NULL,
+      failure_count INTEGER NOT NULL CHECK(failure_count>=0), next_attempt_at_ms INTEGER NOT NULL CHECK(next_attempt_at_ms>=0),
+      action_required INTEGER NOT NULL CHECK(action_required IN (0,1)),
+      blocked_scope TEXT NOT NULL, blocked_entity_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY(season_id,binding_version,outbox_id)
+    );
+    CREATE INDEX IF NOT EXISTS sync_export_blocks_due_idx ON sync_export_event_blocks(season_id,binding_version,action_required,next_attempt_at_ms);
+    CREATE TABLE IF NOT EXISTS sync_export_request_selections (
+      request_key TEXT PRIMARY KEY, season_id TEXT NOT NULL, binding_version INTEGER NOT NULL,
+      outbox_id TEXT NOT NULL REFERENCES sync_outbox(outbox_id), event_anchor TEXT NOT NULL,
+      event_digest TEXT NOT NULL, request_digest TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sync_export_poll_plans (
+      request_key TEXT PRIMARY KEY, request_digest TEXT NOT NULL,
+      plan_json TEXT NOT NULL CHECK(json_valid(plan_json)), plan_digest TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+  `).toArray();
+  // This is the sole backfill. Runtime selectors never silently repair missing indexes.
+  for (const row of sql.exec<{ outbox_id: string }>("SELECT outbox_id FROM sync_outbox ORDER BY rowid").toArray()) {
+    indexExportEvent(sql, row.outbox_id);
+  }
+}
+
+function applyC2AnnualArchiveSchema(sql: SqlStorage): void {
+  const definitions=`
+    CREATE TABLE IF NOT EXISTS annual_archive_plans (
+      snapshot_id TEXT PRIMARY KEY, logical_scope TEXT NOT NULL UNIQUE,
+      first_request_key TEXT NOT NULL, first_request_id TEXT NOT NULL, actor_scope TEXT NOT NULL,
+      command_text TEXT NOT NULL, command_digest TEXT NOT NULL,
+      team_id TEXT NOT NULL, season_id TEXT NOT NULL, practice_id TEXT,
+      kind TEXT NOT NULL CHECK(kind IN ('PRACTICE','SEASON')), format TEXT NOT NULL,
+      binding_version INTEGER NOT NULL, backend_generation TEXT NOT NULL, writer_epoch INTEGER NOT NULL,
+      captured_at TEXT NOT NULL, cutoff_at TEXT NOT NULL, archive_year INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('CAPTURED','LOCAL_DIGEST_READY')),
+      metadata_text TEXT NOT NULL, canonical_plan_text TEXT NOT NULL, capture_proof_text TEXT NOT NULL,
+      record_count INTEGER NOT NULL, chunk_count INTEGER NOT NULL, input_bytes INTEGER NOT NULL,
+      manifest_text TEXT, content_digest TEXT, completed_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS annual_archive_chunks (
+      snapshot_id TEXT NOT NULL REFERENCES annual_archive_plans(snapshot_id),
+      chunk_index INTEGER NOT NULL, row_offset INTEGER NOT NULL, row_count INTEGER NOT NULL,
+      payload_text TEXT NOT NULL, utf8_bytes INTEGER NOT NULL, payload_digest TEXT,
+      PRIMARY KEY(snapshot_id,chunk_index)
+    );
+    CREATE TABLE IF NOT EXISTS annual_archive_requests (
+      request_key TEXT PRIMARY KEY, actor_scope TEXT NOT NULL, request_id TEXT NOT NULL,
+      command_text TEXT NOT NULL, command_digest TEXT NOT NULL,
+      snapshot_id TEXT NOT NULL REFERENCES annual_archive_plans(snapshot_id),
+      saved_result_text TEXT, created_at TEXT NOT NULL,
+      UNIQUE(actor_scope,request_id)
+    );
+    CREATE INDEX IF NOT EXISTS annual_archive_request_snapshot ON annual_archive_requests(snapshot_id);
+  `;
+  sql.exec(definitions).toArray();
+  // Existing additive objects may be reused only with the exact reviewed structure, never rebuilt or repaired.
+  const normalize=(text:string)=>text.replace(/\s+/gu," ").trim().replace(/ IF NOT EXISTS/gu,"");
+  for(const statement of definitions.split(";").filter(text=>text.trim())){
+    const match=/^CREATE (TABLE|INDEX) IF NOT EXISTS ([a-z_]+)/u.exec(statement.trim())!;
+    const stored=sql.exec<{sql:string}>("SELECT sql FROM sqlite_master WHERE type=? AND name=?",match[1].toLowerCase(),match[2]).toArray()[0];
+    if(!stored||normalize(stored.sql)!==normalize(statement))throw new Error("Unsupported annual archive storage schema.");
+  }
+}
+
+function applyC2SourceAuthoritySchema(sql: SqlStorage): void {
+  const definition = `CREATE TABLE IF NOT EXISTS source_authority_pins (
+    season_id TEXT PRIMARY KEY REFERENCES seasons(season_id), source_operation_id TEXT NOT NULL UNIQUE,
+    actor_id TEXT NOT NULL REFERENCES coaches(coach_id), request_id TEXT NOT NULL,
+    pin_text TEXT NOT NULL, authority_digest TEXT NOT NULL, pinned_at TEXT NOT NULL,
+    UNIQUE(actor_id, request_id)
+  )`;
+  sql.exec(definition).toArray();
+  const actual = sql.exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='source_authority_pins'").one().sql;
+  const normalized = (text: string) => text.replace(/\s+/gu, " ").trim().replace(/ IF NOT EXISTS/gu, "");
+  if (normalized(actual) !== normalized(definition)) throw new Error("Unsupported source authority storage schema.");
+}
 
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
-    sql.exec(`
-      CREATE TABLE IF NOT EXISTS app_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS c0_counters (
-        counter_name TEXT PRIMARY KEY,
-        value INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS system_requests (
-        request_key TEXT PRIMARY KEY,
-        actor_scope TEXT NOT NULL,
-        action TEXT NOT NULL,
-        request_id TEXT NOT NULL,
-        payload_digest TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('COMPLETED')),
-        result_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        completed_at TEXT NOT NULL,
-        UNIQUE (actor_scope, action, request_id)
-      );
-      CREATE TABLE IF NOT EXISTS audit_events (
-        event_id TEXT PRIMARY KEY,
-        request_key TEXT NOT NULL,
-        actor_scope TEXT NOT NULL,
-        action TEXT NOT NULL,
-        details_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
-      );
-      CREATE TABLE IF NOT EXISTS sync_outbox (
-        outbox_id TEXT PRIMARY KEY,
-        request_key TEXT NOT NULL,
-        topic TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('PENDING', 'CONFIRMED', 'FAILED')),
-        due_at_ms INTEGER NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL,
-        completed_at TEXT,
-        FOREIGN KEY (request_key) REFERENCES system_requests(request_key)
-      );
-      CREATE INDEX IF NOT EXISTS sync_outbox_due_idx
-        ON sync_outbox(status, due_at_ms);
-      CREATE TABLE IF NOT EXISTS scheduled_jobs (
-        job_id TEXT PRIMARY KEY,
-        job_type TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED')),
-        due_at_ms INTEGER NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        lease_token TEXT,
-        lease_until_ms INTEGER,
-        last_error TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        completed_at TEXT
-      );
-      CREATE INDEX IF NOT EXISTS scheduled_jobs_due_idx
-        ON scheduled_jobs(status, due_at_ms, lease_until_ms);
-    `).toArray();
-
-    const current = sql
-      .exec<{ value: string }>("SELECT value FROM app_meta WHERE key = 'schema_version'")
-      .toArray()[0];
-    if (current && Number(current.value) > APPLICATION_SCHEMA_VERSION) {
+    sql.exec(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`).toArray();
+    const current = sql.exec<{ value: string }>("SELECT value FROM app_meta WHERE key = 'schema_version'").toArray()[0];
+    const currentVersion = current ? Number(current.value) : 0;
+    if (current && (!/^[1-9]\d*$/u.test(current.value) || !Number.isSafeInteger(currentVersion) ||
+        currentVersion > APPLICATION_SCHEMA_VERSION)) {
       throw new Error(`Unsupported database schema version ${current.value}.`);
     }
+    if (currentVersion < 1) applyC0Schema(sql);
+    if (currentVersion < 2) applyC1CoreSchema(sql);
+    if (currentVersion < 3) applyC1ScheduleSchema(sql);
+    if (currentVersion < 4) applyC1SignupSchema(sql);
+    if (currentVersion < 5) applyC1SeatingSchema(sql);
+    if (currentVersion < 6) applyC1HistorySchema(sql);
+    if (currentVersion < 7) applyC2SyncFoundationSchema(sql);
+    if (currentVersion < 8) applyC2FormImportSchema(sql);
+    if (currentVersion < 9) applyC2SheetInspectionSchema(sql);
+    if (currentVersion < 10) applyC2ScheduleEntitySchema(sql);
+    if (currentVersion < 11) applyC2ExportOperationsSchema(sql);
+    if (currentVersion < 12) applyC2ExportActionRequiredSchema(sql);
+    if (currentVersion < 13) applyC2AssociatedExportSchema(sql);
+    if (currentVersion < 14) applyC2ExportLaneSchema(sql);
+    if (currentVersion < 15) applyC2AnnualArchiveSchema(sql);
+    if (currentVersion < 16) applyC2SourceAuthoritySchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

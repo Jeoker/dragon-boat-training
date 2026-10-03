@@ -1,10 +1,14 @@
 # 当前进度与接续入口
 
-> 更新：2026-09-19
+> 更新：2026-10-03
 
-> 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。下方产品状态仍以 2026-09-05 的验证记录为准，仓库拆分不等同于 Cloudflare 迁移或新的生产功能验收。
+> 仓库边界更新：2026-09-13。本项目已从 Portfolio 拆分为独立 Git 仓库，保留 26 个项目相关历史提交；独立构建生成首页、Coach Mode 和过往赛季三个页面。仓库拆分本身不等同于 Cloudflare 迁移或新的生产功能验收；后续状态按下方各日期记录及“当前基线”判断。
 
-> Cloudflare C0 更新：2026-09-19。C0 全部门槛已通过：隔离 staging 的 Worker／Durable Object、SQLite 持久化、真实 Apps Script 签名往返、负向范围、重复操作和 Free 计划用量入口均已验收。生产 Worker、GitHub Pages API 配置和 Apps Script 业务写入归属均未改变；下一阶段是 C1 业务迁移。
+> Cloudflare 迁移现状：2026-10-01。专用 `c2test` 已部署 Worker `0.17.0-c2-associated-lanes`／schema v14，polling=false、`crons=[]`、writer epoch0。独立训练真实 Google 验收已 `FINAL_CONFIRMED`：25阶段、7个新固定事件、14个新确认批次／18次 exporter 调用；A/B cursor各2/0/0、旧训练12/2/2，Google关联四表13/1/20/2、物理B36，pending outbox／未完成batch／retry／局部block／OPEN conflict均0，三条历史SUPERSEDED保留。最终完整备份47表55块已校验，未restore。生产、原staging、Pages及Google部署clean v14／原HEAD clean均保持原状态。年度持久计划已完成本地实现和双审：本地schema15／备份50表、原request/scope固定内容、digest与完整集合CAS及重启恢复通过；仍无年度Google/source verified、HTTP入口或远端部署。C2.4／C2.5整体仍未完成。见[最新实际验收](tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)及[年度持久计划本地验收](tests/C2-ANNUAL-STORAGE-LOCAL-ACCEPTANCE.md)。
+
+> 2026-09-30 候补切片历史快照：当时专用 c2test 为 Worker 0.16.2-c2-physical-diagnostics／schema v13。候补真实写回、关联首行 PARTIAL 中断／原批恢复、VERIFIED 后受控空回复／原批恢复，以及既存 FAILED 批次的 PAUSING→PAUSED→RUNNING 均通过隔离验收。当时 Google 四表11/1/20/2、cursor12/2/2、物理B34、零待处理；两套Google clean各自完整恢复。此时独立训练v14尚未部署，后续状态以上方2026-10-01快照为准，旧证据仍见[候补实际验收](tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md)。
+
+> 2026-09-27 系统级复核快照：当时正式三页、只读 API、Coach 真实登录／受保护读取／退出通过；正式三场测试训练均已结束，故未重新执行正式报名写入。**该快照记录了后续 C2.4 接续前**隔离赛季的 `BASELINE_INCOMPLETE` 和七个待处理 outbox；接续后的状态见下方及赛季版本验收。该系统复核不等于 Cloudflare 端到端或生产切换通过。验收开始时线上 HTML 与本地构建不一致。详见[系统级验收快照](tests/SYSTEM-LEVEL-ACCEPTANCE-2026-09-27.md)。
 
 本文件记录当前交付状态、验证边界和下一步。第一次接手项目先读[项目总览](PROJECT-OVERVIEW.md)；产品规则以[项目说明](README.md)为准，职责和阶段边界见[Epic 总览](epics/README.md)；详细证据保留在各阶段验收报告，不在其他规格文件重复维护进度摘要。
 
@@ -12,11 +16,33 @@
 
 采用 **Cloudflare Workers + Durable Objects（SQLite）** 保存在线业务主数据，GitHub Pages 保留现有网页，Apps Script 收敛为 Google Form／Sheets 桥接。支持偶尔直接修改 Sheet，通过基线对比、业务校验和 Coach Mode 冲突处理导入；有变化时默认十分钟批量导出，网页保存不等待 Google。
 
-目标架构、C0–C4 顺序、三个 Epic 的新增工作包、真实 Google 边界及切换／回退门槛已整理到[Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md)。**C0.1–C0.6 已完成，下一阶段按 C1 的赛季／成员与权限、排期、报名候补、排座、冻结历史顺序迁移，并只接隔离测试端点。** 下方仍是实际运行中的 Apps Script 生产基线，不代表新架构已经上线。
+目标架构、C0–C4 顺序、三个 Epic 的新增工作包、真实 Google 边界及切换／回退门槛见[Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md)。C2.4 核心四表、侧向候补递补和关联受控故障真实写回已通过；C2.5 已通过受控冲突／重试、物理诊断／单格漂移恢复、既存 FAILED 批次暂停排空和同季独立训练／共享引用冲突恢复。并发 SENT 暂停有本地真实调用链证据，仍缺远端证据；真实配额／随机断网、自动 cron、备份恢复和更广独立实体仍待完成。c2test 自动导出关闭且无 cron；下方 Apps Script 生产基线仍实际运行，新架构未切换生产。
 
 2026-09-19 已按 [C0 可执行工作清单](cloudflare-migration-plan.md#c0-可执行工作清单)建立 Worker、SQLite schema v1、不可变请求结果、事务审计／outbox／任务、alarm 租约与应用级重试、旧摘要兼容向量和签名桥接协议。真实本地 Wrangler 进程重启后数据、请求去重结果和待执行任务仍在；并发、回滚、闹钟修复及超过六次失败后的继续续排已有专项测试。独立 Apps Script Web App 的真实往返、重放及过期／篡改／错团队／错 binding／错代次拒绝均通过；实际 Free 计划和 Worker／DO 用量入口已核对。详细证据和观察边界见 [C0 验收记录](tests/C0-CLOUDFLARE-ACCEPTANCE.md)。
 
 ## 当前基线
+
+- **2026-10-03 提交前review与修复**：核对此前76个未推送提交及完整工作区，修复私有来源依赖错误直接转抛泄漏篡改message／raw，以及OAuth路径未解析junction／别名的问题。最终Node492／492、Workers24文件276／276，Astro146文件零诊断及全部本地类型／构建通过；历史913个文本blob与当前候选文件的令牌模式／已配置私有值扫描无匹配。选用开发分支分批提交并以PR交付，保留main的自动Pages部署；没有新的Google、Cloudflare或Pages部署。详见[最终review记录](tests/C2-COMMIT-REVIEW-2026-10-03.md)。
+
+- **2026-10-03 C2.6 已认证私有审核与持久 CAS 接续**：原确认候选必须通过当前认证与journal私有权限／完整原内容核验后才提供审核；人工映射复用现行完整retained plan验证，责任证据保存到独立私有CAS。相同请求并发、丢确认、后续追加后的旧prefix／时间、跨Node进程恢复及hash／CAS期间权限或journal变化均已覆盖；真实本地HTTP／SQLite会话撤销后读取和重放拒绝。完整Node488／488、Workers24文件276／276，Astro145文件零诊断及类型／三页／backend／probe／Worker dry-run通过。原candidate与journal不改写，不新增source读取；内层LOCAL_* provenance保留，来源仍NOT_VERIFIED、全Sheet原行PRIVATE_PENDING、年度导出false。本轮未访问Google／远端或部署；长期host、审核UI／其他Coach委派、可信Tab及实际服务器capture仍待完成。见[最新本地验收](tests/C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)。
+
+- **2026-10-03 C2.6 内部 HTTP 与私有 runtime 接续**：新增 C2 transport gate 加 Coach 会话保护的来源 pin 路由、固定 HTTPS 客户端、不可替换的私有目标登记和强制持久 checkpoint 的 runtime 组合；每个实际 Google 请求前后均复核当前服务器权威及原目标。独立 Node 进程登记恢复、实际 Worker HTTP 与完整 runtime 贯通、失去权限、保存后确认丢失及未知 journal 写入恢复通过；响应清理异常和伪造登记错误不泄漏私有信息。完整 Node474／474、Workers24文件275／275，Astro143文件零诊断及全部本地类型／构建检查通过。本轮未访问远端或 Google，未部署；长期服务部署、可信 Tab 关联及持久审核仍待完成。见[本轮验收与接续](tests/C2-SOURCE-TRANSPORT-LOCAL-ACCEPTANCE-2026-10-03.md)。
+
+- **2026-10-03 C2.6 服务器来源上下文本地接续**：新增真实 C1 会话鉴权的 `C2SourceAuthority`，从 SQLite 固定 actor、已结束赛季 cutoff、binding／generation／epoch、响应 Tab 声明及全部数据库已知来源 ID。原 census 跨请求和 DO 驱逐保持不变，撤销会话或绑定变化拒绝恢复。本地 schema16／备份51表，只新增身份与权威元数据；私有 controller 在采集和 journal 阶段重新检查服务器权威与私有目标登记。完整 Node461／461、Workers24文件272／272及全部本地检查通过。仍无 HTTP 入口、可信 transport、长期私有服务部署或年度授权，未调用 Google／部署远端；详见[本地验收与接续边界](tests/C2-SOURCE-AUTHORITY-LOCAL-ACCEPTANCE-2026-10-03.md)。
+
+- **2026-10-03 C2.6 checkpoint 真实隔离恢复**：用户明确授权现有 OAuth 的既有测试来源读取及原私有目录保存后，stage／新进程 resume／再次新进程重放均 exit0。首个完整 range 保存后受控中断，随后复用原块完成两遍来源；最后重放零来源内容读取，仅核 API 用户。实际 11 回答／112×8、原 core92,664字节、16个完整返回／revision34／零pending；来源仍未核验、Sheet全pending、年度导出false。没有 Google 写入或生产部署，具体授权阻碍已解除。见[实际结果与后续门槛](tests/C2-SOURCE-READ-CHECKPOINT-ISOLATED-ACCEPTANCE-2026-10-03.md)。
+
+- **2026-10-03 C2.6 逐请求持久进度**：新增私有来源 checkpoint，分页／range 请求先保存 read-start，再持久保存原返回、顺序摘要及观测时间；重启复用已保存块，未知请求保持 unresolved，完整读取后可在候选 CAS 失败时重建原 plan。新增 18 项恢复／预算／并发测试，完整 Node453／453、Workers259／259、来源及 Cloudflare 类型、Astro136文件零诊断与三页、两个 backend 构建及 Worker dry-run 通过。当时真实 checkpoint 命令因具体数据／保存位置授权被拒绝；随后用户明确授权并完成上述实际复验。本轮仍未部署，SOURCE_NOT_VERIFIED／年度导出false。见[本轮实现、验证与阻碍](tests/C2-SOURCE-READ-CHECKPOINT-LOCAL-ACCEPTANCE-2026-10-03.md)。
+
+- **2026-10-03 项目代码与档案复核**：保留已有工作区改动，修复旧管理写入错误清除新会话、旧名册读取错误及完成清理影响新读取、来源候选未核对原映射声明／响应 Tab 标题的问题；清理未使用字体和 11 个样式变量，新增 `npm run source:check`。总览、规格、迁移计划及 Epic 已同步独立私有适配器与业务接线的边界，历史报告保留原证据。完整 Node435／435、Workers23文件259／259、Cloudflare及来源严格类型、Astro133文件零诊断与三页构建、backend／C0 probe构建及Worker dry-run通过；文档链接及diff检查通过。仅本地修复与验证，远端状态未重新核验。见[本轮审核记录](tests/PROJECT-CODE-DOC-AUDIT-2026-10-03.md)。
+
+- **2026-10-03 C2.6真实来源与持久操作验收**：独立OAuth已实际授权，三项API可用，既有隔离Form／Spreadsheet／response Tab只读身份检查通过；真实两pass完整读取11份回答与112×8矩阵，92,684字节原core一致。一个新私有journal中正常写入、受控丢回复、原目标跨进程恢复／重放通过；新增本机私有scope fence、原candidate／观测／write-start／永久receipt CAS，真实Google写后本地receipt中断在新进程零写入恢复。空Form title兼容性及错误码清洗已修复。独立测试cutoff／空census／本机actor声明，不是业务来源capture或Coach鉴权；仍SOURCE_NOT_VERIFIED、全Sheet pending、年度导出false。新模块未接Worker／DO／Coach／Apps Script部署，生产未改。见[本轮真实验收与下一步](tests/C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)。
+
+  本轮最终Node431／431、Workers23文件259／259、私有TypeScript／Cloudflare类型检查、Astro133文件零诊断与三页构建、backend／C0 probe构建及Worker dry-run通过；文档链接及diff检查通过。上述均不等于新的远端部署或source verified。
+
+- **2026-10-02 独立来源OAuth配置历史**：当时已提供 `dragon-boat-source-test` 桌面客户端并启动独立loopback授权，完整Node414／414通过；当时尚无新grant／API能力／实际来源读取证据。10-03已完成授权和上述真实隔离验收。旧clasp的 `SERVICE_DISABLED` 保留为历史结果，不能用来推断新项目API状态。操作入口见[来源OAuth配置](tests/C2-SOURCE-OAUTH-SETUP.md)。
+
+- **2026-10-02 C2.6接续开发**：新增隔离私有TypeScript适配器，覆盖完整来源REST两遍读取、单次原子journal写入、原core完整核验、权限／父目录ACL和未知回复的原目标回读；只以本地REST模型验证，未接Worker／Coach／Apps Script构建，未部署。本轮完整Node409／409、Workers259／259及类型／各构建通过。真实能力检查发现现有OAuth客户端的Forms／Sheets API均为HTTP403 `SERVICE_DISABLED`，Drive身份读取可用；需要可管理Cloud项目的API启用及来源文件授权后继续真实验收。持久source operation／candidate进度／永久receipt／真实Tab关联／Coach鉴权审核CAS仍待完成，SOURCE_NOT_VERIFIED及全Sheet pending保留。见[本轮验收与阻碍](tests/C2-SOURCE-JOURNAL-LOCAL-ACCEPTANCE.md)。
 
 - **P1 管理补齐验收通过**：赛季日期／默认值、当周单场预览编辑与取消、开放前后加场、预约开放及精确完成状态已完成。真实 Google 触发器、页面内确认、双季公开结果与最终退出已验证；时间边界使用可控时钟。细节、验收中的修正和工具限制见[P1 管理补齐验收](tests/P1-MANAGEMENT-ACCEPTANCE.md)。P1 不再保留开发欠项。
 
@@ -25,13 +51,41 @@
 - 线上 Apps Script 沿用原 Web App URL，当前为 **Version 14、服务 `0.9.0-p5-performance`**，契约保持 `2026-09-02.p2.1`。生产 `setupDragonBoatP4` 已幂等执行完成，`PublicHistorySeasons` 紧凑索引及维护触发器已建立或迁移。
 - P5 功能提交 **`38c9361`** 的 [Pages run 33999868687](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33999868687) 成功；三个正式页面均返回 HTTP 200，线上 HTML 与本地 P5 构建 SHA-256 一致。正式 health 返回 Version 14 的 `0.9.0-p5-performance`；公开历史空目录返回成功及分页字段。P4 的 [Pages run 33989665856](https://github.com/Jeoker/hey-yang-liu.github.io/actions/runs/33989665856) 继续作为上一阶段历史证据。
 - C0 源码与文档提交 **`4a55bb0`** 的 [Pages run 35486989400](https://github.com/Jeoker/dragon-boat-training/actions/runs/35486989400) 成功；队员页、Coach Mode、过往赛季页和 Cloudflare staging health 均返回 HTTP 200。该发布只保存 C0 代码与文档，没有改变三个页面的生产 API。
-- 本地现行应用与桥接 **162／162** 测试通过，Cloudflare Workers／DO **11／11** 测试通过；Cloudflare 类型检查、dry-run、Astro 检查与静态构建、Apps Script 单文件构建均通过。Astro 与 Workers 的 TypeScript 全局类型已隔离，避免 Worker 运行时声明污染浏览器 DOM 检查。
-- Script ID、私有 Spreadsheet ID、Coach Code、会话令牌和服务端 secret 均不写入仓库。
+- C1.4 本地验收通过：应用、桥接与文档／契约一致性 **184／184**，当时的 Cloudflare Workers／DO **59／59**；私有草稿、角色、人工／系统 revision、报名和船位原子联动、最终更正窗口及精确冻结拒绝已进入隔离新后端。该阶段留下的不可变最终快照、公开历史、分页运维与备份范围现已由 C1.5 完成；这些证据不更新以上生产部署结论。
+- C1.4 完成后的代码健康复核已收紧排座影子导入：相同版本的状态元数据不可漂移，最新正式版重新核对当前角色／报名／完整排座，姓名快照只保存实际参与者；导入分组索引消除按场次重复扫描，共用报名投影与队列排序不再维护两份。发布重放、同编号换参数和旧版本写入已有直接回归。详见 [C1.4 后代码审查](tests/POST-C1.4-CODE-REVIEW.md)。
+- C1.5 本地验收通过：schema v6、最终显示姓名／角色／船位快照、`UNPUBLISHED` 历史、取消过滤、赛季荣誉墙、追加式历史说明、稳定分页审计、分块备份与交叉摘要校验、任务自愈及应用用量已进入隔离新后端；Cloudflare Workers／DO **65／65**，项目 Node **184／184**。自动历史维护在 `writer_epoch=0` 的影子阶段默认关闭，本地专项测试显式开启内部设置；备份不含短期会话、公开限流或备份自身表。详见 [C1.5 验收](tests/C1-HISTORY-ACCEPTANCE.md)。
+- C1.6 隔离 staging 验收通过：服务 `0.7.0-c1-acceptance`、schema v6、`writer_epoch=0`。125 名虚构成员和两个赛季完成全域迁移；最后名额并发、私有排座／公开 revision、历史与审计分页、191 条记录／29 分块备份、本地摘要复算及连续七次失败后的第八次任务恢复均通过。再次部署为 Worker version `18b0e059-2f76-4627-9528-d75bab44e465` 后，同一业务数据及备份仍可读取。C1 outbox 保持待同步、自动历史任务保持关闭；未连接 Pages 或 Google。详见 [C1.6 验收](tests/C1-STAGING-ACCEPTANCE.md)。
+- C2.1 同步基础：schema v7 的绑定、基线、稳定来源、冲突和批次模型及三方比较已通过本地测试；后续审查补齐跨绑定版本身份延续和元数据边界。该切片本身不调用 Google；代码现已随 C2.2 部署到隔离 staging，仍未确认任何 outbox。详见 [C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)和[后续审查](tests/POST-C2.1-CODE-REVIEW.md)。
+- C2.2 Form 来源导入：签名只读桥接、稳定回答 ID、事务游标／回执、触发通知和十分钟补扫在独立 Form／Worker 上通过；故障后同一请求可恢复，旧成员同名必须经 Coach 查看核查清单并显式关联。审查后轮询在赛季截止后完成一次成功的收尾分页才停止，不会永久读取旧赛季；此边界由本地测试覆盖。原 staging 升级到 schema v8 后 123 名公开成员及待同步 outbox 保留，C2 入口仍缺测试 Key 且被拒绝。正式生产不变。详见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
+- C2.3 Sheet 差异的历史验收：当时独立 Apps Script v7／`c2test` Worker `0.10.0-c2-sheet-inspection`／schema v9 已按登记 Tab 和稳定 ID 比较五类 B/C/G；结构异常、重复诊断、消失后标记 `SUPERSEDED`、真实改名／恢复和读量边界得到验证。该切片当时只读 Google、只写诊断元数据；其能力现已包含在隔离 v11，仍不自动导入 Google 修改或提供 Coach 冲突解决页面。见[C2.3 验收及审查](tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
+- C2.4 成员／赛季版本导出（历史隔离切片）：先前 `c2test` 逐个确认九个旧成员事件，并只按精确 Google 行核对补缺失的赛季 B；真实 Form 新增第十名成员后，成员写入、人工赛季名称冲突阻断与恢复、同请求重试及名单版本 0→10 均通过。当时 Cloudflare `season_version=2`、Google `season_version=1` 的差异不属于名单切片；本轮排期导出已将该测试赛季 Google 版本推进到 3。原 staging／生产未启用。见[成员隔离验收](tests/C2-MEMBER-EXPORT-ACCEPTANCE.md)、[赛季版本验收](tests/C2-SEASON-PATCH-LOCAL.md)及[本轮排期验收](tests/C2-SCHEDULE-ISOLATED-ACCEPTANCE-2026-09-29.md)。
+- C2.4 报名／排座关联导出（2026-09-30候补切片历史快照）：C1 事务固定版本、变化报名行、递补、全船位及正式 revision；四表按不可变 snapshot 有界拆批，训练／成员引用与完整物理 B 写前复验，最终逻辑 B／物理 B／游标／outbox 同事务确认。真实侧向候补、取消递补、首行 PARTIAL 和 receipt VERIFIED 后丢回复已通过，旧 revision 1 保留，最终四表 11／1／20／2。跨 Google Tab 不具备原子写入，C2.4 整体仍有未验边界。见[本轮验收](tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md)及[原核心链路验收](tests/C2-ASSOCIATED-ISOLATED-ACCEPTANCE-2026-09-30.md)。
+- C2.4 排期事件快照：七条 C1 排期写入路径在事务内固定本次变化的完整模板、周次和训练行，覆盖一次生成／开放多场、定时开放、单场新增／发布／改期／取消及模板替换。连续变化不会重写旧事件；本地验证见[快照记录](tests/C2-SCHEDULE-EVENT-SNAPSHOT-LOCAL.md)，隔离写回进度见[本轮验收](tests/C2-SCHEDULE-ISOLATED-ACCEPTANCE-2026-09-29.md)。
+- C2.4 排期 Sheet 桥接：签名只读新增模板与周次表，三张排期表各支持最多四行的受限补丁与可重试回执，沿用绑定、表头、前值、部分进度和缺表拒绝规则。[桥接本地记录](tests/C2-SCHEDULE-BRIDGE-LOCAL.md)只证明开发当时的本地状态；独立 Google Web App v12 已含三类处理器，模板写回见[本轮验收](tests/C2-SCHEDULE-ISOLATED-ACCEPTANCE-2026-09-29.md)。
+- C2 最近代码复审与技术债清理：修复成员导出跨 `binding_version` 误认已确认队员，抽取成员／赛季批次状态和摘要核验骨架及通用回执校验；旧请求不得重发 `SUPERSEDED` 批次或已停止待处理的 outbox，受控导入路径不再带着未完成批次提升绑定版本。独立 `c2test` 已核验名单版本 11、Google 两行 `PARTIAL` 同批恢复与回执重放，见[整体审查](tests/C2-RECENT-CODE-REVIEW-2026-09-27.md)。
+- C2.4 成员回执丢失与排期同步基础：独立 Google 的“已写后空响应”故障注入已使 Worker 沿原批次恢复；Web App 随后恢复 v12 清洁构建，名单版本 12、`Seasons`／`Members` 曾零差异。模板／周次同步实体和迁移最初仅在本地 schema v10 验证，现已随 v11 升级到专用 `c2test`。见[当时验收](tests/C2-LOSS-AND-SCHEDULE-SCHEMA-2026-09-28.md)和[本轮升级记录](tests/C2-SCHEDULE-ISOLATED-ACCEPTANCE-2026-09-29.md)。
+- C2.4 排期 Worker 导出：`PRACTICE` B/C/G 使用 Google 原始列，旧格式或缺组 B 阻断目标投影。`export-next-schedule` 按模板→周次→训练逐行确认，最后核验赛季行捕获的 `season_version` 并同事务确认 B 与 outbox；写前核对绑定、基线、前值和引用。专用 `c2test` 的基本跨表写回及 out-of-band Google 模板改动阻断／恢复已[远端核验](tests/C2-SCHEDULE-CONFLICT-ISOLATED-2026-09-30.md)；训练行单元格中断及赛季回执丢失沿原批次恢复也已[隔离验收](tests/C2-SCHEDULE-FAULT-ISOLATED-2026-09-30.md)。本地另有写前 `SERVICE_BUSY` 测试；这不等于真实配额耗尽、随机网络断包或极窄人工竞态。多行 Worker 合并未验收；原 staging／生产及自动导出仍关闭。
+- C2.5 导出运维（2026-09-30候补切片历史快照）：每季暂停／恢复、既存批次排空、冲突分页与 B/C/G 详情、积压概览、持久退避及 ACTION_REQUIRED 显式重试均已进入专用 c2test。本轮真实验证既存 FAILED 关联批次暂停排空、禁止提前恢复和暂停中新目标；最终完整备份确认 retry 实表为零、开放冲突零，三条历史 SUPERSEDED 保留。自动导出 false、无 cron，备份未恢复。并发 SENT 暂停窗口、真实配额／随机断网、自动 cron、备份恢复及同季独立训练仍待验收。见[本轮实际验收](tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md)与[原故障验收](tests/C2-ACTION-REQUIRED-ISOLATED-ACCEPTANCE-2026-09-30.md)。
+- C2.3 关联表物理行诊断补强（2026-09-30历史切片）：独立 Coach 会话保护的只读 `check-associated-physical-differences` 覆盖报名、草稿（状态加 20 个船位）、当前船位和全部历史正式 revision；旧 `check-sheet-differences` 的报名／草稿响应另带独立 `physical_integrity`，旧语义 B/C/G 状态与冲突写入含义不变。整行显示值和 v13 物理 B 逐行核对，结构／ID 异常、缺 B、缺行与审计列变化分别诊断；最多显示 100 finding，超过 Sheet 或 B 扫描预算即返回 `INCOMPLETE`，Google 与 B 都空也不宣称已确认。诊断不写 Google、业务或物理 finding 冲突表，不自动修复；该历史诊断切片当时按需调用，未新增 schema v14，也没有定期巡检。四 scope 的**正常态**在 0.16.2 远端均为 `OK`／完整覆盖／零 finding，行数／基线数为 1、21、20、1。随后隔离 Google Alpha 报名审计列 `last_request_id` 单格标记真实触发唯一 `CELL_CHANGED` 和物理 `DRIFT`，旧语义检查仍 `OK`／零 finding 且附带物理 `DRIFT`；另一个固定批次的整行 CAS 恢复原行，最终四 scope 物理及旧语义均 `OK`，关联物理 B 23／23 未变。两个隔离桥接回执和备份元数据为可审计测试副作用；无持续巡检或自动修复。见[设计与边界](tests/C2-PHYSICAL-DIAGNOSTICS-DESIGN.md)、[隔离正常态验收](tests/C2-PHYSICAL-DIAGNOSTICS-ISOLATED-ACCEPTANCE-2026-09-30.md)及[单格漂移／恢复验收](tests/C2-PHYSICAL-DRIFT-ISOLATED-ACCEPTANCE-2026-09-30.md)。
+- C2.4／C2.5 本地回归继续保留：候补取消与系统 revision 2、成员丢回执及原批次暂停排空都有 Workers／DO 加模拟 Google 测试。本轮新增真实候补及关联故障、既存 FAILED 批次暂停证据见[实际报告](tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md)；本地 SENT 场景不替代并发 SENT 的远端证据。
+- C2.5 独立训练通道（2026-09-30部署前本地验收快照）：schema v14 新增事件索引、局部阻塞、原请求选择和固定 poll 计划四表。共享选择器保留同训练顺序、成员／排期全季屏障及既存批次优先；明确训练／共享引用漂移局部阻塞，结构或未知问题仍全季停止。250 条同训练后继及 250 个独立阻塞 head 不遮住训练 B；全 pending SQL 证明成本随积压增长，只物化一个候选。成功按完整 retry 指纹 CAS 清理，不删除并发新失败。225 项 Cloudflare、210 项 Node 测试及类型／构建／打包通过，两名独立审核无未解决 P1/P2。c2test 仍 0.16.2／v13，新通道未真实 Google 验收；v14 升级后旧 v13 Worker 不能直接无损回滚。见[本地验收](tests/C2-ASSOCIATED-LANE-LOCAL-ACCEPTANCE.md)和[设计](tests/C2-ASSOCIATED-LANE-DESIGN.md)。
+- **C2.5 独立训练通道当前实际基线（2026-10-01）**：专用c2test已为0.17.0／schema14，25阶段完整通过。排期全季屏障先确认；A引用漂移仅阻断A，同训练自然到期后序不能越过，B仍可确认；共享MEMBER漂移分别阻断A2/B2，精确恢复并Coach retry原事件后全部确认。7个固定新事件sequence34–40、14个新batch与18次exporter调用；A/B各cursor2/0/0，旧cursor12/2/2，Google四表13/1/20/2、物理B36。完整47表55块备份及旧行／历史保护通过，待处理、局部block、retry和OPEN conflict归零，保留三条历史SUPERSEDED。pollfalse、无cron；生产／staging／Pages和两套Google clean不变，未restore。见[独立训练实际验收](tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)。
+- **C2.5 并发SENT暂停本地补测**：实际export调用链由可控await barrier持有Google回复，真实SENT后pause→PAUSING、提前resume拒绝、原batch确认→PAUSED、拒绝新目标→resume；暂停期间新业务version2与两个时点的公开结果保持，Google只完成原version1。相关69项本地测试与双审通过；不称为远端SENT故障验收。提交`da0dace`，见[本地记录](tests/C2-SENT-PAUSE-LOCAL-ACCEPTANCE.md)。
+- **C2.6 已提交的预览历史切片**：pure计划`dcc13df`与SQL一致性预览`2e2fc80`已双审，该切片完整Node262／Workers237及类型检查通过。private完整DTO／冻结姓名／更正范围、前置COUNT/UTF8与显式初始state provenance已验证；preview结果仍LOCAL_PLAN_ONLY／SOURCE_NOT_YET_VERIFIED，同request再次预览可读取后来状态，该切片未实现持久计划或Google年度文件。见[年度pure](tests/C2-ANNUAL-ARCHIVE-LOCAL-ACCEPTANCE.md)及[预览验收](tests/C2-ANNUAL-CAPTURE-LOCAL-ACCEPTANCE.md)。
+- **C2.6 已提交持久计划本地切片**：`13e8fc0`完成schema15三表／backup50表与内部storage service并经双审；固定原request及scope artifact、全text/chunk CAS、实际DO驱逐恢复、写后故障完整回滚、非空v14旧47表保护和CAPTURED／READY完整备份通过。该切片完整Node264／Workers254、Workers专项28及Node预算2、类型检查通过。持久状态为CAPTURED→LOCAL_DIGEST_READY，source仍SOURCE_NOT_YET_VERIFIED；无runtime service入口、HTTP／alarm／Google接线或远端部署。见[持久计划验收](tests/C2-ANNUAL-STORAGE-LOCAL-ACCEPTANCE.md)及[捕获存储设计](tests/C2-ANNUAL-CAPTURE-STORAGE-DESIGN.md)。
+- **C2.6 当前完整来源纯模型**：按`c4138d5`已固定的归档时完整源快照语义完成内部typed-record／固定cutoff／gap分类，19项专项与类型检查通过，完整Node283/283，两位独审无未解P1／P2。原JSON先UTF8／深度／解码后重复key检查；Form保留完整受支持当前记录，未知完整pending或整input拒绝，IEEE754／canonical不能声称HTTP原字节重现。Form、Sheet、迟到身份、私有pending及gap五namespace独立，pinned season_ends_at按纳秒严格比较；DECLARED_ONLY所有Sheet原行仅PRIVATE_PENDING、不进年度合规chunks，已知缺失与历史覆盖限制分别记录。结果恒LOCAL_SOURCE_PLAN_ONLY／SOURCE_NOT_VERIFIED；没有读取、持久source operation、receipt、权限、Google文件或runtime／public接线，remote仍schema14／47表。见[纯模型本地验收](tests/C2-SOURCE-CAPTURE-PURE-LOCAL-ACCEPTANCE.md)及[source技术设计](tests/C2-ANNUAL-SOURCE-CAPTURE-DESIGN.md)。
+- **C2.6 Coach 人工映射审核本地模型**：用户已接受HUMAN_ATTESTED责任声明政策；完整原source重建／独立摘要锚、双方完整raw与schema哈希、只追加审计、原请求后续追加后的原prefix恢复和独立派生版本已实现。作者16／独立对抗14项与完整Node313/313、类型检查通过；合法输入导致view或新ledger超额均整次拒绝，实际SHA await期间及最后的权限／绑定漂移拒绝。原source保持全Sheet pending和全部证据条件；结果恒LOCAL_REVIEW_PLAN_ONLY／SOURCE_NOT_VERIFIED，annual_export_authorized=false。没有实际Coach认证、真实fixed source、持久review/CAS、Google或runtime接线；没有部署。见[审核本地验收](tests/C2-SOURCE-MAPPING-REVIEW-LOCAL-ACCEPTANCE.md)和[设计](tests/C2-SOURCE-MAPPING-REVIEW-DESIGN.md)。
+- **C2.6 完整原plan验证adapter**：无需原input／迟到正文，以共享typed规则完整复核五namespace、原raw/schema、census/mapping／全部条件及greedy分块，再核独立原SHA与异步后的当前权威。原格式字节由6组`8fed6a9`固定golden及6组旧人审view摘要证明兼容；raw原父路径32／生成wrapper40分开，metadata可合法超过64KB。作者9／独立15、完整Node337/337及类型检查通过，另一独审定向73/73；合法core展开私有结果超2MB整拒且零SHA调用。input_bytes只保留原声明，不重算原input；结果恒LOCAL_PLAN_VALIDATION_ONLY／SOURCE_NOT_VERIFIED，无真实来源读取、鉴权、存储、receipt或部署。见[验证adapter验收](tests/C2-SOURCE-PLAN-VALIDATION-LOCAL-ACCEPTANCE.md)及[设计](tests/C2-SOURCE-PLAN-VALIDATION-DESIGN.md)。
+- **C2.6 完整原plan私有人审入口**：两个新纯入口每次内部完整验证原core，再复用现行view／只追加审核链；外层明确RETAINED_PLAN_ONLY，不要求原input／迟到正文，不接受caller proof或已验证对象。6组旧`705cc9d`完整view及15组plan固定oracle证明旧参数、内部字节／摘要与ledger双向兼容；原请求后续追加后仍恢复原时间／prefix。作者8／独立12、完整Node357/357、另一独审定向93/93及类型／文档检查通过。全部异步后的完整审核context复验、实际wrapper超2MB及append ledger超512KB整拒通过。仍SOURCE_NOT_VERIFIED、年度导出不获授权；未接实际鉴权、私有IO、持久审核CAS、Google或runtime，没有部署。见[私有人审adapter验收](tests/C2-SOURCE-PLAN-REVIEW-ADAPTER-LOCAL-ACCEPTANCE.md)及[设计](tests/C2-SOURCE-PLAN-REVIEW-ADAPTER-DESIGN.md)。
+- **2026-10-01 整体代码与文档复核完成**：输入 descriptor／固定副本、Proxy错误隐私、source字符串前置预算和稀疏数组拒绝已补强；导出每次真实work的完整retry行CAS保护晚到failure／success及Coach rearm，排期到期测试使用可控时间。删除六个obsolete手动工具及重复内存archive store，五个内部函数仅收窄export，保留隔离poll配置生成工具。冻结版完整Node361/361、Workers23files259/259、类型与三页／backend／probe构建通过，Astro零error／warning／hint；两名独立审核无未解P1/P2。只在本地执行，远端仍0.17/schema14/47表、pollfalse且无cron，年度／来源尚未接实际权限、私有IO、Google或持久审核。全部79份原tracked文档及新增报告已审计，历史计数保留，详见[本轮整体审核](tests/C2-ROUND-REVIEW-2026-10-01.md)。
+- 当前跟踪文件不包含 Script ID、私有 Spreadsheet ID、Coach Code、会话令牌或服务端 secret。早期测试夹具曾复用实际 Coach Code，普通提交不会清除 Git 历史，因此下一次管理后端部署前必须轮换该 Code。
+
+- **2026-10-01 管理端与文档接续复核**：修复浏览器存储失败打断登录／退出、恢复已有会话时网络失败误清会话、旧赛季入口错误清除新会话及旧退出回复覆盖登录提示。名单缓存共用严格版本校验与服务器时间，名单到期阻止新提交并取消未发送确认，结果未知的原请求仍可恢复；拒绝已过期名单响应。合并重复 API 实例与日历日期展示，修正 UTC+13／+14 时区的日期偏移。文档检查覆盖全部80份 tracked Markdown 的本地链接与标题锚点；补齐前端规格、部署工具用途及根项目索引。最新本地 Node377／377，Workers259／259，类型、三页、backend、probe及Worker dry-run通过；未执行远端部署或复验。历史实测计数与未完成迁移门槛保留，详见[同日接续复核](tests/C2-ROUND-REVIEW-2026-10-01.md#同日接续复核coach-mode-与名单缓存)。
 
 ## 运行中 Apps Script 的写入与恢复约束
 
 1. 服务端持同一把脚本锁，先保存确定计划和不可变结果，再写业务、审计及完成标记；持锁刷新后释放。请求内复用表格句柄及已读记录，写后失效，不跨请求缓存权威业务状态。
-2. 未完成的报名和排座操作按原计划恢复，不重新生成排队时间、递补或 revision；已完成请求重放不重复写入。报名、取消、换侧与船位共用 BE-05 的唯一分配逻辑，不建立第二套排队算法，系统 revision 不夹带未发布草稿。
+2. 未完成的排期、报名、排座和历史更正按原计划恢复，不重新生成排队时间、递补或 revision；已完成请求重放不重复写入。报名、取消、换侧与船位共用 BE-05 的唯一分配逻辑，不建立第二套排队算法，系统 revision 不夹带未发布草稿。
 3. P1 周生成按保存的模板实例补齐缺失行，保留之后的调整与取消。缺少确定计划的旧未完成请求返回 `RECOVERY_REQUIRED`，不猜测重建。
 4. 单次页面请求上限三十秒，多次串行请求总耗时可能更长。正常保存复用同次响应的当前视图；结果未知时锁定原动作、参数及编号，明确保存后补读失败只重读。版本冲突保留输入，刷新核对后再显式采用服务器版本。
 5. 登录结果未知时，原页面内重新输入相同 Code，复用原登录编号。仅在内存保存摘要和编号，不持久保存 Code 或摘要；页面重载不恢复待确认登录。登录成功而赛季入口读取失败保留会话，只重试读取。详见[前端规格](frontend-spec.md#coach-mode-工作区)。
@@ -57,10 +111,16 @@
 | P4 正式页面 | Pages run 33989665856 成功；过往赛季空状态、Coach 归档控制台、当前开放赛季三场“尚未到期”状态、100 条受保护操作记录、退出和已取消测试赛季的公开空列表通过。未到期环境不等同于真实年度文件创建通过，见[P4 报告](tests/P4-ACCEPTANCE.md) |
 | P5 性能与部署 | 159／159 回归及双构建通过；连续排座两秒合并、开放赛季按时冻结、审计与历史分页、公开历史缓存、紧凑索引、批量写入、归档工作量上限和断点续跑均有专项测试。Apps Script Version 14、生产初始化、health、公开历史空状态和 Pages 三页产物已验证；非空分页、长期 Google 延迟／配额及 Safari／实体手机仍待验收，见[P5 性能报告](tests/P5-PERFORMANCE-ACCEPTANCE.md) |
 | C0 Cloudflare 基础 | 阶段通过。本地 Worker／DO 事务、请求去重、回滚、持久任务、alarm 修复、应用级重试和桥接拒绝路径通过；真实本地进程重启与远端重新部署均保持状态。隔离 staging 公网 health、原子提交、跨部署保持、真实 Apps Script 签名往返／重放／负向范围和 Free 计划用量入口均已验证，见[C0 验收记录](tests/C0-CLOUDFLARE-ACCEPTANCE.md) |
+| C1.1–C1.6 Cloudflare 业务迁移 | schema v1→v6 原地升级、核心／排期／报名／排座／历史影子导入、个人 Code 新会话、私有周与排座草稿、容量候补、最终更正、冻结历史、公开荣誉墙、分页审计、分块备份及远端故障恢复通过；隔离 staging 跨 deployment 保持数据，仍未连接 Pages 或 Google，见[C1.1](tests/C1-CORE-ACCEPTANCE.md)、[C1.2](tests/C1-SCHEDULE-ACCEPTANCE.md)、[C1.3](tests/C1-SIGNUP-ACCEPTANCE.md)、[C1.4](tests/C1-SEATING-ACCEPTANCE.md)、[C1.5](tests/C1-HISTORY-ACCEPTANCE.md)及[C1.6](tests/C1-STAGING-ACCEPTANCE.md)验收记录 |
+| C2.1 同步基础 | schema v7 的受控绑定／基线／来源影子导入、三方比较、严格 Google ID 和稳定来源约束、C2 独立传输门及 Coach 概览通过；该逻辑随 C2.2 已部署隔离 staging，但仍不自行访问 Google 或消费 outbox。见[C2.1 验收](tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md) |
+| C2.2 Form 来源导入 | 隔离 Form 的分页、通知、十分钟补扫、桥接故障恢复、人工核查与跨部署持久化通过；并发提交由本地强制竞态测试覆盖。原 staging v6→v8 保留 C1 数据与待同步 outbox；生产未切换。见[C2.2 验收记录](tests/C2-FORM-IMPORT-ACCEPTANCE.md) |
+| C2.3 Sheet 读取与差异 | 原五类登记 Sheet 的真实只读读取、B/C/G 人工改名与恢复、持久语义诊断幂等通过。新增四个关联 scope 的整行物理 B 诊断已在 `c2test` 0.16.2／schema v13 完成正常态只读远端验收；旧语义 `OK` 与物理 `DRIFT` 并存、整行 CAS 恢复后的四 scope `OK` 已隔离真实验证；物理 finding 仍不写入冲突表。仍没有 Google 人工修改的自动业务导入。见[原 C2.3 验收](tests/C2-SHEET-DIFF-ACCEPTANCE.md)、[物理诊断正常态验收](tests/C2-PHYSICAL-DIAGNOSTICS-ISOLATED-ACCEPTANCE-2026-09-30.md)与[单格漂移／恢复验收](tests/C2-PHYSICAL-DRIFT-ISOLATED-ACCEPTANCE-2026-09-30.md) |
+| C2.4 成员、排期与关联导出（09/30历史切片） | 成员及排期、原 Alpha→20 格草稿→revision 1 已真实确认；本轮新增真实候补递补、PARTIAL／丢回复恢复，最终四表 11／1／20／2、游标 12／2／2、物理 B 34、旧 revision 1 不变，队列和差异归零。专用 Worker 0.16.2／schema v13、Apps Script 已恢复 v14。阶段仍未整体完成，生产未启用。见[最新实际验收](tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md) |
+| C2.5 运维与独立训练 | FAILED原批暂停／PARTIAL／受控丢回复是09/30真实证据；10/01独立训练局部冲突、成熟后序阻断、共享引用及原请求恢复全部final通过，47表55块完整备份。零outbox／未完成batch／retry／block／OPEN conflict，保留三条SUPERSEDED。并发SENT仅本地补测通过；真实配额／随机断网、远端SENT、cron、restore及更广实体仍缺，整体未通过。见[最新实际报告](tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md) |
 
 完整 P3 场景、版本和验证层次见[P3 验收报告](tests/P3-ACCEPTANCE.md)。[P2](tests/live-p2-acceptance.mjs)和[P3](tests/live-p3-acceptance.mjs)真实脚本均为显式手动运行，不随 `npm test` 执行，不修改真实训练时间。运行限制见[后端说明](backend/README.md#验证边界)。
 
-## 当前测试数据与安全收尾
+## 生产测试数据的历史验收与安全收尾
 
 仅使用隔离测试 Form、响应 Spreadsheet、虚构姓名及测试地点；原生 Google 文件保持私有。环境保留 `P1 Acceptance 2026` 测试赛季、二十二名虚构队员，以及 2026-09-09 18:00–20:00、09-11 07:00–09:00、09-12 10:00–12:00 三场公开训练，时区 `America/New_York`，地点 `P1 Test Dock`。正式运营必须另建独立正式赛季和 Form／Spreadsheet。
 
@@ -79,9 +139,10 @@ P1 本轮另建 `P1 Management Acceptance 2026`（2026-09-01 至 09-30，纽约�
 
 ## 未完成范围与下一步
 
-1. **开始 C1 业务迁移**：先冻结 C1 数据模型和迁移顺序，把赛季／成员与权限、排期、报名候补、排座、冻结历史逐层迁入团队 Durable Object，并接入已有事务、请求结果和 outbox。复用现行 Apps Script 测试场景，但只连接隔离测试端点；C1 不改生产 Pages API 或写入归属。
-2. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
-3. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
-4. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。
+1. **C2.6 来源审核与技术前置门槛**：本地 schema16／backup51表；完整来源模型、人工映射及 retained plan 私有人审入口保留。独立 OAuth、真实完整 REST 读取、私有 journal、原操作 CAS 和逐请求 range checkpoint 跨进程恢复已通过。服务器 actor／binding／generation／epoch、原数据库已知 census、当前会话检查、内部 HTTP及私有HTTPS客户端、固定目标登记和强制checkpoint runtime已本地实现；已认证原候选读取、当前journal复核及只追加审核持久CAS随后完成[本地验收](tests/C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)。下一步补长期私有host运行入口／部署、审核UI及其他Coach委派，并独立验收可信native Tab关联、实际服务器来源capture和全部逐块故障。数据库已知 census 不证明完整历史；Google API 用户授权不能替代 Coach 身份。已接受的人工映射政策不再重问：同一固定完整 capture 的明确确认可以形成 HUMAN_ATTESTED，但不保证客观正确、不恢复历史或消除其他证据条件。原 source 仍 DECLARED_ONLY、Sheet 全 PRIVATE_PENDING／SOURCE_NOT_VERIFIED，年度导出 false；cutoff 按 Form createTime 固定，固定后不追加新发现／迟到回答。最新远端证据仍 0.17／schema14／47表，本轮未调用或部署远端 Worker。见[checkpoint 真实恢复](tests/C2-SOURCE-READ-CHECKPOINT-ISOLATED-ACCEPTANCE-2026-10-03.md)、[此前真实 journal 验收](tests/C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)、[source 技术设计](tests/C2-ANNUAL-SOURCE-CAPTURE-DESIGN.md)及[私有人审 adapter 验收](tests/C2-SOURCE-PLAN-REVIEW-ADAPTER-LOCAL-ACCEPTANCE.md)。
+2. **继续 C2.5 剩余运维验收**：独立训练真实Googlefinal已完成；真实配额／随机断网、并发SENT远端窗口、自动cron、备份restore及更广独立实体仍需各自证据，不人为耗尽Google配额。自动导出保持关闭，不连接生产Pages／Google，不改变Apps Script写入归属。见[最新实际验收](tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)及[Cloudflare迁移计划](cloudflare-migration-plan.md#c2-可执行工作清单)。
+3. **P5 延续到迁移验收**：非空历史分页、超过一页的 Coach 审计、两秒连续排座、跨轮归档和真实延迟／配额指标纳入 C1–C4；已有证据保留，未测项不因规划完成而标记通过，不再把旧后端的长期负载优化作为 C0 前置。
+4. **P4 延后实证边界**：等首个真实已结束的隔离赛季自然到期后，补验自动创建年度 Spreadsheet、单场 Tab、整季 Tab、荣誉墙详情和冻结后说明。不得为制造证据而缩短正式赛季或改写真实训练时间；在实际承接该赛季的后端版本上记录证据。
+5. **设备和交接**：Safari、实体手机及 Cloudflare／Google 两个平台的管理员交接仍待执行。当前真实浏览器记录包括 Edge 和 Codex 内置浏览器；390×844 视口不等于实体手机验收。本地故障注入不代表全部写入均完成真实中断测试。正式赛季上线前需核对真实 Form 的匿名发布及回答接收权限，测试 Form 的绑定检查不替代这一配置验收。
 
-重新开始时先检查 Git 分支和未提交改动，再运行 `npm test`、`npm run cf:test`、`npm run cf:check`、`npm run build`、`npm run build:backend` 和 `npm run cf:dry-run`；受限环境设置 `ASTRO_TELEMETRY_DISABLED=1`。当前仓库命令可使用 `git -c safe.directory=D:/agents/dev-master/dragon-boat-training -C D:/agents/dev-master/dragon-boat-training ...`。
+重新开始时先检查 Git 分支和未提交改动，再运行 `npm test`、`npm run cf:test`、`npm run cf:check`、`npm run build`、`npm run build:backend`、`npm run build:bridge-probe` 和 `npm run cf:dry-run`；修改 Wrangler 变量或绑定时另运行 `npm run cf:types`。C1 远端只读复验使用 `npm run cf:accept:c1-staging -- --verify-only`，需要本地忽略的 `cloudflare/.dev.vars`，不得输出其内容。受限环境设置 `ASTRO_TELEMETRY_DISABLED=1`。当前仓库命令可使用 `git -c safe.directory=D:/agents/dev-master/dragon-boat-training -C D:/agents/dev-master/dragon-boat-training ...`。

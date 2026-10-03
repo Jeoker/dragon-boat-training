@@ -4,16 +4,17 @@ import test from "node:test";
 import vm from "node:vm";
 import { webcrypto } from "node:crypto";
 import ts from "typescript";
-import { DragonBoatApiError } from "../frontend/lib/api-client.js";
+import { DragonBoatApiError, isUncertainWriteError } from "../frontend/lib/api-client.js";
 import { validPracticeView, olderPracticeView } from "../frontend/lib/current-view.js";
 import { renderSeatPlan } from "../frontend/lib/seat-plan-view.js";
 import { renderSignupList, signupResultText } from "../frontend/lib/signup-view.js";
+import * as coachSession from "../frontend/lib/coach-session.js";
 
 const source = await fs.readFile(new URL("../frontend/components/CoachModeApp.astro", import.meta.url), "utf8");
 const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^\s*import .*;$/gm, "");
 const compiled = ts.transpileModule(script, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
 
-function makeHarness({ mutate, readWorkspace, readManagement, login, bootstrap, seating = false, weekStatus = "OPENED" } = {}) {
+function makeHarness({ mutate, readWorkspace, readManagement, login, logout, bootstrap, storage, seating = false, weekStatus = "OPENED" } = {}) {
   const elements = new Map();
   const timers = new Map();
   const timerDelays = new Map();
@@ -129,7 +130,10 @@ function makeHarness({ mutate, readWorkspace, readManagement, login, bootstrap, 
         }
         return envelope({ session_token: "session_new", session: { expires_at: "2099-12-31T00:00:00Z" } });
       }
-      if (action === "coachLogout") return envelope({});
+      if (action === "coachLogout") {
+        if (logout) await logout(state);
+        return envelope({});
+      }
       if (mutate) return mutate(state, action, payload, options, envelope);
       throw new Error(`Unexpected POST ${action}`);
     }
@@ -149,10 +153,11 @@ function makeHarness({ mutate, readWorkspace, readManagement, login, bootstrap, 
       clearTimeout(id) { timers.delete(id); timerDelays.delete(id); },
       confirm: () => true
     },
-    DragonBoatApiClient: Client, DragonBoatApiError,
+    DragonBoatApiClient: Client, DragonBoatApiError, isUncertainWriteError,
     createRequestId: () => `request_${++state.requestCounter}`,
-    loadCoachSession: () => ({ token: "session_old" }),
-    saveCoachSession(token) { state.savedSession = token; }, clearCoachSession() { state.savedSession = null; },
+    loadCoachSession: () => storage ? coachSession.loadCoachSession(storage) : ({ token: "session_old" }),
+    saveCoachSession(token, session) { state.savedSession = token; return storage ? coachSession.saveCoachSession(token, session, storage) : true; },
+    clearCoachSession() { state.savedSession = null; return storage ? coachSession.clearCoachSession(storage) : true; },
     isCoachSessionError: (error) => ["SESSION_INVALID", "SESSION_EXPIRED", "SESSION_REVOKED"].includes(error?.code),
     renderSignupList, signupResultText, renderSeatPlan, validPracticeView, olderPracticeView });
   vm.runInContext(compiled, context);
@@ -195,6 +200,170 @@ async function readySeating(harness) {
   await ready(harness);
   await settled(() => !harness.element("seat-console").hidden && harness.element("seat-draft-grid").children.length === 10);
 }
+
+test("Coach login and remote logout work when browser storage is denied", async () => {
+  const denied = () => { throw new Error("Storage denied"); };
+  const h = makeHarness({ storage: { getItem: denied, setItem: denied, removeItem: denied } });
+  await settled(() => !h.element("login-panel").hidden);
+  h.element("coach-code").value = "private-mode-code";
+  await h.element("login-form").emit("submit");
+  assert.equal(h.element("login-panel").hidden, true);
+  assert.equal(h.element("workspace").hidden, false);
+  assert.equal(h.element("season-picker").value, "season_test");
+  await h.element("logout-button").emit("click");
+  assert.equal(h.element("workspace").hidden, true);
+  assert.equal(h.element("season-picker").children.length, 0);
+  assert.equal(h.state.calls.find(call => call.action === "coachLogout").payload.session_token, "session_new");
+});
+
+test("a transient restore failure retains the existing session for a read-only retry", async () => {
+  let attempts = 0;
+  const h = makeHarness({ bootstrap: () => {
+    if (++attempts === 1) throw new DragonBoatApiError("NETWORK_ERROR", "read failed", { retryable: true });
+  } });
+  await settled(() => h.element("management-status").textContent.includes("读取失败"));
+  assert.equal(h.element("login-panel").hidden, true);
+  assert.equal(h.element("workspace").hidden, false);
+  await h.element("refresh-button").emit("click");
+  await settled(() => h.element("season-picker").value === "season_test");
+  assert.deepEqual(h.state.calls.filter(call => call.action === "coachBootstrap").map(call => call.payload.session_token), ["session_old", "session_old"]);
+  assert.equal(h.state.calls.some(call => call.action === "coachLogin"), false);
+});
+
+test("an expired restored session still clears private state and requires login", async () => {
+  const h = makeHarness({ bootstrap: () => { throw new DragonBoatApiError("SESSION_EXPIRED", "expired"); } });
+  await settled(() => h.element("login-status").textContent.includes("会话已过期"));
+  assert.equal(h.element("workspace").hidden, true);
+  assert.equal(h.element("season-picker").children.length, 0);
+});
+
+test("a late rejected restore cannot clear a newly authenticated session", async () => {
+  let rejectOld;
+  let attempts = 0;
+  const h = makeHarness({ bootstrap: () => {
+    if (++attempts === 1) return new Promise((_, reject) => { rejectOld = reject; });
+  } });
+  await settled(() => rejectOld);
+  await h.element("logout-button").emit("click");
+  h.element("coach-code").value = "new-session-code";
+  await h.element("login-form").emit("submit");
+  rejectOld(new DragonBoatApiError("SESSION_EXPIRED", "old session expired"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.state.savedSession, "session_new");
+  assert.equal(h.element("login-panel").hidden, true);
+  assert.equal(h.element("workspace").hidden, false);
+  assert.equal(h.element("season-picker").value, "season_test");
+});
+
+test("an earlier bootstrap rejection cannot erase a later successful refresh", async () => {
+  let rejectOld;
+  let attempts = 0;
+  const h = makeHarness({ bootstrap: () => {
+    if (++attempts === 2) return new Promise((_, reject) => { rejectOld = reject; });
+  } });
+  await settled(() => h.element("season-picker").value === "season_test");
+  h.element("refresh-button").emit("click");
+  await settled(() => rejectOld);
+  await h.element("refresh-button").emit("click");
+  const latestStatus = h.element("management-status").textContent;
+  rejectOld(new DragonBoatApiError("SESSION_EXPIRED", "obsolete read"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.element("login-panel").hidden, true);
+  assert.equal(h.element("season-picker").value, "season_test");
+  assert.equal(h.element("management-status").textContent, latestStatus);
+});
+
+test("a late rejected management write cannot revoke a newly authenticated session", async () => {
+  let rejectOld;
+  const h = makeHarness({ mutate: () => new Promise((_, reject) => { rejectOld = reject; }) });
+  await ready(h);
+  const oldWrite = h.element("create-season-form").emit("submit");
+  await settled(() => rejectOld);
+  await h.element("logout-button").emit("click");
+  h.element("coach-code").value = "new-session-code";
+  await h.element("login-form").emit("submit");
+  rejectOld(new DragonBoatApiError("SESSION_EXPIRED", "old session expired"));
+  await oldWrite;
+  assert.equal(h.state.savedSession, "session_new");
+  assert.equal(h.element("login-panel").hidden, true);
+  assert.equal(h.element("workspace").hidden, false);
+  assert.equal(h.element("season-picker").value, "season_test");
+  assert.equal(h.element("management-retry").hidden, true);
+});
+
+test("an earlier member workspace rejection cannot erase a later successful read", async () => {
+  let rejectOld, reads = 0;
+  const h = makeHarness({ readWorkspace: () => {
+    if (++reads === 1) return new Promise((_, reject) => { rejectOld = reject; });
+  } });
+  await settled(() => h.element("season-picker").value === "season_test");
+  const oldRead = h.element("open-members").emit("click");
+  await settled(() => rejectOld);
+  await h.element("open-members").emit("click");
+  rejectOld(new DragonBoatApiError("SESSION_EXPIRED", "superseded read"));
+  await oldRead;
+  assert.equal(h.element("login-panel").hidden, true);
+  assert.equal(h.element("workspace").hidden, false);
+  assert.equal(h.element("member-picker").value, "member_alice");
+  assert.match(h.element("member-console-status").textContent, /名册与报名已更新/);
+});
+
+test("a superseded member read cannot unlock edits while the current read is pending", async () => {
+  const releases = [];
+  const h = makeHarness({ readWorkspace: () => new Promise(resolve => { releases.push(resolve); }) });
+  await settled(() => h.element("season-picker").value === "season_test");
+  const oldRead = h.element("open-members").emit("click");
+  await settled(() => releases.length === 1);
+  const currentRead = h.element("open-members").emit("click");
+  await settled(() => releases.length === 2);
+  releases[0]();
+  await oldRead;
+  assert.equal(h.element("member-refresh").disabled, true);
+  assert.match(h.element("member-console-status").textContent, /正在读取/);
+  releases[1]();
+  await currentRead;
+  assert.equal(h.element("member-refresh").disabled, false);
+  assert.match(h.element("member-console-status").textContent, /名册与报名已更新/);
+});
+
+test("an old logout reply cannot replace the status of a later failed login", async () => {
+  let finishLogout;
+  const h = makeHarness({ logout: () => new Promise(resolve => { finishLogout = resolve; }),
+    login: () => { throw new DragonBoatApiError("COACH_CODE_INVALID", "wrong code"); } });
+  await settled(() => h.element("season-picker").value === "season_test");
+  const pendingLogout = h.element("logout-button").emit("click");
+  await settled(() => finishLogout);
+  h.element("coach-code").value = "incorrect-code";
+  await h.element("login-form").emit("submit");
+  const loginStatus = h.element("login-status").textContent;
+  assert.match(loginStatus, /Coach Code 不正确/);
+  finishLogout();
+  await pendingLogout;
+  assert.equal(h.element("login-status").textContent, loginStatus);
+});
+
+test("binding previews cannot authorize changed inputs or restore private UI after logout", async () => {
+  let release;
+  const h = makeHarness({ mutate: async (_state, action, _payload, _options, envelope) => {
+    assert.equal(action, "validateSeasonBinding");
+    await new Promise((resolve) => { release = resolve; });
+    return envelope({ response_count: 1, preview_names: ["Private Member"] });
+  } });
+  await readySchedule(h);
+  const form = h.element("binding-form");
+  const pending = form.emit("submit");
+  await settled(() => Boolean(release));
+  form.fields.get("form").value = "changed-form";
+  form.emit("input");
+  release(); await pending;
+  assert.equal(h.element("initialize-button").disabled, true);
+  assert.equal(h.element("binding-status").textContent, "");
+  const loggedOutPreview = form.emit("submit");
+  await h.element("logout-button").emit("click");
+  release(); await loggedOutPreview;
+  assert.equal(h.element("initialize-button").disabled, true);
+  assert.equal(h.element("binding-status").textContent, "");
+});
 
 function poolButton(harness, memberId) {
   const button = harness.element("seat-pool").children.find((child) => child.dataset.memberId === memberId);

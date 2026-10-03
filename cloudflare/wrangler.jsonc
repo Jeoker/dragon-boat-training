@@ -4,17 +4,23 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-19",
   "workers_dev": true,
+  "triggers": { "crons": ["*/10 * * * *"] },
   "observability": {
     "enabled": true
   },
   "vars": {
     "ENVIRONMENT": "staging",
-    "SERVICE_VERSION": "0.1.0-c0",
+    "SERVICE_VERSION": "0.16.0-c2-associated-export",
     "CONTRACT_VERSION": "2026-09-19.c0",
     "BACKEND_INSTANCE": "dragon-boat-training-staging",
-    "BACKEND_GENERATION": "cf-c0-staging-1",
+    "BACKEND_GENERATION": "cf-c2-staging-4",
     "WRITER_EPOCH": "0",
-    "TEAM_ID": "pentasus"
+    "TEAM_ID": "pentasus",
+    "C2_FORM_POLL_ENABLED": "false",
+    "C2_MEMBER_EXPORT_ENABLED": "false",
+    "C2_SCHEDULE_EXPORT_ENABLED": "false",
+    "C2_ASSOCIATED_EXPORT_ENABLED": "false",
+    "C2_EXPORT_POLL_ENABLED": "false"
   },
   "durable_objects": {
     "bindings": [
@@ -31,8 +37,32 @@
     }
   },
   "env": {
+    "c2test": {
+      "name": "dragon-boat-training-api-c2-test",
+      "triggers": { "crons": [] },
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "SERVICE_VERSION": "0.17.0-c2-associated-lanes",
+        "CONTRACT_VERSION": "2026-09-19.c0",
+        "BACKEND_INSTANCE": "dragon-boat-training-c2-test",
+        "BACKEND_GENERATION": "cf-c2-isolated-1",
+        "WRITER_EPOCH": "0",
+        "TEAM_ID": "pentasus-c2-test",
+        "C2_FORM_POLL_ENABLED": "false",
+        "C2_MEMBER_EXPORT_ENABLED": "true",
+        "C2_SCHEDULE_EXPORT_ENABLED": "true",
+        "C2_ASSOCIATED_EXPORT_ENABLED": "true",
+        "C2_EXPORT_POLL_ENABLED": "false"
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "TEAM_STATE", "class_name": "TeamState" }
+        ]
+      }
+    },
     "production": {
       "name": "dragon-boat-training-api",
+      "triggers": { "crons": [] },
       "vars": {
         "ENVIRONMENT": "production",
         "SERVICE_VERSION": "0.1.0-c0",
@@ -40,7 +70,12 @@
         "BACKEND_INSTANCE": "dragon-boat-training-production",
         "BACKEND_GENERATION": "cf-c0-production-1",
         "WRITER_EPOCH": "0",
-        "TEAM_ID": "pentasus"
+        "TEAM_ID": "pentasus",
+        "C2_FORM_POLL_ENABLED": "false",
+        "C2_MEMBER_EXPORT_ENABLED": "false",
+        "C2_SCHEDULE_EXPORT_ENABLED": "false",
+        "C2_ASSOCIATED_EXPORT_ENABLED": "false",
+        "C2_EXPORT_POLL_ENABLED": "false"
       },
       "durable_objects": {
         "bindings": [

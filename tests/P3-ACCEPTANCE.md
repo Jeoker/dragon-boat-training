@@ -35,7 +35,7 @@ P3 验收验证同一套报名与排座状态，而不建立第二个分配算�
 ```text
 npm test
 npm run build
-npm run build:dragon-boat-backend
+npm run build:backend
 ```
 
 ## 真实脚本的安全边界
@@ -43,7 +43,7 @@ npm run build:dragon-boat-backend
 [live-p3-acceptance.mjs](live-p3-acceptance.mjs) 不随 `npm test` 执行，也不会修改真实训练时间。运行必须同时提供当前进程环境变量 `DBT_API_URL`、`DBT_COACH_CODE`，并显式传入 `--write-test-data`：
 
 ```text
-node dragon-boat-training/tests/live-p3-acceptance.mjs --write-test-data
+node tests/live-p3-acceptance.mjs --write-test-data
 ```
 
 脚本只允许以下隔离夹具：
@@ -144,7 +144,7 @@ node dragon-boat-training/tests/live-p3-acceptance.mjs --write-test-data
 
 | 检查 | 当前状态 | 证据 |
 |---|---|---|
-| 本地测试、前端构建、后端单文件构建 | 通过 | 2026-09-04：`npm test` 121／121；`npm run build` 0 条诊断并生成 3 个页面；`npm run build:dragon-boat-backend` 成功；真实脚本另经 `node --check` 通过 |
+| 本地测试、前端构建、后端单文件构建 | 通过 | 2026-09-04：`npm test` 121／121；`npm run build` 0 条诊断并生成 3 个页面；当前等价后端命令 `npm run build:backend` 成功；真实脚本另经 `node --check` 通过 |
 | 当前部署 | 通过 | Apps Script Version 11；health 为服务 `0.6.1-p3`、契约 `2026-09-02.p2.1`；功能部署 Pages run 33937965621 成功 |
 | 真实 P3 API 脚本 | 通过 | 2026-09-04，Version 10；退出码 0、最终 `ok=true`，全部业务断言通过并完成归属受控的安全清理 |
 | 队员页面与 Coach Mode 双端检查 | 通过 | 登录／按需加载、受控报名、同人双角色、草稿隔离、发布、完整十排、revision 1 保持、重置、公开／管理投影隔离及收尾读回均已实测 |

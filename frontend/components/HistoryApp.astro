@@ -3,15 +3,9 @@ import logoUrl from "../../assets/team-logo-placeholder.svg";
 import "../styles/app.css";
 import "../styles/seat-plan.css";
 import "../styles/history.css";
+import { siteConfig } from "../site-config";
 
-const basePath = import.meta.env.BASE_URL.endsWith("/")
-  ? import.meta.env.BASE_URL
-  : `${import.meta.env.BASE_URL}/`;
-const appPath = basePath;
-const historyPath = `${appPath}history/`;
-const coachPath = `${appPath}coach/`;
-const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
-  || "https://script.google.com/macros/s/AKfycbw4c8mBbop9Qnq29nYQ_AtLembq1OHKt_nRjIv3EE9kw0DliTVM0lMY6svr8X0gcQW8/exec";
+const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
 ---
 
 <div class="dragon-boat-app" data-history-app data-api-url={apiUrl} data-history-path={historyPath}>
@@ -83,6 +77,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
 </div>
 
 <script>
+  import { formatCalendarDate } from "../lib/calendar-date.js";
   import { DragonBoatApiClient, DragonBoatApiError } from "../lib/api-client.js";
   import { groupHistorySeasons, historyHref, visibleHistoryPractices } from "../lib/history-view.js";
   import { renderSeatPlan } from "../lib/seat-plan-view.js";
@@ -129,11 +124,6 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
     if (statusCard) statusCard.hidden = state === "ready";
   }
 
-  function dateOnly(value: string, timeZone: string) {
-    return new Intl.DateTimeFormat("zh-CN", { timeZone, year: "numeric", month: "long", day: "numeric" })
-      .format(new Date(`${value}T12:00:00Z`));
-  }
-
   function dateTime(value: string, timeZone: string) {
     return new Intl.DateTimeFormat("zh-CN", { timeZone, year: "numeric", month: "numeric", day: "numeric",
       weekday: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
@@ -172,7 +162,7 @@ const apiUrl = import.meta.env.PUBLIC_DRAGON_BOAT_API_URL
     if (!seasonSection || !seasonTitle || !seasonMeta || !practiceCards) return;
     seasonSection.hidden = false;
     seasonTitle.textContent = data.season.name;
-    seasonMeta.textContent = `${dateOnly(data.season.start_date, data.season.timezone)} 至 ${dateOnly(data.season.end_date, data.season.timezone)} · ${data.season.timezone}`;
+    seasonMeta.textContent = `${formatCalendarDate(data.season.start_date)} 至 ${formatCalendarDate(data.season.end_date)} · ${data.season.timezone}`;
     practiceCards.replaceChildren();
     visibleHistoryPractices(data.practices).forEach((practice: any) => {
       const link = document.createElement("a");

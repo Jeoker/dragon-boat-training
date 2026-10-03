@@ -160,6 +160,43 @@ test("P4 freezes, archives and publishes one season without duplicating annual f
   assert.equal(JSON.stringify(archived).includes(f.members[0].member_id), false);
 });
 
+test("an interrupted history correction recovers before another writer checks its version", async () => {
+  const f = await fixture();
+  f.setTime("2026-09-03T17:00:00.000Z");
+  f.backend.context.publishDueTrainingWeeks();
+  f.login();
+  const input = { season_id: f.season.season_id, practice_id: f.practice().practice_id,
+    history_version: 1, note: "First correction" };
+  const update = f.backend.context.updateSheetRecord_;
+  let fail = true;
+  f.backend.context.updateSheetRecord_ = (sheet, row) => {
+    if (fail && sheet === "PublicHistoryIndex") { fail = false; throw new Error("index interrupted"); }
+    return update(sheet, row);
+  };
+  fails(f.send("appendHistoryCorrection", input, "history_partial_01"), "INTERNAL_ERROR");
+  fails(f.send("appendHistoryCorrection", { ...input, note: "Stale second correction" }), "VERSION_CONFLICT");
+  const replay = ok(f.send("appendHistoryCorrection", input, "history_partial_01"));
+  assert.equal(replay.history_version, 2);
+  assert.equal(sheetRecords(f.backend.spreadsheet, "HistoryCorrections").length, 1);
+  const current = ok(f.get("archivedPractice", { season_id: f.season.season_id, practice_id: f.practice().practice_id }));
+  assert.equal(current.history_version, 2);
+  assert.deepEqual(current.corrections.map(note => note.note), ["First correction"]);
+});
+
+test("a renamed response tab is archived by stable ID and a missing tab cannot silently omit source data", async () => {
+  const f = await fixture();
+  const sheet = f.binding.responseSheet;
+  const sheets = f.binding.runtimeSpreadsheet.sheets;
+  sheets.delete(sheet.getName());
+  sheet.name = "Renamed responses";
+  sheets.set(sheet.getName(), sheet);
+  const season = f.backend.context.requireSeason_(f.season.season_id);
+  const rows = f.backend.context.seasonArchiveRows_(season, "2026-09-03T17:00:00.000Z");
+  assert.equal(rows.filter(row => row[0] === "form_response").length, 3);
+  sheets.delete(sheet.getName());
+  assert.throws(() => f.backend.context.seasonArchiveRows_(season, "2026-09-03T17:00:00.000Z"), error => error.code === "BINDING_RESPONSE_TAB_MISSING");
+});
+
 test("P4 treats cancelled training as nonexistent outside its operational tombstone", async () => {
   const f = await fixture({ templates: [2, 3] });
   const cancelledId = f.practice(0).practice_id;
@@ -336,7 +373,9 @@ test("P5 paginates management audit records with bounded season-sheet reads", as
     f.backend.context.appendSeasonSheetRecord_(season, "AuditLog", {
       event_id: eventId,
       request_id: `p5_request_${String(index).padStart(3, "0")}`,
-      server_time: new Date(Date.parse("2026-08-31T13:00:00.000Z") + index * 1000).toISOString(),
+      // Equal timestamps and delayed recovery events must not make a row
+      // cursor skip events that were sorted across a page boundary.
+      server_time: new Date(Date.parse("2026-08-31T13:00:00.000Z") + (120 - Math.floor(index / 3)) * 1000).toISOString(),
       season_id: season.season_id,
       entity_type: "PRACTICE",
       entity_id: `practice_${index}`,
@@ -345,6 +384,13 @@ test("P5 paginates management audit records with bounded season-sheet reads", as
       action: "P5_AUDIT_FIXTURE",
       status: "SUCCEEDED",
       details_json: "{}"
+    });
+    const systemEventId = `p5_system_${String(120 - index).padStart(3, "0")}`;
+    expectedIds.add(systemEventId);
+    f.backend.context.appendSheetRecord_("SystemAuditLog", {
+      event_id: systemEventId, request_id: `p5_system_request_${index}`,
+      server_time: "2026-08-31T13:00:00.000Z", actor_type: "COACH", actor_id: "coach_alpha",
+      action: "P5_AUDIT_FIXTURE", status: "SUCCEEDED", details_json: JSON.stringify({ season_id: season.season_id })
     });
   }
 
@@ -359,7 +405,7 @@ test("P5 paginates management audit records with bounded season-sheet reads", as
   const seen = new Set();
   let cursor = "";
   let finished = false;
-  for (let pageNumber = 0; pageNumber < 12; pageNumber += 1) {
+  for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
     const page = ok(f.send("listManagementAudit", {
       season_id: season.season_id,
       limit: 25,

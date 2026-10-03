@@ -239,8 +239,11 @@ function appendSeasonAudit_(season, requestId, actorType, actorId, action, entit
 }
 
 function requireVersion_(actual, requested, label) {
+  if (!isRequestInteger_(requested, 0, Number.MAX_SAFE_INTEGER)) {
+    throw dragonBoatRequestError_("INVALID_REQUEST", "A non-negative integer " + label + " version is required.");
+  }
   var expected = Number(requested);
-  if (!Number.isFinite(expected) || expected !== Number(actual)) {
+  if (expected !== Number(actual)) {
     throw dragonBoatRequestError_("VERSION_CONFLICT", "The " + label + " changed. Refresh and try again.");
   }
 }

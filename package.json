@@ -11,11 +11,15 @@
     "build:backend": "node backend/build.mjs",
     "build:bridge-probe": "node backend/build-bridge-probe.mjs",
     "test": "node --test tests/*.test.mjs",
+    "source:oauth": "node backend/source-journal/oauth-local.mjs",
+    "source:check": "tsc --project backend/source-journal/tsconfig.json --noEmit",
     "cf:types": "wrangler types --config cloudflare/wrangler.jsonc cloudflare/worker-configuration.d.ts",
     "cf:check": "tsc --project cloudflare/tsconfig.json --noEmit",
     "cf:test": "vitest run --config cloudflare/vitest.config.ts",
     "cf:dev": "wrangler dev --config cloudflare/wrangler.jsonc --env=",
+    "cf:accept:c1-staging": "node --env-file=cloudflare/.dev.vars tests/live-c1-staging-acceptance.mjs",
     "cf:deploy:staging": "wrangler deploy --config cloudflare/wrangler.jsonc --env=",
+    "cf:deploy:c2test": "wrangler deploy --config cloudflare/wrangler.jsonc --env c2test",
     "cf:deploy:production": "wrangler deploy --config cloudflare/wrangler.jsonc --env production",
     "cf:dry-run": "wrangler deploy --config cloudflare/wrangler.jsonc --env= --dry-run --outdir cloudflare/.wrangler-dry-run"
   },
@@ -28,6 +32,7 @@
     "@astrojs/check": "latest",
     "@cloudflare/vitest-plugin": "^1.1.13",
     "@google/clasp": "^3.4.1",
+    "google-auth-library": "10.5.0",
     "typescript": "latest",
     "vitest": "^4.1.11",
     "wrangler": "4.135.0"

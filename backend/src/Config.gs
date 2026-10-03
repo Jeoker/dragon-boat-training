@@ -1,6 +1,6 @@
 var DRAGON_BOAT_CONTRACT_VERSION_ = "2026-09-02.p2.1";
 var DRAGON_BOAT_SERVICE_NAME_ = "dragon-boat-training";
-var DRAGON_BOAT_SERVICE_VERSION_ = "0.9.0-p5-performance";
+var DRAGON_BOAT_SERVICE_VERSION_ = "0.9.2-schedule-review";
 
 var DRAGON_BOAT_PROPERTY_KEYS_ = {
   SYSTEM_SPREADSHEET_ID: "DRAGON_BOAT_SYSTEM_SPREADSHEET_ID",
@@ -101,6 +101,10 @@ var DRAGON_BOAT_SHEET_HEADERS_ = {
     "settings_version",
     "updated_by",
     "updated_at"
+  ],
+  BridgeExportReceipts: [
+    "batch_id", "payload_digest", "season_id", "binding_version", "writer_epoch",
+    "status", "result_json", "created_at", "updated_at"
   ],
   AnnualArchiveFiles: [
     "archive_year",

@@ -34,3 +34,14 @@ test("public roster cache keeps the server absolute expiry and version boundary"
   assert.equal(loadRosterSnapshot({ ...snapshot, roster_version: 4 }, storage), null);
   assert.equal(storage.values.has(rosterCacheKey(snapshot)), true);
 });
+
+test("cached roster versions must be exact safe integers rather than coercible values", () => {
+  const season = { season_id: "season_123", binding_version: 2, roster_version: 3 };
+  const storage = memoryStorage();
+  for (const value of ["3", null, 3.5, -1, Number.MAX_SAFE_INTEGER + 1]) {
+    const snapshot = { ...season, roster_version: value, members: [], expires_at: "2099-01-01T00:00:00Z" };
+    storage.setItem(rosterCacheKey(season), JSON.stringify(snapshot));
+    assert.equal(loadRosterSnapshot(season, storage), null);
+    assert.equal(storage.values.has(rosterCacheKey(season)), false);
+  }
+});

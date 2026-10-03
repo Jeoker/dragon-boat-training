@@ -36,14 +36,12 @@ function invalidatePublicHistoryCache_(seasonId, practiceId, includeDirectory) {
 }
 
 function historyPageOptions_(request, defaultLimit, maximumLimit) {
-  var limit = Number(request && request.limit || defaultLimit);
-  if (!Number.isFinite(limit)) limit = defaultLimit;
-  limit = Math.min(maximumLimit, Math.max(1, Math.floor(limit)));
-  var offset = Number(request && request.cursor || 0);
-  if (!Number.isFinite(offset) || offset < 0 || Math.floor(offset) !== offset || offset > 1000000) {
+  var limit = requestPageLimit_(request.limit, defaultLimit, maximumLimit);
+  var cursor = request.cursor === undefined || request.cursor === "" ? 0 : request.cursor;
+  if (!isRequestInteger_(cursor, 0, 1000000)) {
     throw dragonBoatRequestError_("INVALID_REQUEST", "The history cursor is invalid.");
   }
-  return { limit: limit, offset: offset };
+  return { limit: limit, offset: Number(cursor) };
 }
 
 function paginateHistoryItems_(items, options) {
@@ -397,8 +395,8 @@ function seasonArchiveRows_(season, capturedAt) {
   appendRecords("audit_event", getSeasonSheetRecords_(season, "AuditLog"), "event_id", function (event) {
     return String(event.action) !== "cancelPractice" && !cancelled[String(event.entity_id)];
   });
-  var responseSheet = getSeasonSpreadsheet_(season).getSheetByName(String(season.response_sheet_name));
-  if (responseSheet && responseSheet.getLastRow() > 0) {
+  var responseSheet = getBoundResponseSheet_(season);
+  if (responseSheet.getLastRow() > 0) {
     var responseRows = responseSheet.getRange(1, 1, responseSheet.getLastRow(), responseSheet.getLastColumn()).getValues();
     responseRows.forEach(function (row, index) {
       rows.push(archivePayloadRow_(index === 0 ? "form_response_header" : "form_response", String(index), row, capturedAt));
@@ -926,14 +924,12 @@ function appendHistoryCorrection_(request) {
       getRequiredScriptProperty_(DRAGON_BOAT_PROPERTY_KEYS_.CODE_SECRET)).slice(0, 32);
     var result = { season_id: String(season.season_id), practice_id: practiceId,
       correction_id: correctionId, history_version: Number(index.history_version || 0) + 1 };
-    var transaction = beginSystemRequest_(scope, request.action, request.request_id, digest, {
+    return persistBusinessPlan_(scope, request, digest, {
       kind: "P4_HISTORY_CORRECTION", plan: { history_key: historyKey, history_version: result.history_version,
         updated_at: now, correction: { correction_id: correctionId, season_id: season.season_id,
           practice_id: practiceId, note: note, created_by: actorId, created_at: now, request_id: request.request_id } },
       result: result
-    });
-    SpreadsheetApp.flush();
-    return applyHistoryCorrectionRequest_(transaction.record);
+    }, applyHistoryCorrectionRequest_);
   });
 }
 
@@ -982,20 +978,26 @@ function listManagementAudit_(request) {
   return withDragonBoatScriptLock_(function () {
     validateCoachSession_(requireRequestString_(request, "session_token", 32, 2048));
     var season = requireSeason_(request.season_id);
-    var limit = Math.min(100, Math.max(1, Math.floor(Number(request.limit || 50))));
-    if (!Number.isFinite(limit)) limit = 50;
+    var limit = requestPageLimit_(request.limit, 50, 100);
     var seasonLast = getSeasonSheet_(season, "AuditLog").getLastRow() + 1;
     var systemLast = getSystemSheet_("SystemAuditLog").getLastRow() + 1;
     var cursor = parseAuditCursor_(request.cursor, seasonLast, systemLast);
     var seasonPage = getSeasonSheetRecordsBefore_(season, "AuditLog", cursor.season_before, limit + 1);
     var systemPage = readSystemAuditPage_(season.season_id, cursor.system_before, limit + 1);
-    var events = seasonPage.records.map(function (row) { return auditEventProjection_(row, "SEASON", season.season_id); })
-      .concat(systemPage.records.map(function (row) { return auditEventProjection_(row, "SYSTEM", season.season_id); }));
-    events.sort(function (left, right) {
-      var byTime = String(right.server_time).localeCompare(String(left.server_time));
-      return byTime || String(right.event_id).localeCompare(String(left.event_id));
-    });
-    var page = events.slice(0, limit);
+    var seasonEvents = seasonPage.records.map(function (row) { return auditEventProjection_(row, "SEASON", season.season_id); });
+    var systemEvents = systemPage.records.map(function (row) { return auditEventProjection_(row, "SYSTEM", season.season_id); });
+    var page = [], seasonOffset = 0, systemOffset = 0;
+    // A row cursor must consume a contiguous prefix of each append-only log.
+    // Sorting all events by time/ID can skip unconsumed rows when timestamps
+    // tie or a recovered event is appended later with its original timestamp.
+    while (page.length < limit && (seasonOffset < seasonEvents.length || systemOffset < systemEvents.length)) {
+      var seasonHead = seasonEvents[seasonOffset], systemHead = systemEvents[systemOffset];
+      if (seasonHead && (!systemHead || String(seasonHead.server_time) >= String(systemHead.server_time))) {
+        page.push(seasonHead); seasonOffset += 1;
+      } else {
+        page.push(systemHead); systemOffset += 1;
+      }
+    }
     var nextSeasonBefore = cursor.season_before;
     var nextSystemBefore = cursor.system_before;
     var consumedSeason = page.filter(function (event) { return event.scope === "SEASON"; });

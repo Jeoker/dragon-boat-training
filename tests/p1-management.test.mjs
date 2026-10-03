@@ -83,10 +83,15 @@ test("P1 scheduled opening is invalidated by edits and only the newly confirmed 
   f.time("2026-09-05T13:01:00Z");
   assert.equal(f.b.context.publishDueTrainingWeeks().published_count, 0);
   assert.equal(ok(f.get()).weeks.length, 0);
-  ok(f.open({ open_date: "2026-09-06", open_time: "09:00" }));
-  f.time("2026-09-06T13:00:00Z");
+  const reconfirmed = ok(f.open({ open_date: "2026-09-06", open_time: "09:00" }));
+  f.time("2026-09-06T13:01:00Z");
   assert.equal(f.b.context.publishDueTrainingWeeks().published_count, 1);
   assert.equal(f.b.context.publishDueTrainingWeeks().published_count, 0);
+  const opened = f.weekData().week;
+  assert.equal(opened.confirmed_version, reconfirmed.week.confirmed_version);
+  assert.equal(opened.confirmed_at, reconfirmed.week.confirmed_at);
+  assert.equal(opened.scheduled_open_at, reconfirmed.week.scheduled_open_at);
+  assert.equal(opened.published_at, "2026-09-06T13:01:00.000Z");
   assert.equal(ok(f.get()).weeks[0].practices.length, 2);
 });
 
@@ -121,6 +126,17 @@ test("P1 preview detects intervening signups and accepted changes preserve queue
   fails(f.get("practice", { practice_id: p.practice_id }), "PRACTICE_NOT_PUBLIC");
   assert.equal(f.management().weeks[0].practices.find((item) => item.practice_id === p.practice_id).cancelled, true);
   for (const [name, rows] of Object.entries(before)) assert.deepEqual(sheetRecords(f.binding.runtimeSpreadsheet, name), rows, name);
+});
+
+test("cancelled published practices do not prevent shortening a season", async () => {
+  const f = await fixture();
+  ok(f.open());
+  for (const practice of f.weekData().practices) ok(f.send("cancelPractice", f.preview("CANCEL", {}, practice)));
+  const season = f.management().season;
+  const updated = ok(f.send("updateSeasonSchedule", { season_id: season.season_id, season_version: season.season_version,
+    start_date: season.start_date, end_date: "2026-09-05" }));
+  assert.equal(updated.season.end_date, "2026-09-05");
+  assert.equal(f.weekData().practices.filter(practice => practice.cancelled).length, 2);
 });
 
 test("P1 schedule validation rejects altered previews and invalid ranges and invalid local times", async () => {

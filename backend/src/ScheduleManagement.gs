@@ -42,13 +42,8 @@ function applyScheduleRequest_(record) {
 }
 
 function persistSchedulePlan_(scope, request, digest, plan, result) {
-  var saved = { kind: "P1_MANAGEMENT", plan: plan, result: result };
-  if (JSON.stringify(saved).length > 45000) {
-    throw dragonBoatRequestError_("REQUEST_TOO_LARGE", "This schedule change is too large to save safely.");
-  }
-  var transaction = beginSystemRequest_(scope, request.action, request.request_id, digest, saved);
-  SpreadsheetApp.flush();
-  return applyScheduleRequest_(transaction.record);
+  return persistBusinessPlan_(scope, request, digest,
+    { kind: "P1_MANAGEMENT", plan: plan, result: result }, applyScheduleRequest_);
 }
 
 function schedulePlanRow_(plan, sheet, key, row, runtime) {
@@ -176,7 +171,7 @@ function manageSchedule_(request) {
       var startAt = localDateTimeToIso_(startDate, "00:00", season.timezone);
       var practices = season.runtime_spreadsheet_id ? getSeasonSheetRecords_(season, "Practices") : [];
       if (practices.some(function (practice) {
-        return (!practice.cancelled_at || practice.schedule_published_at) &&
+        return !practice.cancelled_at &&
           (String(practice.start_at) < startAt || String(practice.end_at) > endAt);
       })) throw dragonBoatRequestError_("SEASON_SCHEDULE_CONFLICT", "Existing training or public history falls outside these dates. Resolve it before saving.");
       var patch = { season_id: season.season_id, start_date: startDate, end_date: endDate, season_ends_at: endAt,
@@ -282,14 +277,15 @@ function buildScheduleMutation_(request, season, plan) {
       throw dragonBoatRequestError_("INVALID_REQUEST", "A valid opening time is required.");
     }
     if (request.open_at && request.open_date) throw dragonBoatRequestError_("INVALID_REQUEST", "Use one opening-time format.");
+    var publishingScheduledWeek = request.action === "publishTrainingWeek";
     var openAt = request.open_date
       ? localDateTimeToIso_(requireIsoDate_(request.open_date, "open_date"), requireLocalTime_(request.open_time, "open_time"), season.timezone)
       : request.open_at ? new Date(request.open_at).toISOString() : now;
-    if (request.action === "publishTrainingWeek") {
+    if (publishingScheduledWeek) {
       if (String(week.status) !== "SCHEDULED" || !week.scheduled_open_at || Date.parse(week.scheduled_open_at) > Date.now() || Number(week.confirmed_version) !== Number(week.week_version)) {
         throw dragonBoatRequestError_("WEEK_NOT_DUE", "This confirmed week is not due to open.");
       }
-      openAt = now;
+      openAt = week.scheduled_open_at;
     }
     var active = practices.filter(function (row) { return !row.cancelled_at; });
     if (!active.length) throw dragonBoatRequestError_("WEEK_EMPTY", "Add at least one training before confirming the week.");
@@ -297,7 +293,9 @@ function buildScheduleMutation_(request, season, plan) {
       throw dragonBoatRequestError_("OPEN_TIME_TOO_LATE", "Open the week before its first training starts.");
     }
     week.week_version = Number(week.week_version) + 1;
-    week.confirmed_version = week.week_version; week.confirmed_at = now; week.confirmed_by = actorId;
+    if (!publishingScheduledWeek) {
+      week.confirmed_version = week.week_version; week.confirmed_at = now; week.confirmed_by = actorId;
+    }
     week.scheduled_open_at = openAt;
     week.status = Date.parse(openAt) <= Date.now() ? "OPENED" : "SCHEDULED";
     week.updated_at = now;

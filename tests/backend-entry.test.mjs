@@ -71,6 +71,7 @@ test("setup creates a private system spreadsheet when no ID is configured", asyn
     "SystemAuditLog",
     "Seasons",
     "SystemSettings",
+    "BridgeExportReceipts",
     "AnnualArchiveFiles",
     "PracticeArchives",
     "SeasonArchives",

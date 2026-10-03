@@ -9,6 +9,21 @@ function requireRequestString_(request, fieldName, minLength, maxLength) {
   return value;
 }
 
+function isRequestInteger_(value, minimum, maximum) {
+  // Canonical decimal strings remain accepted for query/form compatibility.
+  // Do not turn null, booleans, empty strings or arrays into a version number.
+  return (typeof value === "number" || (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value))) &&
+    Number.isSafeInteger(Number(value)) && Number(value) >= minimum && Number(value) <= maximum;
+}
+
+function requestPageLimit_(value, fallback, maximum) {
+  if (value === undefined) return fallback;
+  if (!isRequestInteger_(value, 1, Number.MAX_SAFE_INTEGER)) {
+    throw dragonBoatRequestError_("INVALID_REQUEST", "The page limit must be a positive integer.");
+  }
+  return Math.min(Number(value), maximum);
+}
+
 function getScriptProperties_() {
   return PropertiesService.getScriptProperties();
 }
@@ -150,7 +165,7 @@ function withDragonBoatScriptLock_(callback) {
     dragonBoatLockDepth_ += 1;
     dragonBoatStoreHandles_ = {};
     dragonBoatRecordCache_ = {};
-    recoverP2Requests_();
+    recoverPendingBusinessRequests_();
     if (getScriptProperties_().getProperty(DRAGON_BOAT_PROPERTY_KEYS_.SYSTEM_SPREADSHEET_ID) && getSystemSpreadsheet_().getSheetByName("Seasons")) completeDueSeasons_();
     return callback();
   } finally {

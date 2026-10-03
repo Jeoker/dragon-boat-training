@@ -1,5 +1,6 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "document_type": "api-contract-manifest",
+  "conventions": "contracts/README.md; descriptive action inventory, not an executable JSON Schema",
   "contract_version": "2026-09-02.p2.1",
   "service": "dragon-boat-training",
   "extensions": {
@@ -40,7 +41,7 @@
       "service_since": "0.9.0-p5-performance",
       "compatibility": "Additive pagination metadata and internal batching; write actions keep the same idempotency, lock and version semantics.",
       "public_reads": "History directories and frozen practice snapshots use bounded, invalidated script caches. Directory and season listings accept limit and cursor and return next_cursor and total_count.",
-      "management_reads": "Audit history is read backwards in bounded ranges and returns an independent cursor for older rows.",
+      "management_reads": "Audit pagination consumes each log in reverse append order and merges their heads by timestamp. It returns a cursor without skipping equal-time or delayed-recovery events; not a global event-time sort.",
       "maintenance": "The five-minute freeze and archive worker uses a configurable shared work-unit limit, time budget and resumable freeze and season cursors."
     }
   },
@@ -52,8 +53,9 @@
     "management_transport": "POST body only; session_token is never placed in a URL"
   },
   "request": {
-    "request_id": "8 to 128 ASCII letters, numbers, underscores or hyphens",
-    "action": "required action name"
+    "request_id": "8 to 128 ASCII letters, numbers, underscores or hyphens; mandatory for POST; generated when absent on GET",
+    "action": "required action name",
+    "validation": "Versions are non-negative safe integers or canonical decimal strings; boolean options must be JSON booleans. Invalid types are rejected before business dispatch. Known roster version -1 is an allowed cache hint. See conventions for compatibility exceptions."
   },
   "response": {
     "success": {
@@ -314,7 +316,7 @@
     "saveSeatPlanDraft": {
       "methods": ["POST"],
       "authentication": "session_token",
-      "request_fields": ["session_token", "season_id", "practice_id", "practice_version", "signup_version", "seat_plan_version", "published_revision", "coach_member_id", "steerer_member_id", "seats", "change_kind"],
+      "request_fields": ["session_token", "season_id", "practice_id", "practice_version", "signup_version", "seat_plan_version", "coach_member_id", "steerer_member_id", "seats", "change_kind"],
       "response_fields": ["season_id", "practice_id", "practice", "mode", "editable", "archive_due_at", "generated_at", "signup_version", "seat_plan_version", "published_revision", "draft", "published", "members", "signups", "unseated_member_ids", "preference_mismatches"],
       "writes_data": true,
       "notes": "Saves a complete private draft snapshot. change_kind is EDIT, UNDO or RESET_TO_PUBLISHED. Coach and Steerer may be the same member; neither can occupy a paddle seat. Before training, seat members must be active confirmed signups. During final correction any member of this season may reflect actual attendance."
@@ -420,7 +422,7 @@
       "writes_data": false,
       "request_fields": ["session_token", "season_id", "optional limit", "optional cursor"],
       "response_fields": ["season_id", "events", "next_cursor", "scan_cap_reached", "generated_at"],
-      "notes": "Combines season and matching system audit events newest first. Reads bounded reverse ranges, returns at most 100 per page and uses next_cursor for older records."
+      "notes": "Preserves reverse append order within each log, merging only the season/system heads by timestamp. No global event-time ordering guarantee. Reads bounded ranges, returns at most 100 per page and uses next_cursor for older records."
     }
   },
   "management_errors": ["COACH_CODE_INVALID", "LOGIN_RATE_LIMITED", "SESSION_INVALID", "SESSION_EXPIRED", "SESSION_REVOKED", "IDEMPOTENCY_CONFLICT", "SERVICE_BUSY", "CONFIGURATION_REQUIRED", "CONFIGURATION_ERROR", "RECOVERY_REQUIRED", "VERSION_CONFLICT", "SEASON_NOT_FOUND", "SEASON_NOT_OPEN", "BINDING_LOCKED", "ARCHIVE_NOT_DUE", "HISTORY_NOT_READY", "HISTORY_NOT_FOUND"],

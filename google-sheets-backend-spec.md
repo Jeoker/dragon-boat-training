@@ -65,6 +65,8 @@ GitHub Pages 通过单一数据模块访问 Apps Script Web App 的 `doGet`／`d
 
 ## 接口契约
 
+输入类型、统一响应、结果与当前视图、重试和迁移兼容以 [API 边界约定](contracts/README.md)为准；已实现动作清单见 [api-v1.json](contracts/api-v1.json)。
+
 接口只接受定义过的业务动作及最小字段。除新建实体和首页默认解析外，请求携带明确的赛季及相关实体 ID；公共业务接口不能指定文件、Tab、范围或公式。文件标识仅在绑定接口接受并检查。地图 URL 仅允许 HTTP／HTTPS。
 
 | 范围 | 动作 | 返回或职责 |
@@ -76,15 +78,18 @@ GitHub Pages 通过单一数据模块访问 Apps Script Web App 的 `doGet`／`d
 | 队员写入 | `signup`、`updateSignup`、`cancelSignup` | 按姓名对应的成员 ID 操作，不要求身份或设备凭证；仍做实时业务校验 |
 | 管理会话 | `coachLogin`、`coachLogout` | 验证个人 Code、签发短期令牌或撤销当前会话 |
 | 管理读取 | `coachBootstrap`、`listSeasonMembers`、`listManagementAudit` | 管理配置、成员、草稿、同步状态及日志；审计按 `limit`／`cursor` 倒序分页，单页最多 100 条 |
-| 绑定检查 | `listConnectedSheets`、`validateSeasonBinding` | 候选文件或新链接的权限、对应关系、字段检查与导入预览 |
-| 赛季维护 | `createSeason`、`updateSeasonDraft`、`initializeSeason`、`updateSeasonSchedule`、`setDefaultSeason`、`retrySeasonArchive` | 连接就绪自动激活、维护有效季日期和默认入口、重试自动归档；不要求手动开放或手动结束赛季 |
+| 管理工作区 | `getSeasonManagement`、`getMemberWorkspace` | 按需返回排期配置或一致的成员／报名／排座当前视图，避免分开串行读取 |
+| 绑定检查 | `validateSeasonBinding` | 手动粘贴链接，检查权限、对应关系、字段和导入预览；每季独占运营 Spreadsheet，不复用系统或年度档案文件 |
+| 赛季维护 | `createSeason`、`initializeSeason`、`updateSeasonSchedule`、`setDefaultSeason`、`retrySeasonArchive` | 连接就绪自动激活、维护有效季日期和默认入口、重试自动归档；不要求手动开放或手动结束赛季 |
 | 周排期维护 | `updateScheduleTemplates`、`updateTrainingWeek`、`confirmTrainingWeek`、`publishTrainingWeek` | 维护模板、当周草稿和开放时间；首次整周发布核对管理确认及到点条件，确认时已到点可随即发布，否则定时执行 |
 | 训练维护 | `createPractice`、`updatePractice`、`cancelPractice` | 增补或修改日程、移除单次安排；取消只在运营数据中保留标记和审计，立即从普通公开投影移除且不进入归档，返回影响预览与最新数据 |
+| 训练变更预览 | `previewPracticeChange` | 只读检查修改或取消的影响，返回与当前版本绑定的预览令牌；后续写入必须重新核对 |
 | 增补发布 | `publishAdditionalPractice` | 在已开放周由管理人员确认并立即发布指定新增场次；仅追加该场次，不重发整周或公开其他草稿 |
 | 管理报名 | `signupByCoach`、`updateSignupByCoach`、`cancelSignupByCoach` | 训练结束前可用同一管理会话代报名、代改或取消，不受普通报名截止限制；结束后不再修改报名或触发递补 |
 | 队员维护 | `updateMember`、`restoreMemberName`、`setMemberStatus` | 按稳定 ID 修改资料并返回新版本 |
 | 排座维护 | `getSeatingWorkspace`、`saveSeatPlanDraft`、`publishSeatPlan` | 读取私有草稿与最新正式版；用完整快照保存移动、交换、角色设置及客户端撤销／重置结果；发布不可变手动 revision。`change_kind` 区分 `EDIT`、`UNDO`、`RESET_TO_PUBLISHED` |
 | 同步恢复 | `retrySeasonSync` | 受控重试失败导入，不绕过绑定检查或去重 |
+| 归档管理 | `getArchiveManagement`、`appendHistoryCorrection` | 读取归档进度，或按历史版本追加说明；不改写冻结快照 |
 
 写入携带 `action`、`request_id`、实体 ID 及所需版本；新建 ID 由后端产生，无训练关联的操作不要求 `practice_id`。管理请求包括受保护读取均通过 POST 请求体携带 `session_token`，不放入 URL。返回服务器时间、操作结果及受影响的新版本；错误区分权限、归属、状态、版本冲突、配置与可重试故障。
 
@@ -126,7 +131,7 @@ Google Sheets 不提供跨表数据库事务。使用可恢复阶段和批量写
 
 普通写入每次检查周及该场次均已公开，以及服务器截止时间；管理报名接口同样要求场次已公开，另检查管理会话且要求 `now < end_at`，不能直接复用普通截止拒绝全部管理操作，也不能越过容量或跨季校验。
 
-在 `end_at <= now < archive_due_at` 期间，排座接口进入最终更正模式：允许有管理会话的人更正草稿并发布，使用同一 `seat_plan_version` 和 revision 流程。按本季成员 ID 校验实际船位的唯一性、容量及带队角色互斥，保留原报名快照，不要求未实际出席的确认报名者仍占座，也不更改候补顺序或产生报名、递补事件；更正与发布单独记日志。
+在 `end_at <= now < archive_due_at` 期间，排座接口进入最终更正模式：允许有管理会话的人更正草稿并发布，使用同一 `seat_plan_version` 和 revision 流程。按本季成员 ID 校验实际船位的唯一性、容量及带队角色与桨位互斥，保留原报名快照，不要求未实际出席的确认报名者仍占座，也不更改候补顺序或产生报名、递补事件；更正与发布单独记日志。
 
 到 `archive_due_at` 即拒绝草稿修改、发布和撤销，不能因 `archived_at` 尚为空继续编辑。归档取到期前最后正式版本，未发布草稿只留作私有记录；没有正式版本时返回未发布。
 
@@ -164,13 +169,13 @@ P1 排期管理使用 `P1M:` 请求范围及 `P1_MANAGEMENT` 确定计划。默�
 3. 通过后分步初始化系统 Tab、登记触发器、补导入已有响应并保存进度。不兼容的已有 Tab 停止处理，不覆盖；同一请求重试复用已建资源。
 4. 连接就绪前核对导入与触发器进度、绑定和未来结束边界；全部通过才在锁内自动激活赛季、记录事件，并在没有有效默认赛季时设置首页默认值。重试不重复激活或覆盖后来切换的默认值；失败仍为草稿。初始化和后续同步检查结构变化，不猜测新列。
 
-候选目录不承担权限审批。修改网站绑定不会调用 Form 的 `setDestination`；管理人员先在 Google Forms 中完成连接。绑定锁定规则见项目说明，源响应只追加、不排序、不删行。
+当前通过手动链接绑定，不提供文件候选目录。修改网站绑定不会调用 Form 的 `setDestination`；管理人员先在 Google Forms 中完成连接。绑定锁定规则见项目说明，源响应只追加、不排序、不删行。
 
 ### 事件路由与恢复
 
 采用绑定本季响应 Spreadsheet 的可安装 `onFormSubmit` 触发器，按事件源文件与响应 Tab 查找唯一赛季并核对绑定版本，不能按首页默认赛季路由。触发器由队伍后端账号安装运行，重复初始化复用登记记录；另设周期补扫修复失败或遗漏。
 
-来源提供稳定响应 ID 时优先用作 `source_key`；Sheets 提交事件采用文件 ID、Tab ID、受保护原始行号及提交时间的源映射。检测到历史行或映射改变时停止同步并人工核对，不按姓名猜测成员。触发器、初始化导入和补扫共享同一去重规则，覆盖初始化期间的新提交。
+现行 Apps Script 的 `source_key` 是绑定响应 Tab ID 与原始行号；同步和归档按稳定 Tab ID 查找，Tab 改名不改变绑定。导入前检查已导入行的行号、源键和原始姓名，发现可识别的移位、改名或删除时返回 `BINDING_RESPONSES_CHANGED` 并停止，不猜测成员身份。人工姓名修正使用 Coach Mode；不能声称此检查可以识别同名行交换或提供双向同步。C2 才按迁移计划引入 FormResponse 稳定 ID 与人工编辑冲突处理。触发器、初始化导入和补扫共享同一去重规则，覆盖初始化期间的新提交。
 
 只在未到赛季结束边界且允许导入的初始化阶段或开放赛季处理响应。正常新记录导入后生效；缺姓名、结构变化等技术问题进入失败项。重复同步保留人工修正和停用状态，无变化不创建新成员。成功变更推进名单版本。
 
@@ -218,6 +223,12 @@ P1 排期管理使用 `P1M:` 请求范围及 `P1_MANAGEMENT` 确定计划。默�
 
 整季快照包含截止范围内的原始入队响应、名单、周模板，以及未取消训练的计划、报名、排座、关联配置、事件和更正窗口内的正式修订；不复制取消训练的日程、报名、排座或取消事件。使用固定快照标识和分步检查点，保留源运营文件；迟到回答不能改变档案。私有归档失败维持 `COMPLETED` 并重试；公开目录发布另行恢复，不重新开放赛季。
 
+原始来源采用已批准的“归档时完整源快照”语义：首次成功固定的不可变 source capture 保存当时完整的绑定 Form 回答与 response Sheet 状态，按事先固定的提交 cutoff 选择回答范围。提交 cutoff 与实际捕获／观测时间不同，`captured_at`／`observed_at` 记录实际时间，不声称保存了首次提交值或某个历史截止瞬间的完整值。已知回答已删除或无法稳定对应时保留明确缺口／待核查状态，不静默省略或标为来源已完整核验；未保存的过去完整答案不能由当前值或 DO 精简字段补回。固定后重试恢复原 manifest、chunks 和 source operation，不重新读取当前来源替换原内容；之后新发现的回答或迟到回答不追加旧档。此来源协议由 C2.6 后续独立实现、核验，不表示现行 `ArchiveActions` 已具备这些保证。
+
+2026-10-01，用户接受已认证 Coach 对同一次固定 capture 内双方完整内容逐条人工确认，作为 Sheet 行与 Form 回答映射的可信依据（`HUMAN_ATTESTED`）。确认须绑定原 source operation／snapshot、binding／generation／epoch、双方稳定定位与完整内容 hash，并保留审核者、理由及时间的审计证据。它是责任人的关联声明，不保证关联客观无误，也不恢复历史缺口；重复、歧义、known missing 和其他未解释缺口不能因填入一个回答 ID 自动消除。提交资格仍严格依据对应 Form 的 `createTime` 与固定 cutoff，不能改用 Sheet 当前 Timestamp。审核证据只追加，派生资格文件独立版本化并引用原固定 hash，不修改旧 raw manifest／chunks，不追加新发现或迟到回答。政策已定，纯模块、独立私有来源读取与持久恢复已有证据；实际本地HTTP／SQLite Coach会话、原已确认候选读取／journal复核及只追加审核CAS随后已[本地验收](tests/C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)，长期host和实际服务器capture尚未验收。人工确认不自动使整体来源verified，所有Sheet原行仍保留为`PRIVATE_PENDING`，结果恒为`SOURCE_NOT_VERIFIED`；当前Apps Script生产归档不因该独立组件增加能力。
+
+上述“尚未接线”指业务服务接线。独立私有 `backend/source-journal` 适配器已有真实隔离来源读取、Google journal 和本机持久恢复证据，见[实际验收](tests/C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)；它不属于现行 Apps Script 构建，也不向现行年度归档提供来源已核验的证明。完整来源及业务鉴权门槛继续按[当前进度](CURRENT-STATUS.md)维护。
+
 Tab 可命名为 `2026-Q3 2026-08-22 1000 p_ab12`，身份仍以完整赛季和训练 ID 为准。年度文件可命名为 `Dragon Boat Training Archive 2026`；名称只供人识别，读取必须使用 `AnnualArchiveFiles` 中已校验的文件 ID。创建结果未知时重放原创建请求并恢复映射，不能按名称另建文件。取消训练不创建任何归档 Tab。
 
 赛季已归档且私有快照校验完成后，才向 `PublicHistoryIndex` 批量发布白名单快照，并同步更新 `PublicHistorySeasons`。只取未取消训练的最终正式版本，不以草稿填补；没有正式版本时按项目说明显示未发布，取消训练不写入目录。目录按赛季和训练 ID 去重，内部定位不发给浏览器。发布失败保留任务重试，不影响原归档和新季。
@@ -243,7 +254,7 @@ Tab 可命名为 `2026-Q3 2026-08-22 1000 p_ab12`，身份仍以完整赛季和�
 | 周内增补 | 首次开放前加场随整周发布；开放后保存不公开、直接访问草稿不能报名、单场确认后公开、其他草稿不夹带；原场次与报名不变、并发版本冲突、重复发布及中断恢复、旧周定时任务不误发新增草稿 |
 | 初始化与同步 | 权限或字段变化、Form 目标不符、重复初始化、期间新提交、触发器失败补扫、归档后延迟事件；不重复、不覆盖、不串季 |
 | 资料与日程 | 改名后重同步、停用关联检查、改期保留数据、关闭及重开报名确认、夏令时、多管理人员版本冲突 |
-| 报名与排座 | 无设备凭证修改、管理人员代取消、重报重新排队、Left／Ambient 及 Right／Ambient 按时间竞争、跳过无法补位者、取消后公开删名补位、无候补留空、草稿隔离、角色互斥 |
+| 报名与排座 | 无设备凭证修改、管理人员代取消、重报重新排队、Left／Ambient 及 Right／Ambient 按时间竞争、跳过无法补位者、取消后公开删名补位、无候补留空、草稿隔离、角色与桨位互斥 |
 | 修改偏好 | 换侧有位直接确认、满员转候补、原侧自动递补、换回已满原侧不挤掉递补者；保留原时间与同时间顺序、候补之间按原时间排序、候补改偏好、Ambient 转换、相同偏好不释放名额；已发布旧船位同步清理、新排位待教练安排、并发与重试不超额或重复递补 |
 | 故障恢复 | 重复请求、同编号不同参数、日志完成而当前表未完成、年度文件或归档 Tab 已建而状态未写；恢复后才确认成功，并发首次归档不产生多个有效年度文件 |
 | 名单缓存 | 多浏览器共用、缓存第九分钟被读取、提前失效、并发重建、提前清理、合法空名单与源读取失败 |

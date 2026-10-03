@@ -70,7 +70,7 @@ function withBridgeScriptLock_(callback) {
   }
 }
 
-function cloudflareBridgeProbe_(request) {
+function verifyBridgeEnvelope_(request, expectedBindingVersion) {
   var protocol = requireRequestString_(request, "protocol_version", 1, 80);
   var direction = requireRequestString_(request, "direction", 1, 80);
   var teamId = requireRequestString_(request, "team_id", 1, 128);
@@ -93,14 +93,15 @@ function cloudflareBridgeProbe_(request) {
     throw dragonBoatRequestError_("BRIDGE_TIMESTAMP_INVALID", "The bridge request timestamp is outside the allowed window.");
   }
 
-  var properties = getScriptProperties_();
   var expectedTeam = getRequiredScriptProperty_(DRAGON_BOAT_PROPERTY_KEYS_.BRIDGE_TEAM_ID);
-  var expectedBindingVersion = getRequiredScriptProperty_(DRAGON_BOAT_PROPERTY_KEYS_.BRIDGE_BINDING_VERSION);
+  if (expectedBindingVersion === undefined) {
+    expectedBindingVersion = getRequiredScriptProperty_(DRAGON_BOAT_PROPERTY_KEYS_.BRIDGE_BINDING_VERSION);
+  }
   var expectedEpoch = Number(getRequiredScriptProperty_(DRAGON_BOAT_PROPERTY_KEYS_.BRIDGE_WRITER_EPOCH));
   var secret = getRequiredScriptProperty_(DRAGON_BOAT_PROPERTY_KEYS_.BRIDGE_SECRET);
   if (
     teamId !== expectedTeam ||
-    bindingVersion !== expectedBindingVersion ||
+    (expectedBindingVersion !== null && bindingVersion !== expectedBindingVersion) ||
     writerEpoch !== expectedEpoch
   ) {
     throw dragonBoatRequestError_("BRIDGE_OWNERSHIP_INVALID", "The bridge request has the wrong ownership scope.");
@@ -122,6 +123,32 @@ function cloudflareBridgeProbe_(request) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw dragonBoatRequestError_("BRIDGE_PAYLOAD_INVALID", "The bridge payload must be an object.");
   }
+
+  return {
+    payload: payload,
+    protocol: protocol,
+    team_id: teamId,
+    binding_version: bindingVersion,
+    writer_epoch: writerEpoch,
+    operation_id: operationId,
+    payload_digest: payloadDigest,
+    nonce: nonce,
+    now_ms: nowMs
+  };
+}
+
+function cloudflareBridgeProbe_(request) {
+  var verified = verifyBridgeEnvelope_(request);
+  var payload = verified.payload;
+  var protocol = verified.protocol;
+  var teamId = verified.team_id;
+  var bindingVersion = verified.binding_version;
+  var writerEpoch = verified.writer_epoch;
+  var operationId = verified.operation_id;
+  var payloadDigest = verified.payload_digest;
+  var nonce = verified.nonce;
+  var nowMs = verified.now_ms;
+  var properties = getScriptProperties_();
 
   return withBridgeScriptLock_(function () {
     var state = pruneBridgeReplayState_(bridgeReplayState_(), nowMs);

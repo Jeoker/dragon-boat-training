@@ -1,0 +1,358 @@
+{
+  "document_type": "api-contract-manifest",
+  "conventions": "contracts/README.md",
+  "status": "C1.1 through C1.6 accepted; retained during the local C2.4 schedule-export slice; not production",
+  "contract_version": "2026-09-21.c1.5",
+  "service_version": "0.16.0-c2-associated-export",
+  "transport_gate": "Every /internal/c1 route is absent in production and requires C1_TEST_KEY in local or staging. This gate is separate from the business authentication declared per action.",
+  "response": {
+    "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
+    "write": "data contains operation:{action,request_id,committed_at} and immutable result. Replay returns the same stored data.",
+    "read": "data is a current projection with generated_at when time matters."
+  },
+  "actions": {
+    "/internal/c1/import-core": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "settings_version", "default_season_id", "coaches", "seasons", "members"],
+      "notes": "Full core shadow snapshot. Preserves legacy Coach credential digests and stable IDs. Upserts only equal or newer entity versions; never interprets an omitted row as deletion; creates no Google outbox."
+    },
+    "/internal/c1/coach-login": {
+      "method": "POST",
+      "authentication": "coach_code",
+      "writes": true,
+      "request": ["request_id", "coach_code"],
+      "response_result": ["session_token", "coach_id", "display_name", "issued_at", "expires_at"],
+      "notes": "Validates a migrated legacy Code digest. New session tokens bind backend_generation and writer_epoch; no old session is migrated."
+    },
+    "/internal/c1/coach-logout": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token"],
+      "response_result": ["logged_out"]
+    },
+    "/internal/c1/coach-bootstrap": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token"],
+      "response": ["coach", "default_season_id", "settings_version", "seasons", "generated_at"]
+    },
+    "/internal/c1/create-season": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "name", "start_date", "end_date", "timezone"],
+      "response_result": ["season"],
+      "notes": "Creates a DRAFT season with a deterministic stable ID and a pending CORE_CHANGED outbox row. Does not activate or bind Google."
+    },
+    "/internal/c1/update-member": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "member_id", "member_version", "optional display_name_override", "optional default_preference", "optional status"],
+      "response_result": ["season_id", "roster_version", "member"],
+      "notes": "Requires an OPEN season and exact member version. Updates roster version and creates a pending CORE_CHANGED outbox row in the same transaction."
+    },
+    "/internal/c1/public-roster": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "season_id"],
+      "response": ["season", "members", "generated_at"],
+      "notes": "The isolated transport gate still applies. Only active member ID, effective display name, default preference and member version are projected."
+    },
+    "/internal/c1/import-schedule": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "templates", "weeks", "practices"],
+      "notes": "Full schedule shadow snapshot. Preserves stable IDs and versions, rejects reference drift, and never arms imported scheduled weeks. Omitted rows are not deletions."
+    },
+    "/internal/c1/schedule-workspace": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id"],
+      "response": ["season_id", "templates", "weeks", "practices", "generated_at"],
+      "notes": "Private management projection. It can include drafts and cancellation tombstones."
+    },
+    "/internal/c1/update-schedule-templates": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "season_version", "templates"],
+      "response_result": ["season_id", "season_version", "templates"]
+    },
+    "/internal/c1/prepare-training-week": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "season_version", "week_start_date"],
+      "response_result": ["season_id", "created", "week", "practices"],
+      "notes": "Creates one private Monday-based week from the active templates. Repeating with another request returns the existing authoritative week and never recreates removed instances."
+    },
+    "/internal/c1/confirm-training-week": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "week_version", "optional open_at or open_date plus open_time"],
+      "response_result": ["season_id", "week", "practices"],
+      "notes": "Opens immediately or commits a version-bound durable OPEN_TRAINING_WEEK job. A later edit invalidates the confirmation."
+    },
+    "/internal/c1/publish-training-week": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "week_version"],
+      "response_result": ["season_id", "week", "practices"],
+      "notes": "Manual due-week recovery path. The durable system task uses the same atomic publication transition."
+    },
+    "/internal/c1/create-practice": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "week_version", "practice_date", "start_time", "end_time", "optional timezone", "location", "address", "optional map_url"],
+      "response_result": ["season_id", "week", "practice"],
+      "notes": "Creates a private extra practice. In an opened week it requires a separate publication action."
+    },
+    "/internal/c1/publish-additional-practice": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "practice_id", "week_version", "practice_version"],
+      "response_result": ["season_id", "week", "practice"]
+    },
+    "/internal/c1/preview-practice-change": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "change", "for UPDATE: complete time, timezone and location fields"],
+      "response": ["season_id", "practice_id", "week_id", "season_version", "practice_version", "week_version", "signup_version", "preview_token", "before", "after", "cutoff_effect", "invalidates_week_confirmation"],
+      "notes": "The token binds the normalized proposal and every relevant version. Rescheduling retains the original publication week."
+    },
+    "/internal/c1/update-practice": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "practice_id", "week_version", "practice_version", "signup_version", "preview_token", "practice_date", "start_time", "end_time", "timezone", "location", "address", "optional map_url"],
+      "response_result": ["season_id", "week", "practice"]
+    },
+    "/internal/c1/cancel-practice": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "week_id", "practice_id", "week_version", "practice_version", "signup_version", "preview_token"],
+      "response_result": ["season_id", "week", "practice"],
+      "notes": "Retains a private operational tombstone but removes the training and an otherwise empty week from public schedule projections."
+    },
+    "/internal/c1/public-schedule": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "season_id"],
+      "response": ["season_id", "weeks", "practices", "generated_at"],
+      "notes": "The isolated transport gate still applies. Draft, scheduled, unpublished and cancelled training is excluded."
+    },
+    "/internal/c1/import-signups": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "states", "signups"],
+      "response_result": ["source_snapshot_id", "states", "signups"],
+      "notes": "Versioned signup shadow snapshot. Omitted rows are not deletions. Import validates references, queue identity, capacity and promotion completeness, and creates no Google outbox."
+    },
+    "/internal/c1/public-practice": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "season_id", "practice_id"],
+      "response": ["season_id", "season_status", "practice", "signup_version", "roster_version", "binding_version", "signup_open", "management_signup_open", "closed_reason", "counts", "signups", "seat_plan", "generated_at"],
+      "notes": "Returns the authoritative signup, waitlist and latest formal seating projection for one public non-cancelled training. Private drafts and role member IDs are excluded."
+    },
+    "/internal/c1/signup": {
+      "method": "POST",
+      "authentication": "public",
+      "writes": true,
+      "request": ["request_id", "season_id", "practice_id", "member_id", "practice_version", "signup_version", "preference"],
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"]
+    },
+    "/internal/c1/update-signup": {
+      "method": "POST",
+      "authentication": "public",
+      "writes": true,
+      "request": ["request_id", "season_id", "practice_id", "member_id", "practice_version", "signup_version", "preference"],
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"],
+      "notes": "Preserves the original queue timestamp and sequence, but does not reserve the released side."
+    },
+    "/internal/c1/cancel-signup": {
+      "method": "POST",
+      "authentication": "public",
+      "writes": true,
+      "request": ["request_id", "season_id", "practice_id", "member_id", "practice_version", "signup_version"],
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"]
+    },
+    "/internal/c1/signup-by-coach": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "member_id", "practice_version", "signup_version", "preference"],
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"]
+    },
+    "/internal/c1/update-signup-by-coach": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "member_id", "practice_version", "signup_version", "preference"],
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"]
+    },
+    "/internal/c1/cancel-signup-by-coach": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "member_id", "practice_version", "signup_version"],
+      "response_result": ["season_id", "practice_id", "signup_version", "signup", "promoted_member_ids", "optional seat_plan_version", "optional published_revision"],
+      "notes": "Coach mutations bypass the public signup cutoff but still enforce season state, training end, member eligibility and capacity."
+    },
+    "/internal/c1/import-seating": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "states", "draft_seats", "revisions"],
+      "response_result": ["source_snapshot_id", "states", "draft_seats", "revisions"],
+      "notes": "Versioned seating shadow snapshot. Drafts must be complete for each included state; revisions are immutable; import creates no Google outbox."
+    },
+    "/internal/c1/get-seating-workspace": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id", "practice_id"],
+      "response": ["season_id", "practice_id", "practice", "mode", "editable", "archive_due_at", "generated_at", "signup_version", "seat_plan_version", "published_revision", "draft", "published", "members", "signups", "unseated_member_ids", "preference_mismatches"]
+    },
+    "/internal/c1/save-seat-plan-draft": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "practice_version", "signup_version", "seat_plan_version", "coach_member_id", "steerer_member_id", "seats", "change_kind"],
+      "response_result": ["season_id", "practice_id", "seat_plan_version"],
+      "notes": "Saves a complete private snapshot. RESET_TO_PUBLISHED restores roles and seats from the latest immutable revision."
+    },
+    "/internal/c1/publish-seat-plan": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "practice_version", "signup_version", "seat_plan_version", "published_revision", "acknowledge_preference_mismatch"],
+      "response_result": ["season_id", "practice_id", "seat_plan_version", "published_revision"],
+      "notes": "Publishes an immutable manual revision. Upcoming training requires every confirmed signup to be seated and explicit acknowledgement of side mismatches; final correction preserves signup history."
+    },
+    "/internal/c1/import-history": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "seasons", "practices", "corrections"],
+      "response_result": ["source_snapshot_id", "seasons", "practices", "corrections"],
+      "notes": "Imports immutable season and practice history plus continuous correction versions. Cancelled or unpublished schedule rows cannot enter history; the core season must already be ARCHIVED. Creates no Google outbox."
+    },
+    "/internal/c1/public-history-seasons": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "optional limit", "optional cursor"],
+      "response": ["seasons", "next_cursor", "total_count", "generated_at"],
+      "notes": "Keyset-paginated immutable season honor-wall directory. Defaults to 30 and returns at most 100 rows."
+    },
+    "/internal/c1/public-season-history": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "season_id", "optional limit", "optional cursor"],
+      "response": ["season", "practices", "next_cursor", "total_count", "generated_at"],
+      "notes": "Keyset-paginated uncancelled frozen practice summaries for one archived season."
+    },
+    "/internal/c1/public-archived-practice": {
+      "method": "GET",
+      "authentication": "public",
+      "writes": false,
+      "request_query": ["request_id", "season_id", "practice_id"],
+      "response": ["season", "practice", "final_status", "seat_plan", "corrections", "history_version", "archived_at"],
+      "notes": "Returns only display names captured from the final formal revision. Member IDs, private draft and signup history are never projected."
+    },
+    "/internal/c1/get-history-management": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id"],
+      "response": ["season", "archive_status", "season_archive", "practices", "generated_at"]
+    },
+    "/internal/c1/append-history-correction": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "practice_id", "history_version", "note"],
+      "response_result": ["season_id", "practice_id", "correction_id", "history_version"],
+      "notes": "Appends a single-line note and advances history_version without rewriting the frozen snapshot."
+    },
+    "/internal/c1/list-management-audit": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id", "optional limit", "optional cursor"],
+      "response": ["season_id", "events", "next_cursor", "scan_cap_reached", "generated_at"],
+      "notes": "Uses the indexed season identity and a stable created_at/event_id keyset cursor; returns at most 100 rows."
+    },
+    "/internal/c1/create-backup-snapshot": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token"],
+      "response_result": ["snapshot_id", "manifest"],
+      "notes": "Captures an immutable transaction-consistent private snapshot into bounded JSON chunks, then creates SHA-256 chunk digests and a manifest. The same request resumes an interrupted finalization."
+    },
+    "/internal/c1/get-backup-chunk": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "snapshot_id", "chunk_index"],
+      "response": ["snapshot_id", "manifest", "chunk"]
+    },
+    "/internal/c1/verify-backup-snapshot": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "snapshot_id", "content_digest"],
+      "response": ["snapshot_id", "verified", "expected_content_digest", "chunk_count", "record_count", "verified_at"]
+    },
+    "/internal/c1/get-operations": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token"],
+      "response": ["schema_version", "database_size_bytes", "counts", "usage", "generated_at"],
+      "notes": "Returns application-level daily storage and row-count observations. It does not claim to replace Cloudflare account billing or platform quota metrics."
+    }
+  },
+  "errors": [
+    "INVALID_JSON", "INVALID_REQUEST", "INVALID_REQUEST_ID", "METHOD_NOT_ALLOWED", "NOT_FOUND", "C1_ACCESS_DENIED",
+    "CONFIGURATION_ERROR", "IDEMPOTENCY_CONFLICT", "IMPORT_CONFLICT", "IMPORT_VERSION_REGRESSION",
+    "IMPORT_SNAPSHOT_CONFLICT", "IMPORT_REFERENCE_MISSING", "COACH_CODE_INVALID", "SESSION_INVALID",
+    "SESSION_EXPIRED", "SESSION_REVOKED", "SEASON_NOT_FOUND", "SEASON_NOT_OPEN", "SEASON_NOT_PUBLIC",
+    "MEMBER_NOT_FOUND", "MEMBER_INACTIVE", "MEMBER_HAS_ACTIVE_LINKS", "WEEK_NOT_FOUND", "WEEK_START_NOT_MONDAY", "WEEK_OUTSIDE_SEASON",
+    "SCHEDULE_TEMPLATES_REQUIRED", "WEEK_EMPTY", "WEEK_ALREADY_OPEN", "WEEK_NOT_DUE", "WEEK_NOT_OPEN",
+    "WEEK_NOT_EDITABLE", "OPEN_TIME_TOO_LATE", "PRACTICE_NOT_FOUND", "PRACTICE_OUTSIDE_WEEK",
+    "PRACTICE_OUTSIDE_SEASON", "PRACTICE_ALREADY_STARTED", "PRACTICE_CANCELLED", "PRACTICE_ENDED",
+    "PRACTICE_NOT_PUBLIC", "PRACTICE_NOT_PUBLISHABLE", "INVALID_TIME_RANGE", "PREVIEW_STALE",
+    "SIGNUP_CLOSED", "SIGNUP_EXISTS", "SIGNUP_NOT_ACTIVE", "SIGNUP_RATE_LIMITED",
+    "INVALID_SEAT_PLAN", "ROLE_SIGNUP_CONFLICT", "SEAT_MEMBER_NOT_CONFIRMED", "SEAT_PLAN_INCOMPLETE",
+    "SEATING_SNAPSHOT_MISSING",
+    "PREFERENCE_ACK_REQUIRED", "SEAT_PLAN_FROZEN", "INVALID_CURSOR", "ARCHIVE_NOT_DUE",
+    "HISTORY_NOT_READY", "HISTORY_NOT_FOUND", "BACKUP_NOT_READY", "BACKUP_CHUNK_NOT_FOUND",
+    "BACKUP_INTEGRITY_ERROR",
+    "VERSION_CONFLICT", "INTERNAL_ERROR"
+  ],
+  "not_yet_in_this_slice": [
+    "season activation and Google binding", "default-season mutation",
+    "Google import/export execution", "production or Pages routing", "browser CORS"
+  ]
+}

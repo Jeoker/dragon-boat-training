@@ -45,6 +45,10 @@ function coachLogin_(request) {
     }
     var persistedResult = readSystemRequestResult_(transaction.record);
     var session = ensureCoachSessionForLogin_(persistedResult);
+    // A replay must not advertise an expired or logged-out session as a
+    // successful new login. The caller can explicitly sign in with a new ID.
+    var sessionToken = createSessionToken_(session);
+    validateCoachSession_(sessionToken);
 
     ensureSystemAuditEvent_(
       transaction.record,
@@ -55,7 +59,7 @@ function coachLogin_(request) {
     completeSystemRequest_(transaction.record);
 
     return {
-      session_token: createSessionToken_(session),
+      session_token: sessionToken,
       session: {
         coach_id: String(persistedResult.coach_id),
         display_name: String(persistedResult.display_name),

@@ -245,6 +245,39 @@ function beginSystemRequest_(actorId, action, requestId, payloadDigest, plannedR
   return { record: record, replayed: false };
 }
 
+// Recovery is shared by every business domain. Persisted scope names and plan
+// kinds remain unchanged because they identify historical requests.
+function recoverPendingBusinessRequests_() {
+  var id = getScriptProperties_().getProperty(DRAGON_BOAT_PROPERTY_KEYS_.SYSTEM_SPREADSHEET_ID);
+  if (!id) return;
+  var spreadsheet = getSystemSpreadsheet_();
+  if (!spreadsheet.getSheetByName("SystemRequests")) return;
+  getSheetRecords_("SystemRequests").filter(function (record) {
+    var actor = String(record.actor_id);
+    return String(record.status) === "STARTED" &&
+      (actor.indexOf("P2:") === 0 || actor.indexOf("P3:") === 0 || actor.indexOf("P3_FREEZE:") === 0 ||
+        actor.indexOf("P1M:") === 0 || actor.indexOf("P4:") === 0);
+  }).forEach(function (record) {
+    var saved = readSystemRequestResult_(record);
+    if (saved.kind === "P1_MANAGEMENT") applyScheduleRequest_(record);
+    else if (saved.kind === "P2") applyP2Request_(record);
+    else if (saved.kind === "P3") applyP3Request_(record);
+    else if (saved.kind === "P4_HISTORY_CORRECTION") applyHistoryCorrectionRequest_(record);
+    else throw dragonBoatRequestError_("RECOVERY_REQUIRED", "A pending business change needs recovery.", true);
+  });
+}
+
+function persistBusinessPlan_(actorId, request, digest, saved, apply) {
+  // All journaled business plans must fit one cell and become durable before
+  // the first business write. Keep each plan's kind and digest unchanged.
+  if (JSON.stringify(saved).length > 45000) {
+    throw dragonBoatRequestError_("REQUEST_TOO_LARGE", "This change is too large to save safely.");
+  }
+  var transaction = beginSystemRequest_(actorId, request.action, request.request_id, digest, saved);
+  SpreadsheetApp.flush();
+  return apply(transaction.record);
+}
+
 function findMatchingSystemRequest_(actorId, action, requestId, payloadDigest) {
   var requestKey = buildSystemRequestKey_(actorId, action, requestId);
   var existing = findRecord_("SystemRequests", "request_key", requestKey);

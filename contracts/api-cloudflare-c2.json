@@ -1,0 +1,177 @@
+{
+  "document_type": "api-contract-manifest",
+  "conventions": "contracts/README.md",
+  "status": "Different-practice associated lanes passed isolated c2test 0.17/schema14 acceptance; evidence: tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md. Source authority pin and its authenticated internal HTTP route are implemented locally on schema16 only; no source authority remote deployment, SOURCE_VERIFIED or annual export acceptance. Random network/quota faults and restore drills remain unverified. Production and automatic export are disabled",
+  "contract_version": "2026-09-30.c2.5-associated-export",
+  "service_version": "0.16.0-c2-associated-export",
+  "transport_gate": "C2 routes are absent in production. Local or staging diagnostic routes require C2_TEST_KEY; the Form notification instead verifies a fresh Google bridge HMAC, team and writer epoch before reaching the DO. This gate is independent from the Coach session required by management reads.",
+  "response": {
+    "envelope": "Common Cloudflare success/failure envelope with request correlation and backend identity.",
+    "operation_result": "Existing business mutations return immutable operation receipts and results. Source authority pin returns its own durable metadata without a business receipt; it and sync metadata import do not call Google or consume outbox."
+  },
+  "actions": {
+    "/internal/c2/pin-source-authority": {
+      "method": "POST", "authentication": "session_token", "writes": true,
+      "request": ["request_id", "session_token", "season_id"],
+      "response": ["pin"],
+      "notes": "Locally implemented protected source authority metadata only, not deployed. C2 transport gate plus a current C1 Coach session are mandatory. Derives ended-season cutoff, actor, binding/generation/epoch and all database-known source IDs from SQLite; same season/request replays the original immutable pin and rechecks session and binding. It does not return source answers or tokens, accept a caller census, call Google, consume outbox, run business jobs or grant annual export. Census covers database-known IDs only; Tab binding remains a declaration."
+    },
+    "/internal/c2/import-sync-foundation": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "source_snapshot_id", "bindings", "baselines", "source_imports"],
+      "response_result": ["source_snapshot_id", "bindings", "baselines", "source_imports"],
+      "notes": "Versioned shadow import for unique per-season Google Form and Spreadsheet bindings, numeric Sheet tab IDs, explicit field mappings, normalized dependency-group baselines and exact stable Form or legacy source identities. Stable sources survive a binding-version increase without changing source_version when their content is unchanged. Same-version binding metadata may advance, but identity and mapping cannot drift; timestamps cannot regress. Omitted rows are not deletions. It creates no Google outbox and performs no external I/O."
+    },
+    "/internal/c2/get-sync-overview": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id"],
+      "response": ["season_id", "binding", "binding_current", "export_control", "counts", "schema_version", "generated_at"],
+      "notes": "Protected C2.1 diagnostic projection. File identifiers remain private. binding_current shows whether the stored binding matches the season version. Baseline count uses the active binding version; source counts cover the entire season, including unmoved mappings from older binding versions. Conflict, batch and business outbox counts cover the season."
+    },
+    "/internal/c2/set-export-pause": {
+      "method": "POST", "authentication": "session_token", "writes": true,
+      "request": ["request_id", "session_token", "season_id", "paused"],
+      "response_result": ["season_id", "status", "unfinished_batch_id", "next_batch_requires_fresh_comparison"],
+      "notes": "Coach-only per-season runtime pause is separate from imported binding metadata. PAUSING means an existing PREPARED/SENT/PARTIAL/FAILED batch still needs same-batch verification; no new batch can be prepared. Resume refuses unresolved batches. New batches re-read Google and compare B/C/G before preparation. This does not itself import a Google edit."
+    },
+    "/internal/c2/retry-export": {
+      "method": "POST", "authentication": "session_token", "writes": true,
+      "request": ["request_id", "session_token", "season_id", "outbox_id?"],
+      "response_result": ["season_id", "rearmed", "previous_error", "unfinished_batch_id", "next_batch_requires_fresh_comparison"],
+      "notes": "Coach-only explicit re-arm after a non-retryable export failure. Does not itself write Google or erase a batch/outbox; the next poll reuses any unfinished batch, while a new batch performs a fresh B/C/G comparison. The existing global ACTION_REQUIRED, Google CAS rejection and Coach retry recovery passed isolated schema-v13 c2test acceptance on 2026-09-30. Outbox-scoped lane retry passed isolated c2test 0.17/schema14 acceptance; see tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md. Optional outbox_id rearms only that unchanged current pending local event; omitted ID retains global retry and never clears local blocks."
+    },
+    "/internal/c2/list-sync-conflicts": {
+      "method": "POST", "authentication": "session_token", "writes": false,
+      "request": ["request_id", "session_token", "season_id", "optional status", "optional limit", "optional cursor"],
+      "response": ["season_id", "binding_version", "status", "items", "next_cursor"],
+      "notes": "Coach-only current-binding conflict summaries, ordered by stable conflict_id with a limit of 100. Full B/C/G evidence requires get-sync-conflict."
+    },
+    "/internal/c2/get-sync-conflict": {
+      "method": "POST", "authentication": "session_token", "writes": false,
+      "request": ["request_id", "session_token", "season_id", "conflict_id"],
+      "response": ["conflict metadata", "baseline", "cloudflare", "google", "resolution"],
+      "notes": "Coach-only detail for one current-binding conflict; does not resolve or import it."
+    },
+    "/internal/c2/list-form-reviews": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": false,
+      "request": ["request_id", "session_token", "season_id", "optional limit", "optional cursor"],
+      "response": ["season_id", "items", "next_cursor"],
+      "notes": "Coach-only, read-only page of unresolved Form answers. Each item exposes response_id, source_version, display_name, submitted_at and review_reason; cursor is the last response_id and limit is at most 100. It does not choose a member or merge by name. Resolve with the separate version-checked action after examining the season roster."
+    },
+    "/internal/c2/check-sheet-differences": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "entity_type"],
+      "response": ["season_id", "binding_version", "entity_type", "tab_name", "tab_id", "secondary_tab", "read_at", "sheet_digest", "rows_read", "status", "compared", "findings_count", "findings", "truncated", "conflict_records", "optional physical_integrity for SIGNUP or SEAT_PLAN_DRAFT"],
+      "notes": "C2.3 semantic B/C/G comparison and existing conflict behavior are unchanged. SIGNUP and SEAT_PLAN_DRAFT additionally return a separate read-only physical_integrity object using the same signed Google page, covering SignupsCurrent or SeatPlanState plus SeatPlanCurrent respectively. Its status does not alter the old semantic status, findings or conflict_records. Physical integrity compares complete display-value rows with v13 confirmed physical B and never writes physical findings into sync_conflicts. Empty Sheet plus empty physical B is INCOMPLETE because no baseline has been established; it does not assert pending outbox is drained."
+    },
+    "/internal/c2/check-associated-physical-differences": {
+      "method": "POST", "authentication": "session_token", "writes": false,
+      "request": ["request_id", "session_token", "season_id", "scope"],
+      "response": ["season_id", "binding_version", "scope", "status", "read_at", "rows_read", "baselines_checked", "coverage", "findings_count", "finding_types", "truncated", "findings"],
+      "notes": "Coach-protected, signed, manual read-only inspection of SIGNUP, SEAT_PLAN_DRAFT (state and current seats), SEAT_PLAN_CURRENT, or immutable SEAT_PLAN_REVISION. A full-row physical B is required; missing or invalid B cannot report OK. Findings identify scope, tab, stable row ID, Google row number, changed column names and B/G digests, but not full row values. At most 100 detailed findings are returned while findings_count and finding_types retain totals. B scans are capped at 5000 rows per tab and 2M total baseline characters; Google bridge limits are 5000 rows per tab, 100k cells and 2M characters. These limits return INCOMPLETE/bounded_limit, never clean. Binding changes and changes to fully materialized physical B during inspection return SHEET_INSPECTION_STALE. Over-limit B remains INCOMPLETE; an equal-size concurrent B change might not be detected as stale. This endpoint does not write Google, business rows, baselines, outbox or sync_conflicts; there is no automatic scan or repair."
+    },
+    "/internal/c2/export-next-member": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "season_id"],
+      "response": ["season_id", "status", "optional batch_id", "optional outbox_id", "optional member_id", "optional cloud_version", "optional roster_version"],
+      "notes": "Isolated, feature-gated C2.4 member and associated season roster-version slice. Each call returns IDLE, BATCH_CONFIRMED for one member, or EVENT_CONFIRMED after the existing system Seasons row and its captured roster_version have been verified. Member targets are exported one at a time; the outbox remains pending after the last member until the season row, its SYSTEM_VERSION baseline, and event are confirmed together. New member events capture roster_version when enqueued; legacy events without it stop before any Google write if later roster events exist. The request ID binds an immutable response; replay never advances another target. Requires complete season baselines and blocks Google edits. The association passed isolated Google acceptance, including manual-edit conflict and same-request recovery; neither this nor other C2 writes run in production or original staging. This slice does not export unrelated season_version changes."
+    },
+    "/internal/c2/export-next-schedule": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "season_id"],
+      "response": ["season_id", "status", "optional batch_id", "optional outbox_id", "optional entity_type", "optional row_id", "optional cloud_version", "optional season_version"],
+      "notes": "Separately feature-gated C2.4 schedule exporter, enabled for explicit calls only in isolated c2test; original staging and production remain disabled. An expired SCHEDULE_CHANGED event must contain a complete transaction-captured snapshot; older events are rejected rather than reconstructed. One bounded row batch at a time exports templates, then the week, then practices, with durable before/target values, signed Google verification, same-batch retry, full mapped baselines, Coach and schedule reference checks. The existing system Seasons row receives that event's captured season_version as the last batch; only its verified receipt atomically confirms the event and season baseline. A final read detects edits to previously confirmed schedule rows. Google cross-tab writes are not atomic. Isolated Google acceptance covered sequential receipts, replay, out-of-band template conflict, partial practice write and lost season reply recovery; multirow batching and real quota exhaustion remain unverified."
+    },
+    "/internal/c2/export-next-associated": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "season_id", "outbox_id?"],
+      "response": ["season_id", "status", "optional batch_id", "optional outbox_id", "optional entity_type", "optional row_id", "optional row_ids", "optional cloud_version", "optional signup_version", "optional seat_plan_version", "optional published_revision"],
+      "notes": "C2.4 isolated signup and seating exporter. Strict immutable SIGNUPS_CHANGED or SEATING_CHANGED snapshots and per-practice cursor order. Each call sends one recoverable signed batch of up to four adjacent rows from one physical tab within the bridge payload budget, in signup, complete draft-seat, published-revision, then state order. An existing Google row must match its full physical B; first and final stages verify practice, member and actor references. The event stays pending through partial cross-tab writes. Only after final Google reread of every target and exact full-draft seat identity check do logical B, physical B, cursor and outbox advance in one SQLite transaction. A lost bridge reply retries the original batch. Old snapshots, version gaps, manual Google edits, and missing baselines stop before a new write. The core signup, full-draft and published-revision chain passed isolated c2test acceptance on service 0.16.1; the manifest service_version remains the default staging configuration 0.16.0. Waitlist promotion, controlled first-row PARTIAL interruption, committed-receipt reply loss and FAILED-batch pause/drain passed isolated c2test on 0.16.2/schema v13; see tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md (77579e1). Per-practice independent lanes, shared-reference conflicts and original-event recovery passed isolated c2test 0.17/schema14 acceptance; see tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md. Random network/quota faults and restore drills remain unverified. Automatic export remains disabled; no production access."
+    },
+    "/internal/c2/poll-due-exports": {
+      "method": "POST", "authentication": "transport_only", "writes": true,
+      "request": ["request_id"], "response": ["polled", "results"],
+      "notes": "Feature-gated ten-minute scheduler. Processes at most four due seasons per tick; a signup or seating event may advance through up to eight four-row batches for that season, stopping at its event boundary. Other exporters advance one batch per season per tick. Retryable failures use durable per-season SQLite backoff capped at six hours. Non-retryable errors halt that season with ACTION_REQUIRED until a Coach explicitly re-arms it; outbox and unfinished batches remain intact. Disabled in every deployed configuration."
+    },
+    "/internal/c2/pull-form-responses": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id", "season_id", "optional limit"],
+      "response_result": ["season_id", "binding_version", "created", "updated", "reviewed", "unchanged", "has_more", "watermark_ms", "next_after_at_ms", "next_after_id"],
+      "notes": "Signed, read-only Apps Script Form page; the Worker verifies response scope and atomically commits members, stable source mappings, review observations, the cursor and an immutable receipt. A 24-hour overlap and (timestamp, response ID) page cursor avoid missing equal-timestamp answers; retries reuse the same request ID. Only local or isolated staging test key may call it."
+    },
+    "/internal/c2/form-submit-notification": {
+      "method": "POST",
+      "authentication": "signed_notification",
+      "writes": true,
+      "request": ["protocol_version", "team_id", "writer_epoch", "season_id", "binding_version", "form_id", "response_id", "timestamp_ms", "nonce", "signature"],
+      "response": ["season_id", "response_id", "observed", "pages"],
+      "notes": "An installable Google Forms submit trigger signs a fresh notification with the existing bridge secret. The Worker verifies its scope before reaching the DO, checks the current season binding, then uses the normal transactional Form pull; the response must be observed or a retryable failure is returned. This staging-only route does not expose the C2 transport key to Google. Installation is explicit while the production Apps Script legacy trigger still owns the live season."
+    },
+    "/internal/c2/poll-active-forms": {
+      "method": "POST",
+      "authentication": "transport_only",
+      "writes": true,
+      "request": ["request_id"],
+      "response": ["polled", "results"],
+      "notes": "Ten-minute staging scheduler entrypoint, disabled by default and unavailable in production. It processes at most four current bound OPEN or COMPLETED seasons until a successful full Form scan after season_ends_at, using the same transactional pull path; failed seasons report RETRY_REQUIRED for a later scheduled invocation."
+    },
+    "/internal/c2/resolve-form-source": {
+      "method": "POST",
+      "authentication": "session_token",
+      "writes": true,
+      "request": ["request_id", "session_token", "season_id", "response_id", "member_id", "source_version"],
+      "response_result": ["season_id", "response_id", "member_id", "source_version"],
+      "notes": "Coach resolution for a reviewed Form answer. Requires current source version, an existing same-season member and no prior Form mapping for that member; it preserves the member identity and name override. It is a protected C2 staging action, not a normal join approval."
+    },
+    "/internal/c2/list-export-blocks": {
+      "method": "POST", "authentication": "session_token", "writes": false,
+      "request": ["request_id", "session_token", "season_id", "limit?", "cursor?"],
+      "response_result": ["season_id", "binding_version", "items", "next_cursor"],
+      "notes": "Lists current pending local lane blocks by immutable event sequence; no raw Google cells."
+    }
+  },
+  "errors": [
+    "INVALID_JSON", "INVALID_REQUEST", "INVALID_REQUEST_ID", "METHOD_NOT_ALLOWED", "NOT_FOUND",
+    "C2_ACCESS_DENIED", "CONFIGURATION_ERROR", "IDEMPOTENCY_CONFLICT", "SESSION_INVALID",
+    "SESSION_EXPIRED", "SESSION_REVOKED", "SEASON_NOT_FOUND", "IMPORT_REFERENCE_MISSING",
+    "IMPORT_VERSION_REGRESSION", "IMPORT_CONFLICT", "IMPORT_SNAPSHOT_CONFLICT",
+    "SYNC_BINDING_NOT_FOUND", "SYNC_BINDING_STALE", "SYNC_BINDING_IDENTITY_CONFLICT", "SYNC_MAPPING_INVALID",
+    "SOURCE_IDENTITY_INVALID", "SOURCE_IDENTITY_CONFLICT", "FORM_IMPORT_CLOSED",
+    "FORM_IMPORT_STALE", "FORM_SOURCE_REVIEW_REQUIRED", "FORM_POLL_DISABLED", "FORM_NOTIFICATION_INVALID", "FORM_NOTIFICATION_PENDING", "SHEET_INSPECTION_STALE", "BINDING_SHEET_MISSING", "SHEET_SCAN_LIMIT", "BRIDGE_CONFIGURATION_REQUIRED",
+    "BRIDGE_UNAVAILABLE", "BRIDGE_INVALID_RESPONSE", "MEMBER_EXPORT_DISABLED", "SCHEDULE_EXPORT_DISABLED", "ASSOCIATED_EXPORT_DISABLED", "SYNC_EXPORT_PAUSED", "SYNC_EXPORT_DRAINING", "SYNC_EXPORT_ACTION_NOT_REQUIRED", "EXPORT_POLL_DISABLED", "EXPORT_HANDLER_DISABLED", "SYNC_CONFLICT_NOT_FOUND",
+    "SYNC_EXPORT_STALE", "SYNC_OUTBOX_BLOCKED", "SYNC_BATCH_INVALID", "SYNC_BATCH_TOO_LARGE", "SYNC_BASELINE_INCOMPLETE",
+    "SYNC_MEMBER_INVALID", "SYNC_MEMBER_MISSING", "SYNC_MEMBER_NEEDS_REVIEW", "SYNC_BINDING_CHANGED_AFTER_WRITE",
+    "SYNC_OUTBOX_INVALID", "SYNC_ROSTER_VERSION_UNCAPTURED", "SYNC_ROSTER_VERSION_REGRESSION",
+    "SYNC_SEASON_INVALID", "SYNC_SEASON_NEEDS_REVIEW", "SYNC_BASELINE_INVALID", "SHEET_STRUCTURE_INVALID",
+    "SYNC_SCHEDULE_INVALID", "SYNC_SCHEDULE_NEEDS_REVIEW", "SYNC_BASELINE_MAPPING_STALE",
+    "SYNC_ASSOCIATED_INVALID", "SYNC_ASSOCIATED_NEEDS_REVIEW", "SYNC_ASSOCIATED_STALE", "SYNC_ASSOCIATED_VERSION_GAP",
+    "SYNC_REFERENCE_INVALID", "SYNC_REFERENCE_MISSING", "SYNC_REFERENCE_NEEDS_REVIEW", "SYNC_VERSION_REGRESSION",
+    "SHEET_PATCH_STRUCTURE", "SHEET_PATCH_CONFLICT", "SHEET_PATCH_UNVERIFIED", "INTERNAL_ERROR",
+    "SYNC_EVENT_INDEX_INCOMPLETE", "SYNC_EVENT_INDEX_INVALID",
+    "SOURCE_AUTHORITY_COMMAND_INVALID", "SOURCE_AUTHORITY_CLOCK_INVALID", "SOURCE_AUTHORITY_BINDING_UNPROVEN",
+    "SOURCE_AUTHORITY_NOT_DUE", "SOURCE_AUTHORITY_RESOURCE_EXCEEDED", "SOURCE_AUTHORITY_CENSUS_INVALID",
+    "SOURCE_AUTHORITY_IDEMPOTENCY_CONFLICT", "SOURCE_AUTHORITY_SCOPE_ALREADY_PINNED", "SOURCE_AUTHORITY_PIN_CHANGED",
+    "SOURCE_AUTHORITY_OWNERSHIP_CHANGED", "SOURCE_AUTHORITY_CENSUS_CHANGED", "SOURCE_AUTHORITY_UNCONFIRMED"
+  ],
+  "not_yet_in_this_slice": [
+    "Frozen-history Sheet inspection", "random network or quota fault acceptance and backup restore drills", "production automatic export scheduling",
+    "business conflict resolution or import", "remote source authority transport and private runtime deployment", "annual Google export",
+    "production or Pages routing", "browser CORS"
+  ]
+}

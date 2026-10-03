@@ -21,6 +21,10 @@ class FakeRange {
     );
   }
 
+  getDisplayValues() {
+    return this.getValues().map((row) => row.map((value) => String(value ?? "")));
+  }
+
   setValues(values) {
     for (let rowOffset = 0; rowOffset < this.rowCount; rowOffset += 1) {
       const rowIndex = this.row - 1 + rowOffset;
@@ -38,6 +42,28 @@ class FakeRange {
 
   getSheet() {
     return this.sheet;
+  }
+
+  createTextFinder(searchText) {
+    const range = this;
+    let entireCell = false;
+    return {
+      matchEntireCell(value) { entireCell = value; return this; },
+      matchCase() { return this; },
+      findAll() {
+        const matches = [];
+        for (let rowOffset = 0; rowOffset < range.rowCount; rowOffset += 1) {
+          for (let columnOffset = 0; columnOffset < range.columnCount; columnOffset += 1) {
+            const cell = String(range.sheet.rows[range.row - 1 + rowOffset]?.[
+              range.column - 1 + columnOffset] ?? "");
+            if (entireCell ? cell === searchText : cell.includes(searchText)) {
+              matches.push({ getRow: () => range.row + rowOffset });
+            }
+          }
+        }
+        return matches;
+      }
+    };
   }
 }
 
@@ -118,9 +144,10 @@ class FakeSpreadsheet {
 }
 
 class FakeForm {
-  constructor(id, destinationId) {
+  constructor(id, destinationId, responses = []) {
     this.id = id;
     this.destinationId = destinationId;
+    this.responses = responses;
   }
 
   getDestinationId() {
@@ -129,6 +156,10 @@ class FakeForm {
 
   getPublishedUrl() {
     return `https://docs.google.com/forms/d/${this.id}/viewform`;
+  }
+
+  getResponses(since) {
+    return this.responses.filter((response) => response.getTimestamp().getTime() >= since.getTime());
   }
 }
 
@@ -341,7 +372,8 @@ export async function createBackend(options = {}) {
     spreadsheetId = "runtime-sheet-1234567890",
     responseSheetName = "Form Responses 1",
     headers = ["Timestamp", "Display Name"],
-    rows = []
+    rows = [],
+    formResponses = []
   } = {}) {
     let runtimeSpreadsheet = spreadsheets.get(spreadsheetId);
     if (!runtimeSpreadsheet) {
@@ -352,8 +384,16 @@ export async function createBackend(options = {}) {
     if (!responseSheet) responseSheet = runtimeSpreadsheet.insertSheet(responseSheetName);
     responseSheet.setFormUrl(`https://docs.google.com/forms/d/${formId}/edit`);
     responseSheet.rows = [headers, ...rows.map((row) => [...row])];
-    forms.set(formId, new FakeForm(formId, spreadsheetId));
-    return { formId, spreadsheetId, runtimeSpreadsheet, responseSheet };
+    const form = new FakeForm(formId, spreadsheetId, formResponses.map((row) => ({
+      getId: () => row.responseId,
+      getTimestamp: () => new Date(row.submittedAt),
+      getItemResponses: () => [{
+        getItem: () => ({ getTitle: () => row.questionTitle || "Display Name" }),
+        getResponse: () => row.displayName
+      }]
+    })));
+    forms.set(formId, form);
+    return { formId, spreadsheetId, runtimeSpreadsheet, responseSheet, form };
   }
   return {
     context,
