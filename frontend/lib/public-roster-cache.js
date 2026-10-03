@@ -1,3 +1,5 @@
+import { usableRoster } from "./current-view.js";
+
 export const DRAGON_BOAT_ROSTER_CACHE_PREFIX = "dragon_boat_public_roster_v1";
 
 export function rosterCacheKey(season) {
@@ -19,15 +21,7 @@ export function loadRosterSnapshot(season, storage = globalThis.localStorage, no
     storage.removeItem(key);
     return null;
   }
-  if (
-    !snapshot ||
-    snapshot.season_id !== season.season_id ||
-    Number(snapshot.binding_version) !== Number(season.binding_version) ||
-    Number(snapshot.roster_version) !== Number(season.roster_version) ||
-    !Number.isFinite(Date.parse(snapshot.expires_at)) ||
-    Date.parse(snapshot.expires_at) <= now ||
-    !Array.isArray(snapshot.members)
-  ) {
+  if (!usableRoster(snapshot, season, now)) {
     storage.removeItem(key);
     return null;
   }

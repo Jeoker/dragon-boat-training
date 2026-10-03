@@ -485,6 +485,8 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
   // The user re-enters the Code; neither the Code nor its digest is persisted.
   let pendingLogin: { codeDigest: string; requestId: string } | null = null;
   let loginInProgress = false;
+  let sessionViewVersion = 0;
+  let bootstrapReadVersion = 0;
   let currentSeasonData: any = null;
   let editingSchedule: any = null;
   let schedulePreview: any = null;
@@ -592,6 +594,8 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
   }
 
   function showLogin(message = "", state = "error", preserveDraft = false) {
+    sessionViewVersion += 1;
+    bootstrapReadVersion += 1;
     invalidateBindingValidation();
     closeScheduleEditor();
     seasonScheduleForm?.reset();
@@ -653,6 +657,7 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
       pendingRequests.delete(key);
       return response;
     } catch (error) {
+      if (token !== sessionToken) throw new DragonBoatApiError("STALE_SESSION_RESPONSE", "已忽略旧会话返回的操作结果。");
       if (!isUncertainWriteError(error) && !isCoachSessionError(error)) pendingRequests.delete(key);
       throw error;
     } finally {
@@ -846,8 +851,17 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
     if (!client || !sessionToken) return;
     setStatus(managementStatus, "正在读取赛季入口……", "pending");
     const token = sessionToken;
-    const response = await client.post("coachBootstrap", { session_token: token });
-    if (token !== sessionToken) return;
+    const readVersion = ++bootstrapReadVersion;
+    let response;
+    try {
+      response = await client.post("coachBootstrap", { session_token: token });
+    } catch (error) {
+      if (token !== sessionToken || readVersion !== bootstrapReadVersion) {
+        throw new DragonBoatApiError("STALE_SESSION_RESPONSE", "旧会话或旧刷新结果已忽略。");
+      }
+      throw error;
+    }
+    if (token !== sessionToken || readVersion !== bootstrapReadVersion) return;
     renderPanels(response.data.panels);
     if (coachName) coachName.textContent = response.data.coach.display_name;
     if (sessionExpiry) sessionExpiry.textContent = `会话有效至 ${new Date(response.data.session.expires_at).toLocaleString()}`;
@@ -1072,6 +1086,8 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
     if (changed) clearP2View();
     p2SeasonId = seasonId;
     const token = sessionToken;
+    const readVersion = p2ReadVersion + 1;
+    const stillCurrent = () => token === sessionToken && p2SeasonId === seasonId && readVersion === p2ReadVersion;
     if (memberConsole) memberConsole.hidden = false;
     const draft = draftAfterLogin?.seasonId === p2SeasonId ? draftAfterLogin : p2Pending ? captureP2Draft() : null;
     p2Refreshing = true;
@@ -1079,7 +1095,7 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
     setStatus(memberConsoleStatus, "正在读取受保护名册与最新报名……", "pending");
     try {
       await readMemberWorkspace(draft, !changed);
-      if (token !== sessionToken || p2SeasonId !== seasonId) return;
+      if (!stillCurrent()) return;
       if (draft?.pending) {
         p2Pending = draft.pending;
         setStatus(p2Pending?.kind === "member" ? memberEditStatus : managedSignupStatus, p2Pending?.accepted
@@ -1089,10 +1105,10 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
       setStatus(memberConsoleStatus, draft ? "已重新核对服务器版本。未提交的输入已恢复，请检查后再次确认。" : "名册与报名已更新。", "ready");
       if (draft) draftAfterLogin = null;
     } catch (error) {
-      if (token !== sessionToken || p2SeasonId !== seasonId) return;
+      if (!stillCurrent()) return;
       if (!protectedError(error)) setStatus(memberConsoleStatus, `读取失败，显示的数据可能已过期。${messageForError(error)}`, "error");
     } finally {
-      if (token === sessionToken) {
+      if (stillCurrent()) {
         p2Refreshing = false;
         updateP2Controls();
       }
@@ -1140,9 +1156,16 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
     if (!client || !sessionToken || !p2SeasonId) return;
     const token = sessionToken, seasonId = p2SeasonId, revision = ++p2ReadVersion;
     const practiceId = draft?.practiceId || managedPracticePicker?.value || "";
-    const response = await client.post("getMemberWorkspace", { session_token: token, season_id: seasonId,
+    const stillCurrent = () => token === sessionToken && seasonId === p2SeasonId && revision === p2ReadVersion;
+    let response;
+    try {
+      response = await client.post("getMemberWorkspace", { session_token: token, season_id: seasonId,
         ...(practiceId ? { practice_id: practiceId } : {}), known_roster_version: managedRosterVersion });
-    if (token !== sessionToken || seasonId !== p2SeasonId || revision !== p2ReadVersion) return;
+    } catch (error) {
+      if (!stillCurrent()) throw new DragonBoatApiError("STALE_SESSION_RESPONSE", "旧会话或旧名册读取结果已忽略。");
+      throw error;
+    }
+    if (!stillCurrent()) throw new DragonBoatApiError("STALE_SESSION_RESPONSE", "旧会话或旧名册读取结果已忽略。");
     const latestDraft = preserveInput ? captureP2Draft() : draft;
     p2Practices = response.data.practices;
     renderManagedPracticePicker(practiceId);
@@ -2199,17 +2222,19 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
     if (p2Busy || p2Pending || p2Refreshing) return;
     const draft = captureP2Draft();
     const token = sessionToken;
+    const seasonId = p2SeasonId, readVersion = p2ReadVersion + 1;
+    const stillCurrent = () => token === sessionToken && seasonId === p2SeasonId && readVersion === p2ReadVersion;
     p2Refreshing = true;
     updateP2Controls();
     setStatus(memberConsoleStatus, "正在刷新名册与报名……", "pending");
     try {
       await readMemberWorkspace(draft, true);
-      if (token === sessionToken) setStatus(memberConsoleStatus, "已刷新服务器状态，未提交输入保留，请核对后再保存。", "ready");
+      if (stillCurrent()) setStatus(memberConsoleStatus, "已刷新服务器状态，未提交输入保留，请核对后再保存。", "ready");
     } catch (error) {
-      if (token !== sessionToken) return;
+      if (!stillCurrent()) return;
       if (!protectedError(error)) setStatus(memberConsoleStatus, `刷新失败，当前信息可能已过期。${messageForError(error)}`, "error");
     } finally {
-      if (token === sessionToken) {
+      if (stillCurrent()) {
         p2Refreshing = false;
         updateP2Controls();
       }
@@ -2224,6 +2249,8 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
     }
     const draft = preserveInput ? captureP2Draft() : null;
     const token = sessionToken;
+    const seasonId = p2SeasonId, readVersion = p2ReadVersion + 1;
+    const stillCurrent = () => token === sessionToken && seasonId === p2SeasonId && readVersion === p2ReadVersion;
     p2Refreshing = true;
     updateP2Controls();
     if (!preserveInput) {
@@ -2247,10 +2274,10 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
     try {
       await readMemberWorkspace(draft, preserveInput);
     } catch (error) {
-      if (token !== sessionToken) return;
+      if (!stillCurrent()) return;
       if (!protectedError(error)) setStatus(managedPracticeStatus, `读取失败，当前信息可能已过期。${messageForError(error)}`, "error");
     } finally {
-      if (token === sessionToken) {
+      if (stillCurrent()) {
         p2Refreshing = false;
         updateP2Controls();
       }
@@ -2432,6 +2459,7 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
     const coachCode = codeInput.value;
     codeInput.value = "";
     loginInProgress = true;
+    sessionViewVersion += 1;
     if (loginButton) loginButton.disabled = true;
     setStatus(loginStatus, "正在验证……", "pending");
     try {
@@ -2480,12 +2508,13 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
     pendingLogin = null;
     clearCoachSession();
     showLogin("本机已退出 Coach Mode。", "ready");
+    const viewVersion = sessionViewVersion;
     if (!client || !token) return;
     try {
       await client.post("coachLogout", { session_token: token });
-      setStatus(loginStatus, "已退出 Coach Mode。", "ready");
+      if (viewVersion === sessionViewVersion) setStatus(loginStatus, "已退出 Coach Mode。", "ready");
     } catch {
-      setStatus(loginStatus, "本机已退出；后端会话将在到期后自动失效。", "pending");
+      if (viewVersion === sessionViewVersion) setStatus(loginStatus, "本机已退出；后端会话将在到期后自动失效。", "pending");
     }
   });
 
@@ -2688,8 +2717,8 @@ const { appPath, historyPath, coachPath, apiUrl } = siteConfig;
       if (workspace) workspace.hidden = false;
       await refreshBootstrap();
     } catch (error) {
-      clearCoachSession();
-      showLogin(messageForError(error));
+      if (!protectedError(error)) setStatus(managementStatus,
+        `会话已恢复，但赛季入口读取失败。请点击“刷新”重试。${messageForError(error)}`, "error");
     }
   }
 

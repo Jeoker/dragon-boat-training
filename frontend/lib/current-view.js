@@ -29,7 +29,8 @@ export function validSeatPlanView(seatPlan) {
 }
 
 export function usableRoster(snapshot, season, now = Date.now()) {
-  return Boolean(snapshot && snapshot.season_id === season.season_id
+  return Boolean(snapshot && season?.season_id && snapshot.season_id === season.season_id
+    && [snapshot.roster_version, snapshot.binding_version].every(value => Number.isSafeInteger(value) && value >= 0)
     && snapshot.roster_version === season.roster_version && snapshot.binding_version === season.binding_version
     && Array.isArray(snapshot.members) && Date.parse(snapshot.expires_at) > now);
 }

@@ -7,12 +7,14 @@ import { DragonBoatApiError, isUncertainWriteError } from "../frontend/lib/api-c
 import { validPracticeView, olderPracticeView, usableRoster } from "../frontend/lib/current-view.js";
 import { renderSignupList, signupPreferenceLabels, signupResultText } from "../frontend/lib/signup-view.js";
 import { isPublicSeatPlan, renderSeatPlan, seatPlanSourceLabel } from "../frontend/lib/seat-plan-view.js";
+import { loadRosterSnapshot, rosterCacheKey } from "../frontend/lib/public-roster-cache.js";
+import { formatCalendarDate } from "../frontend/lib/calendar-date.js";
 
 const astroSource = await fs.readFile(new URL("../frontend/components/DragonBoatApp.astro", import.meta.url), "utf8");
 const script = astroSource.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^\s*import .*;$/gm, "");
 const compiledScript = ts.transpileModule(script, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
 
-function makeHarness({ post, readPractice, publishedPractices = [], seatPlan } = {}) {
+function makeHarness({ post, readPractice, publishedPractices = [], seatPlan, timezone = "America/New_York", serverOffsetMs = 0, cachedRoster, rosterExpiresAt = "2099-09-09T20:00:00.000Z" } = {}) {
   const elements = new Map();
   const documentListeners = new Map();
   const document = {
@@ -48,10 +50,12 @@ function makeHarness({ post, readPractice, publishedPractices = [], seatPlan } =
   }
   // The component root has two data attributes; selector lookup needs only its first.
   elements.set("[data-dragon-boat-app]", new Element("div"));
-  const season = { season_id: "season_test", name: "Test season", status: "OPEN", start_date: "2099-01-01", end_date: "2099-12-31", timezone: "America/New_York", roster_version: 1, binding_version: 1, join_form_url: "https://example.com/join" };
+  const season = { season_id: "season_test", name: "Test season", status: "OPEN", start_date: "2099-01-01", end_date: "2099-12-31", timezone, roster_version: 1, binding_version: 1, join_form_url: "https://example.com/join" };
   const practice = { practice_id: "practice_test", practice_version: 1, timezone: "America/New_York", start_at: "2099-09-09T22:00:00.000Z", end_at: "2099-09-10T00:00:00.000Z", signup_cutoff_at: "2099-09-09T20:00:00.000Z", location: "Test Dock", address: "Test Road" };
   const state = {
     practiceReads: 0,
+    memberReads: 0,
+    clockOffset: 0,
     posts: [],
     signupVersion: 1,
     signups: [],
@@ -60,11 +64,14 @@ function makeHarness({ post, readPractice, publishedPractices = [], seatPlan } =
     practice,
     seatPlan
   };
-  const envelope = (data) => ({ data, meta: { server_time: new Date().toISOString(), contract_version: "test" } });
+  const envelope = (data) => ({ data, meta: { server_time: new Date(Date.now() + state.clockOffset + serverOffsetMs).toISOString(), contract_version: "test" } });
   class Client {
     async get(action) {
       if (action === "bootstrap") return envelope({ season, state: "ACTIVE", weeks: publishedPractices.length ? [{ week_start_date: "2099-09-07", practices: publishedPractices.map((overrides) => ({ ...practice, ...overrides })) }] : [] });
-      if (action === "members") return envelope({ season_id: season.season_id, roster_version: 1, binding_version: 1, members: [{ member_id: "member_alice", display_name: "Alice", default_preference: "AMBIENT" }, { member_id: "member_bob", display_name: "Bob", default_preference: "LEFT" }], expires_at: "2099-09-09T20:00:00.000Z" });
+      if (action === "members") {
+        state.memberReads++;
+        return envelope({ season_id: season.season_id, roster_version: 1, binding_version: 1, members: [{ member_id: "member_alice", display_name: "Alice", default_preference: "AMBIENT" }, { member_id: "member_bob", display_name: "Bob", default_preference: "LEFT" }], expires_at: rosterExpiresAt });
+      }
       if (action === "practice") {
         state.practiceReads++;
         if (readPractice) await readPractice(state);
@@ -82,12 +89,15 @@ function makeHarness({ post, readPractice, publishedPractices = [], seatPlan } =
   const context = vm.createContext({
     document,
     window: { location: { href: "http://localhost:4321/dragon-boat-training/?season_id=season_test&practice_id=practice_test" }, history: { replaceState() {} }, addEventListener() {}, setInterval() {} },
-    URL, Intl, Date, console,
+    URL, Intl, Date: class extends Date { static now() { return Date.now() + state.clockOffset; } }, console,
     DragonBoatApiClient: Client, DragonBoatApiError, isUncertainWriteError,
     createRequestId: () => `request_${state.posts.length + 1}`,
-    loadRosterSnapshot: () => null, saveRosterSnapshot() {},
+    loadRosterSnapshot: (season, _storage, now) => cachedRoster ? loadRosterSnapshot(season, {
+      getItem: key => key === rosterCacheKey(season) ? JSON.stringify({ ...season, ...cachedRoster }) : null,
+      removeItem() {}
+    }, now) : null, saveRosterSnapshot() {},
     renderSignupList, signupPreferenceLabels, signupResultText, isPublicSeatPlan, renderSeatPlan, seatPlanSourceLabel,
-    validPracticeView, olderPracticeView, usableRoster
+    validPracticeView, olderPracticeView, usableRoster, formatCalendarDate
   });
   vm.runInContext(compiledScript, context);
   const element = (name) => {
@@ -105,6 +115,70 @@ async function settled(predicate) {
   }
   assert.ok(predicate(), "UI did not reach the expected state");
 }
+
+test("roster cache expiry uses the server clock when the browser clock is behind", async () => {
+  const h = makeHarness({ serverOffsetMs: 120000, cachedRoster: { members: [{ member_id: "stale", display_name: "Stale" }], expires_at: new Date(Date.now() + 60000).toISOString() } });
+  await settled(() => h.element("signup-status").textContent.includes("已读取最新报名情况"));
+  assert.equal(h.state.memberReads, 1);
+  assert.equal(h.element("member-select").children.some(option => option.value === "stale"), false);
+  assert.equal(h.element("member-select").children.some(option => option.value === "member_alice"), true);
+});
+
+test("a cache valid by server time remains reusable when the browser clock is ahead", async () => {
+  const h = makeHarness({ serverOffsetMs: -120000, cachedRoster: { members: [{ member_id: "cached", display_name: "Cached" }], expires_at: new Date(Date.now() - 60000).toISOString() } });
+  await settled(() => h.element("signup-status").textContent.includes("已读取最新报名情况"));
+  assert.equal(h.state.memberReads, 0);
+  assert.equal(h.element("member-select").children.some(option => option.value === "cached"), true);
+});
+
+test("calendar dates do not roll into tomorrow in a season east of UTC", async () => {
+  const h = makeHarness({ timezone: "Pacific/Kiritimati", publishedPractices: [{}] });
+  await settled(() => h.element("signup-status").textContent.includes("已读取最新报名情况"));
+  assert.equal(h.element("season-range").textContent, "2099年1月1日至2099年12月31日");
+  assert.match(textOf(h.element("week-cards")), /一周开始于 2099年9月7日/);
+});
+
+test("roster expiry cancels an unsent confirmation and unlocks refresh without posting", async () => {
+  const h = makeHarness({ rosterExpiresAt: new Date(Date.now() + 60000).toISOString() });
+  await settled(() => h.element("signup-status").textContent.includes("已读取最新报名情况"));
+  h.element("member-select").value = "member_alice";
+  h.element("member-select").emit("change");
+  h.element("signup-form").emit("submit");
+  assert.equal(h.element("signup-confirm").hidden, false);
+  h.state.clockOffset = 120000;
+  h.element("confirm-action").emit("click");
+  assert.equal(h.state.posts.length, 0);
+  assert.equal(h.element("signup-confirm").hidden, true);
+  assert.equal(h.element("member-select").disabled, true);
+  assert.equal(h.element("refresh-practice").disabled, false);
+  assert.match(h.element("signup-status").textContent, /名单已到期/);
+});
+
+test("an already expired members response never enables name-based submissions", async () => {
+  const h = makeHarness({ rosterExpiresAt: new Date(Date.now() - 60000).toISOString() });
+  await settled(() => h.element("signup-status").textContent.includes("姓名暂时读取失败"));
+  assert.equal(h.element("member-select").disabled, true);
+  assert.equal(h.element("submit-signup").disabled, true);
+  assert.equal(h.state.posts.length, 0);
+});
+
+test("an uncertain write remains retryable with the original payload after roster expiry", async () => {
+  const h = makeHarness({ rosterExpiresAt: new Date(Date.now() + 60000).toISOString(),
+    post: (state, _action, payload, _options, envelope) => {
+      if (state.posts.length === 1) throw new DragonBoatApiError("REQUEST_TIMEOUT", "unknown", { retryable: true });
+      state.signupVersion++;
+      state.signups = [{ member_id: payload.member_id, display_name: "Alice", preference: payload.preference, status: "CONFIRMED" }];
+      return envelope({ signup: state.signups[0], promoted_member_ids: [] });
+    } });
+  await selectAndConfirm(h);
+  await settled(() => h.element("signup-status").textContent.includes("暂时无法确认"));
+  h.state.clockOffset = 120000;
+  h.element("retry-signup").emit("click");
+  await settled(() => h.element("signup-status").textContent.includes("已确认 Ambient"));
+  assert.equal(h.state.posts.length, 2);
+  assert.deepEqual(h.state.posts[1], h.state.posts[0]);
+  assert.equal(h.element("member-select").disabled, true);
+});
 
 function textOf(node) {
   return [node.textContent, ...node.children.map(textOf)].filter(Boolean).join("\n");
