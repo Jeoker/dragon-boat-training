@@ -30,6 +30,8 @@
 - `build.mjs`：按固定顺序生成可直接粘贴到网页编辑器的单文件构建结果；从仓库根目录运行 `npm run build:backend`。
 - `../contracts/api-v1.json`：当前请求和响应契约。
 
+`ensureCloudflareFormSubmitTrigger_` 是受控部署时显式调用的安装工具，当前业务路由没有自动调用它。保留其重复触发器及旧 Spreadsheet 写入归属检查，C4 交接前不能接入生产自动安装流程。
+
 长期系统 Spreadsheet 包含 `Coaches`、`CoachSessions`、`SystemRequests`、`SystemAuditLog`、`Seasons`、`SystemSettings`，以及归档使用的 `AnnualArchiveFiles`、`PracticeArchives`、`SeasonArchives`、`PublicHistoryIndex`、`PublicHistorySeasons`、`HistoryCorrections`。`PublicHistorySeasons` 保存每季紧凑目录、训练摘要、公开更正投影和详情行定位，日常历史读取无需扫描持续增长的训练索引；已有 P4 数据由 `setupDragonBoatP4` 幂等补建。每季响应 Spreadsheet 包含名单、排期、训练及报名表，并使用 `SeatPlanCurrent` 保存当前草稿座位、`SeatPlanState` 保存角色和版本指针、`SeatPlanRevisions` 保存不可变正式版本、`PracticeFinalSnapshots` 保存到期冻结快照；既有赛季在首次使用 P3 能力时按需建立新增 Tab。Code 使用随机 salt 和服务端 secret 生成摘要；短期会话令牌带服务端签名，Sheet 只保存令牌摘要。重置 Code 会推进 `credential_version`，停用凭据或版本变化会让旧会话立即失效。
 
 既有五分钟 `publishDueTrainingWeeks` 触发器同时扫描到期冻结和归档，不另建第二个周期任务。每轮冻结与归档默认最多处理八个工作单元并分别保留游标，同时受默认 210 秒预算约束；后续触发从检查点继续。系统按训练年份自动创建并复用一个私有 `Dragon Boat Training Archive YYYY` Spreadsheet；取消训练不写入单场 Tab、整季快照或公开目录。整季私有快照核验后才把赛季标为 `ARCHIVED` 并批量写入荣誉墙投影。冻结后只允许通过受保护接口追加版本化更正说明，原座位快照不改写。
@@ -41,6 +43,16 @@
 正式座位角色使用固定的公开与管理投影入口。公开 `practice` 只返回 Coach／Steerer 的显示姓名；经 Coach session 保护的 seating workspace 才附带角色 `member_id`，供“从正式版重置草稿”恢复内部选择。普通 revision 与冻结快照遵守同一隔离规则。
 
 来源归档的 capture-time 完整内容、固定 cutoff 和人工映射政策是 C2.6 目标；当前 `ArchiveActions.gs` 不因此具备来源完整性、可信映射或跨源一致性保证。年度业务冻结／历史归档与完整 Form／responseSheet 来源归档是不同范围。
+
+`source-journal/` 是 C2.6 的隔离服务端适配器：完整 REST 来源两遍读取、私有单次原子 journal 及原内容回读，并有本机私有持久 operation／candidate／receipt CAS 和文件存储端口。独立 OAuth、真实读取、丢回复和跨进程回执恢复已在 2026-10-03 通过。候选须匹配原观测、known census、映射声明和响应 Tab 标题；持久候选不因重试重新采集，未知 journal 写入仅回读原目标。可选 `PrivateSourceReadAttempt` 逐请求保存原 URL／body、返回内容、位置摘要及观测时间；未知返回停止重取，完整 transcript 可重建同一 candidate。完整 range 保存后的跨进程续读及零来源重放见[checkpoint 实际验收](../tests/C2-SOURCE-READ-CHECKPOINT-ISOLATED-ACCEPTANCE-2026-10-03.md)。
+
+新增 [`createAuthorizedSourceOperation`](source-journal/authority-context.ts) 从可信已认证服务器端口取得原来源 pin，并从私有登记端口取得固定 attempt、API owner 及 journal 目标。初次 capture 使用空人工映射声明；在读取前、候选保存前、journal 调用前及回执保存前重新确认服务器 pin 与私有登记。它已与真实本地 SQLite 会话组合测试；digest 只验证完整性，不能认证浏览器提供的 pin。若 write-start 已保存后权限丢失，保持原 marker，恢复只能回读原目标；NOT_FOUND 不能触发重新 stage。独立测试仍可直接构造不带鉴权端口的 `PrivateSourceOperation`，该入口不适合作为已认证服务入口。
+
+[`SourceServerAuthorityClient`](source-journal/server-authority-client.ts) 通过固定 HTTPS origin 调用受 C2 transport key 和当前 Coach 会话双重保护的 `/internal/c2/pin-source-authority`。私有配置固定 backend instance／generation／epoch／team；拒绝重定向、错误 request／contract、异常 JSON、摘要不符和超预算响应，不保存凭据或透传错误正文。[`PrivateSourceTargetRegistry`](source-journal/target-registry.ts) 在私有 CAS 存储不可替换的 pin／attempt／owner／目标登记，已验证独立进程恢复。[`createPrivateSourceRuntime`](source-journal/private-runtime.ts) 组合这些端口、完整 REST reader 和 Google journal；来源读取强制持久 checkpoint，实际 Google 请求前后均重新核验当前服务器 pin 与原登记。Google OAuth token 端口仍与 Coach 凭据分开。使用端口与验收边界见[接线本地报告](../tests/C2-SOURCE-TRANSPORT-LOCAL-ACCEPTANCE-2026-10-03.md)。
+
+[`PrivateSourceReview`](source-journal/private-review.ts) 通过 `PrivateSourceOperation.readForReview()` 取得原已确认候选，要求当前鉴权和原 journal 私有权限／内容复核。复用完整 retained plan 验证，将人工映射责任声明保存到独立私有 CAS ledger；actor取原来源上下文，时间取私有host。相同请求并发及丢确认恢复原证据，后续追加不改变旧请求的派生prefix；保存前和返回前复核权限及journal。实际本地HTTP／SQLite会话和两个独立Node进程恢复已[验收](../tests/C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)。内层LOCAL_* provenance保持兼容，外层仅声明私有ledger已持久，不授予来源核验或年度资格；其他Coach审核委派、审核页面和长期host尚未接入。
+
+原回答、候选及文件操作状态只能保存在仓库外私有存储，禁止进入 Worker／DO 或公开备份。服务器表只保存来源身份与权威元数据；已知 census 不证明完整历史。内部 pin、私有 runtime 和持久审核组件已本地实现，尚未部署长期服务或新增前端入口；可信原生 Tab 关联、全部逐块恢复和实际服务器采集继续作为门槛。私有模块不在 `build.mjs`／C0 probe 构建中，来源仍未核验且年度导出未授权。通过 `npm run source:check` 执行[独立严格类型及未使用声明检查](source-journal/tsconfig.json)，再用 `npm test` 验证恢复与拒绝路径。见[来源权威历史本地验收](../tests/C2-SOURCE-AUTHORITY-LOCAL-ACCEPTANCE-2026-10-03.md)、[真实隔离验收](../tests/C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)及[来源 OAuth 配置](../tests/C2-SOURCE-OAUTH-SETUP.md)。
 
 ## 第一次测试部署
 

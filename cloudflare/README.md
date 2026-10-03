@@ -128,6 +128,8 @@ Google 桥接可只读 `ScheduleTemplates`／`TrainingWeeks`，并对这两张�
 
 2026-10-01 当前隔离基线：专用 c2test 已部署 Worker 0.17.0-c2-associated-lanes／schema14，轮询关闭、crons=[]。候补递补、关联受控部分写入／丢回复、既存 FAILED 批次暂停排空及独立训练阻塞／恢复已按各自范围验收；并发 SENT 暂停仅有本地真实调用链证据。真实配额耗尽、随机网络故障、自动 cron、restore 和更广实体仍未验收，C2.4／C2.5 整体未完成。见[最新实际报告](../tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)与[当前进度](../CURRENT-STATUS.md)。
 
-本地源码 schema15／50表已实现年度业务捕获与持久计划，未部署到远端 schema14。完整来源、人工映射及 plan-only 审核已完成本地纯模块验收，但没有运行时路由、真实 Coach 认证、私有来源读取、持久审核 CAS 或 Google 年度输出。原来源模型所有 Sheet 行仍为 PRIVATE_PENDING，整体 SOURCE_NOT_VERIFIED。
+本地源码 schema16／51表已实现年度业务持久计划及来源权威元数据，未部署到远端 schema14。[`C2SourceAuthority`](src/c2-source-authority.ts) 使用真实 C1 会话，从 SQLite 固定已结束赛季的 actor、cutoff、binding／generation／epoch、响应 Tab 声明及全部数据库已知来源 ID；`source_authority_pins` 进入完整备份，不保存回答、姓名、OAuth 或私有候选正文。同一赛季只保留原 pin 和 census，恢复检查当前会话与来源绑定。新增 `/internal/c2/pin-source-authority` 返回受保护的权威元数据，必须同时通过 C2 transport gate 和 Coach 会话，不调用 Google、不推进业务任务或消费 outbox；生产仍拒绝全部 C2 路由。API manifest 已同步该本地动作与错误码，既有 contract version 保持兼容。
+
+私有 HTTPS 客户端、不可替换的持久目标登记及完整 reader／checkpoint／journal runtime 组合已[本地验收](../tests/C2-SOURCE-TRANSPORT-LOCAL-ACCEPTANCE-2026-10-03.md)；已认证原候选读取、独立私有审核 CAS、实际 HTTP／SQLite会话撤销及跨Node进程恢复随后也已[本地验收](../tests/C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)。审核正文及ledger不进入Worker／DO、公开备份或新增HTTP路由，没有远端部署或长期服务配置。独立 Google 来源与 journal 的既有真实证据见[实际验收](../tests/C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)；可信原生响应 Tab 关联、全部逐块故障和实际服务器capture仍待完成。来源为 SOURCE_NOT_VERIFIED，Sheet 行为 PRIVATE_PENDING，年度导出未授权；当前阶段以[当前进度](../CURRENT-STATUS.md)为准。
 
 配置须分别核对：默认原 staging 保留十分钟 cron 配置且轮询关闭；专用 c2test 与 production 无 cron。c2test 显式导出开关不等于自动轮询；production C2 写回仍关闭。

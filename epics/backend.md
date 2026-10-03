@@ -39,7 +39,7 @@ BE-01 至 BE-08 的业务结果与验证继续作为迁移基线；以下工作�
 | BE-10 | C2：签名桥接、Form 导入、三方比较、冲突和影响预览、最小字段导出、回执重试及年度归档 | BE-09 | 真实 Google 双向修改、部分写入及丢失回执可恢复；不重复业务事件；对无法保证捕获的人工覆盖窗口如实记录 |
 | BE-11 | C4：只读影子迁移、内容对账、旧写入关停与代次、触发器交接、回退及用量观测 | BE-10、FE-07、ADM-07 | 切换前核验完整数据与请求结果；旧页面不能误写；回退包含切换后已确认数据，Google 旧快照不能直接接管 |
 
-详细同步节奏、数据归属和测试门槛仅在 Cloudflare 计划维护。C2.6 的本地来源／人工映射模型不等于 BE-10 完成：真实 Coach 鉴权、固定来源读取、私有存储、持久审核 CAS、Google receipt 和公开发布接线仍需各自验收。[`api-v1.json`](../contracts/api-v1.json) 描述现行 Apps Script 生产接口；[`api-cloudflare-c0.json`](../contracts/api-cloudflare-c0.json)、[`api-cloudflare-c1.json`](../contracts/api-cloudflare-c1.json) 和 [`api-cloudflare-c2.json`](../contracts/api-cloudflare-c2.json) 描述各阶段已实现的隔离接口。C2 清单同时列有仅本地通过的动作；接口存在不代表 Pages 已接入、远端验收完成或生产写入归属已切换。
+详细同步节奏、数据归属和测试门槛仅在 Cloudflare 计划维护。C2.6 的本地来源／人工映射模型及独立私有适配器不等于 BE-10 完成：真实隔离两遍读取、私有 journal 回读和本机持久恢复已有[实际验收](../tests/C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)，完整 range 保存后的跨进程续读／零来源重放也已[实际验收](../tests/C2-SOURCE-READ-CHECKPOINT-ISOLATED-ACCEPTANCE-2026-10-03.md)。真实 C1 会话、服务器 binding／cutoff／完整数据库已知 census 的持久 pin、内部 HTTP 与私有 HTTPS 客户端、固定目标登记和强制 checkpoint 的 runtime 组合已[本地验收](../tests/C2-SOURCE-TRANSPORT-LOCAL-ACCEPTANCE-2026-10-03.md)；已认证原候选读取、当前journal核验及只追加审核CAS随后已有[本地验收](../tests/C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)。长期host／审核UI、其他Coach委派、可信响应Tab、实际服务器capture、全部逐块故障、年度业务receipt和公开发布接线仍需各自验收。[`api-v1.json`](../contracts/api-v1.json) 描述现行 Apps Script 生产接口；[`api-cloudflare-c0.json`](../contracts/api-cloudflare-c0.json)、[`api-cloudflare-c1.json`](../contracts/api-cloudflare-c1.json) 和 [`api-cloudflare-c2.json`](../contracts/api-cloudflare-c2.json) 描述各阶段已实现的隔离接口。C2 清单同时列有仅本地通过的动作；接口存在不代表 Pages 已接入、远端验收完成或生产写入归属已切换。
 
 ## 与其他 Epic 的交接
 

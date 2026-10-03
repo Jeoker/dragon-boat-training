@@ -1,5 +1,7 @@
 # C2.6 完整原始来源捕获 - 技术设计提案
 
+> 第 1 至 9 节保留原技术协议及纯模块阶段的门槛；其中“没有真实读取／存储”属于当时的实现范围。后续独立私有读取、journal 及本机持久操作见第 10 节和[2026-10-03 实际验收](C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)，服务器权威上下文见第 11 节，内部 HTTP 与私有 runtime 接续见第 12 节；业务接续以[当前进度](../CURRENT-STATUS.md)为准。
+
 日期：2026-10-01。只依据现有源码与 Google 官方 API 文档研究；没有读取真实 Form／Sheet、安装 API、改动 bridge 或执行远端试验。用户已批准的产品语义见[年度设计 §6](C2-ANNUAL-ARCHIVE-DESIGN.md#6-后续-bridge-与技术核验门槛)及[后端归档规格](../google-sheets-backend-spec.md)。本文提出技术协议与未解门槛，不宣布来源捕获、持久恢复或 source verified 已实现。
 
 ## 1. 已固定的语义与本轮范围
@@ -96,7 +98,7 @@ SOURCE_CAPTURE_FIXED 是拟议的持久捕获阶段，只证明原内容与 oper
 1. **Sheet资格与可信mapping**：本地人工审核只有声明及摘要链，尚无真实认证和固定来源证据。原Timestamp是否随native编辑改变未获官方保证；即使将来实测保持，也不能防人工更改或替代稳定ID。没有可信mapping，普通既有Sheet只能捕获pending材料，不能source verified。
 2. **历史census覆盖**：REST createTime可判现存回答，不能恢复已删除已知ID或从未观测ID。known missing必须gap；不能宣称枚举了全部曾经提交。迟到与UNKNOWN Sheet行如何留pending而不入年度archive，需按§4独立实现。
 3. **读取一致性与资源**：Forms分页和Sheet range没有已证明的共同snapshot token。需定版观测一致性保证、预算和失败attempt恢复；官方文档不能代替真实隔离试验。
-4. **私有不可变存储与未知创建**：staging位置、原控制ledger／完整块一次固定、权限、单cell／payload大小和永久receipt尚未实现。已存在目标内fixed sheetId只是候选；年度file创建仍沿[原年度设计](C2-ANNUAL-ARCHIVE-DESIGN.md)独立门槛。
+4. **私有不可变存储与未知创建**：本机私有scope fence、原candidate／receipt CAS、独立journal的原子固定、真实ACL及单cell／payload预算已在[2026-10-03隔离验收](C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)验证；仍需实际业务服务器的权威operation、长期私有存储部署、全部逐块故障恢复证据。完整 candidate 落地前的逐请求 checkpoint 已[本地实现与验收](C2-SOURCE-READ-CHECKPOINT-LOCAL-ACCEPTANCE-2026-10-03.md)，已保存块仅按原请求重放，未知返回保持 unresolved；当时复验命令被自动审批拒绝，后经用户明确授权，完整 range 保存后的跨进程续读和零来源重放已[实际验证](C2-SOURCE-READ-CHECKPOINT-ISOLATED-ACCEPTANCE-2026-10-03.md)。Spreadsheet未知创建仍停在原marker，不自动重建；年度file创建沿[原年度设计](C2-ANNUAL-ARCHIVE-DESIGN.md)独立门槛。
 5. **API与类型覆盖**：Forms REST／Sheets grid能力和OAuth部署范围需独立检查；不改变既有bridge以偷带新权限。完整source类型schema、文件上传引用与附件范围须明确，遇实际不支持内容停止，不只存可读姓名冒充完整。
 
 这些问题是具体技术与验收缺口，不重新询问用户已批准的原始来源产品语义。2026-10-01，已获授权的纯typed-record／cutoff／gap分类切片完成本地实现和双审：五namespace、pinned season_ends_at纳秒边界、decoded duplicate key拒绝、未知完整pending或整input拒绝；DECLARED_ONLY不使任何Sheet行进入年度合规chunks，结果永远LOCAL_SOURCE_PLAN_ONLY／SOURCE_NOT_VERIFIED。详见[纯来源模型本地验收](C2-SOURCE-CAPTURE-PURE-LOCAL-ACCEPTANCE.md)。这不实现本文观测／存储／未知回复状态机；Google协议、API接线、raw存储和远端验收仍需supervisor另行授权及交叉审核。
@@ -112,3 +114,35 @@ SOURCE_CAPTURE_FIXED 是拟议的持久捕获阶段，只证明原内容与 oper
 审核证据只追加。任何派生资格文件都须独立版本化并引用原固定内容hash，不修改旧raw manifest／chunks或追加新发现及迟到回答。重试仍恢复原manifest／chunks／source operation，不重新获取当前源替换原内容。完整来源读取、固定capture、权限、摘要回读、审核幂等和派生文件协议仍须实施与验收，人工确认本身不自动使整体source verified。
 
 此信任政策不再是待用户选择项。最小本地审核模型、无需原input的完整plan验证及RETAINED_PLAN_ONLY私有人审纯入口现已完成本地实施和双审，该 adapter 切片的完整 Node357 项通过，见[私有人审adapter验收](C2-SOURCE-PLAN-REVIEW-ADAPTER-LOCAL-ACCEPTANCE.md)。它们只处理本地声明，不构成已认证Coach、真实固定capture、持久审核或source verified；原范围与缺口不变。下一步关闭私有staging原payload可靠保存、完整读取与固定capture、权限／ACL及原operation未知回复恢复门槛，再接真实审核；认证、版本、防重、资源与后续接线由团队按既定工程门槛处理。本文保留技术协议与已接受政策，不授权缩减既定完整来源范围。
+
+## 10. 接续实施：私有读取与 journal适配器
+
+2026-10-01，用户授权按现有计划持续推进。隔离 TypeScript适配器已实现完整 REST两遍读取、固定 Tab ID的一次原子控制头／正文写入、完整 retained plan核验、私有ACL检查和未知写回复后的原目标回读，见[本轮本地验收](C2-SOURCE-JOURNAL-LOCAL-ACCEPTANCE.md)。原 §§5／6是协议提案，不应全部升级为已实现：此次没有 source operation持久 pin、candidate逐块持久进度、观察证据永久receipt、真实Tab关联证明、Coach鉴权／审核CAS或年度文件创建。
+
+原clasp客户端的Forms／Sheets `403 SERVICE_DISABLED` 是历史阻碍。2026-10-03独立项目 `dragon-boat-source-test` 实际grant和三项API检查通过，既有隔离Form／Sheet完整两pass、新私有journal、受控丢回复和跨进程原receipt恢复已验收。新增本机私有scope fence／完整candidate／write-start／receipt CAS，代码与真实边界见[最新真实验收](C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)及[来源OAuth配置](C2-SOURCE-OAUTH-SETUP.md)。该切片使用测试cutoff、空测试census和本机actor声明；不是业务服务器source capture、已认证Coach、真实native Tab关联或source verified，原gap及全Sheet pending不变。同日后续已实现逐请求私有 checkpoint，并验证完整 candidate CAS 失败后的原内容重建；checkpoint 首个完整 range 保存后的真实跨进程恢复随后经授权通过，完整重放不再读取来源，见[实际恢复验收](C2-SOURCE-READ-CHECKPOINT-ISOLATED-ACCEPTANCE-2026-10-03.md)。实际服务器上下文本地实现见下节；长期私有存储部署及审核 CAS 继续按原门槛实施。
+
+## 11. 接续实施：服务器权威上下文与私有 controller
+
+2026-10-03 新增 [`C2SourceAuthority`](../cloudflare/src/c2-source-authority.ts)：通过真实 C1 签名会话，从同一 SQLite 事务读取赛季、同步绑定、全部 `source_imports` 和成员 ID，固定 actor、已结束赛季截止、binding／generation／epoch、Form／Spreadsheet／数值 Tab ID、Tab 标题声明及数据库已知 census。census 包含旧绑定的 IMPORTED／REVIEW_REQUIRED、LEGACY_ROW、停用及尚无导入关联的成员；旧 Form 身份无法证明属于当前 Form 时整份拒绝，不静默省略。原 census 跨新请求、并发及 DO 驱逐保持固定；新导入 ID 不追加旧 pin。schema16 只新增权威元数据表，完整备份扩为51表，原业务表和来源正文范围不变。
+
+[`createAuthorizedSourceOperation`](../backend/source-journal/authority-context.ts) 组合可信已认证服务器端口与私有目标登记，初次采集不声明人工映射。读取前、候选保存前、journal 调用前和回执保存前重新确认原 pin、当前会话与私有目标。digest 证明完整性，不认证任意输入对象。会话或绑定变化停止；write-start 后拒绝仍保持原未知 marker，只能回读原目标，不能换请求／目标重新 stage。真实 SQLite 鉴权、私有候选组合、并发、重启和迁移回滚证据见[本地验收](C2-SOURCE-AUTHORITY-LOCAL-ACCEPTANCE-2026-10-03.md)。
+
+该 pin 切片当时没有 HTTP 路由、已认证跨服务 transport 或长期私有服务部署；后续本地 HTTP／runtime 组合见下节。数据库已知 census 不是完整历史，Tab 标题与绑定声明不证明原生关联，两次来源读取不提供跨源原子性；分布式鉴权检查与外部写入也不是同一事务。只追加审核及持久 CAS、可信 Tab 证据、全部捕获故障和业务 receipt 继续独立验收，来源状态仍为 SOURCE_NOT_VERIFIED，年度导出未授权。
+
+## 12. 接续实施：内部 HTTP 与私有 runtime
+
+2026-10-03 后续新增 `/internal/c2/pin-source-authority`，沿既有 C2 transport gate 和 C1 Coach 会话认证，返回固定来源权威元数据。路由在生产环境仍拒绝，没有 source raw／OAuth／journal 目标输入或输出，也不调用 Google、消费 outbox 或推进业务任务。既有契约保持兼容，manifest 同步新增动作与错误码。
+
+私有 Node 端 [`SourceServerAuthorityClient`](../backend/source-journal/server-authority-client.ts) 使用私有配置固定 HTTPS origin 和后端身份，每次取得当前 transport key／session token；不跟随重定向、不把凭据写入 URL／文件／错误。完整响应含 envelope 最多2 MB，核 request／contract／instance／generation／epoch／team／season 与 pin 摘要后才返回。该 envelope 上限可能拒绝接近2 MB的合法 pin，不返回部分 census 或弱化预算。
+
+[`PrivateSourceTargetRegistry`](../backend/source-journal/target-registry.ts) 在私有 CAS 保存一次性 pin 与 attempt／API owner／journal 目标；新请求不能替换，同身份重放恢复原登记。独立 Node 进程恢复、确认丢失、并发与内容篡改已测。[`createPrivateSourceRuntime`](../backend/source-journal/private-runtime.ts) 组合服务器端口、原登记、reader、强制持久 checkpoint 和 journal；实际 Google 请求前后复核当前权威，撤销会话后不发后续请求或保存完整候选，未知请求和 journal 写入保持原恢复规则。
+
+该切片均为本地实现和本地 Worker HTTP／模拟 REST 验收，没有公网 TLS／远端 HTTP 接线验收、长期私有 host、实际服务器来源 capture 或新 Google 操作；见[接线本地验收](C2-SOURCE-TRANSPORT-LOCAL-ACCEPTANCE-2026-10-03.md)。当时已认证候选读取与只追加审核CAS待实现，后续进展见下节；原未核验状态、pending 内容和年度授权限制不变。
+
+## 13. 接续实施：已认证原候选读取与私有审核 CAS
+
+2026-10-03，`PrivateSourceOperation.readForReview()` 强制已认证权威和原 `JOURNAL_READBACK_CONFIRMED`，仅从原candidate／receipt取得固定完整core。入口、审核保存前和返回前复核服务器权威、原上下文／内容及原journal当前私有权限；没有审核触发的source重读、stage或新目标。
+
+[`PrivateSourceReview`](../backend/source-journal/private-review.ts) 复用现行retained plan／完整审核链，独立私有CAS保存HUMAN_ATTESTED。key按team／原operation固定，identity绑定原context／candidate／plan／receipt；actor是原已认证capture actor，时间来自host并不得早于capture或前一审核。全部输出预算在新证据CAS前检查，不同命令竞争失败不自动重排，相同请求或确认丢失恢复原证据；后续追加后旧请求恢复原派生prefix和时间。
+
+内层LOCAL_* provenance不改，外层只声明PRIVATE_REVIEW_LEDGER_DURABLE_ONLY／RETAINED_PLAN_ONLY。原source、journal、pending和gap不修改，来源仍SOURCE_NOT_VERIFIED、年度导出false。真实本地HTTP／SQLite会话及两个独立Node进程恢复已有[验收](C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)，Google仍为虚构模型。没有审核HTTP／UI、其他Coach委派或长期host部署；分布式鉴权／Google／CAS不具原子性。长期服务、公网及实际服务器capture、可信Tab、全部故障及年度receipt继续独立验收。
