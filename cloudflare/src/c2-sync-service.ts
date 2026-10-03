@@ -23,6 +23,7 @@ import { assertNoUnfinishedExportBeforeRebinding } from "./sync-binding-guard";
 import { exportPauseRequested, unfinishedExport } from "./c2-export-control";
 import { pollDueExports } from "./c2-export-poller";
 import { selectExportLane } from "./c2-export-lanes";
+import { C2SourceAuthority } from "./c2-source-authority";
 
 interface PreparedBaseline extends SyncBaselineSnapshot { baseline_digest: string; }
 
@@ -76,6 +77,7 @@ export class C2SyncService {
   }
 
   async handle(path: string, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (path === "/internal/c2/pin-source-authority") return { pin: await new C2SourceAuthority(this.ctx, this.env).pin(raw) };
     if (path === "/internal/c2/import-sync-foundation") return this.importFoundation(raw);
     if (path === "/internal/c2/get-sync-overview") return this.getOverview(raw);
     if (path === "/internal/c2/set-export-pause") return this.setExportPause(raw);

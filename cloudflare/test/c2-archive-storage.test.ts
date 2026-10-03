@@ -301,9 +301,9 @@ it("upgrades nonempty v14 and all 47 protected tables with pending/SENT/FAILED/l
       VALUES ('old_selection_request',?,1,'annual_old_outbox_0',?,'event_digest','request_digest',?)`,f.sid,payload,f.at);
     sql.exec("INSERT INTO sync_export_poll_plans(request_key,request_digest,plan_json,plan_digest,created_at) VALUES ('old_poll','old_request_digest','[]','old_plan_digest',?)",f.at);
     const backup=await new C1HistoryService(ctx,f.testEnv).handle("/internal/c1/create-backup-snapshot",{request_id:"migration_table_list_001",session_token:f.token}) as any;
-    const oldTables=backup.result.manifest.tables.map((row:any)=>row.name).filter((name:string)=>!name.startsWith("annual_archive_")) as string[];
+    const oldTables=backup.result.manifest.tables.map((row:any)=>row.name).filter((name:string)=>!name.startsWith("annual_archive_")&&name!=="source_authority_pins") as string[];
     expect(oldTables).toHaveLength(47);
-    sql.exec("DROP TABLE annual_archive_requests; DROP TABLE annual_archive_chunks; DROP TABLE annual_archive_plans;");
+    sql.exec("DROP TABLE annual_archive_requests; DROP TABLE annual_archive_chunks; DROP TABLE annual_archive_plans; DROP TABLE source_authority_pins;");
     sql.exec("UPDATE app_meta SET value='14' WHERE key='schema_version'");
     const original=Object.fromEntries(oldTables.map(table=>[table,sql.exec(`SELECT * FROM ${table} ORDER BY rowid`).toArray()]));
     const faulty=watched(ctx.storage,query=>{if(query.includes("CREATE TABLE IF NOT EXISTS annual_archive_plans"))throw Error("Migration post-DDL fault");});
@@ -311,18 +311,18 @@ it("upgrades nonempty v14 and all 47 protected tables with pending/SENT/FAILED/l
     expect(sql.exec<{value:string}>("SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe("14");
     expect(sql.exec<{n:number}>("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name LIKE 'annual_archive_%'").one().n).toBe(0);
     applySchema(ctx.storage);
-    expect(APPLICATION_SCHEMA_VERSION).toBe(15);expect(counts(ctx)).toEqual([0,0,0]);
+    expect(APPLICATION_SCHEMA_VERSION).toBe(16);expect(counts(ctx)).toEqual([0,0,0]);
     for(const table of oldTables){
       const rows=sql.exec(`SELECT * FROM ${table} ORDER BY rowid`).toArray();
       if(table==="app_meta")expect(rows.map(row=>row.key==="schema_version"?{...row,value:"14"}:row)).toEqual(original[table]);
       else expect(rows,table).toEqual(original[table]);
     }
-    expect(sql.exec<{value:string}>("SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe("15");
-    sql.exec("UPDATE app_meta SET value='16' WHERE key='schema_version'");
-    expect(()=>applySchema(ctx.storage)).toThrow("Unsupported");sql.exec("UPDATE app_meta SET value='15' WHERE key='schema_version'");
+    expect(sql.exec<{value:string}>("SELECT value FROM app_meta WHERE key='schema_version'").one().value).toBe("16");
+    sql.exec("UPDATE app_meta SET value='17' WHERE key='schema_version'");
+    expect(()=>applySchema(ctx.storage)).toThrow("Unsupported");sql.exec("UPDATE app_meta SET value='16' WHERE key='schema_version'");
   });
 });
-it("protects both nonempty CAPTURED and READY plans/pins/chunks in 50-table backup with independent manifest recomputation",async()=>{
+it("protects both nonempty CAPTURED and READY plans/pins/chunks in 51-table backup with independent manifest recomputation",async()=>{
   const f=await setup("stored_backup");await inSql(f,async ctx=>{
     const context=storageContext(f),captured=await new C2ArchiveStorage(ctx.storage,context).capture(storageCommand(f));
     const practice=storageCommand(f,{request_id:"backup_practice_capture_001",kind:"PRACTICE",practice_id:f.pid});
@@ -331,7 +331,7 @@ it("protects both nonempty CAPTURED and READY plans/pins/chunks in 50-table back
     expect((expected.annual_archive_plans as any[]).map(row=>row.status)).toEqual(["CAPTURED","LOCAL_DIGEST_READY"]);
     const history=new C1HistoryService(ctx,f.testEnv);
     const created=await history.handle("/internal/c1/create-backup-snapshot",{request_id:"annual_backup_snapshot_001",session_token:f.token}) as any;
-    const manifest=created.result.manifest;expect(manifest.schema_version).toBe(15);expect(manifest.tables).toHaveLength(50);
+    const manifest=created.result.manifest;expect(manifest.schema_version).toBe(16);expect(manifest.tables).toHaveLength(51);
     const descriptors=[];
     for(const entry of manifest.tables){
       const rows:any[]=[];

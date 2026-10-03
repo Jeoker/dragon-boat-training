@@ -226,7 +226,9 @@ export function sourceFormSchema(schema:SourceObject):{supported:boolean;questio
   let supported=fieldsKnown(schema,["formId","info","settings","items","revisionId","responderUri","linkedSheetId","publishSettings"]);
   sourceText(schema.formId,1,512);optionalText(schema,["revisionId","responderUri","linkedSheetId"]);
   const info=sourceObject(schema.info);supported=fieldsKnown(info,["title","description","documentTitle"])&&supported;
-  sourceText(info.title);optionalText(info,["description","documentTitle"]);
+  // Forms may omit a blank form title. Preserve that raw absence; do not invent
+  // a title from the Drive document name or reject an otherwise readable form.
+  optionalText(info,["title","description","documentTitle"]);
   if(has(schema,"settings")){const settings=sourceObject(schema.settings);supported=fieldsKnown(settings,["quizSettings","emailCollectionType"])&&supported;
     if(has(settings,"emailCollectionType"))supported=["EMAIL_COLLECTION_TYPE_UNSPECIFIED","DO_NOT_COLLECT","VERIFIED","RESPONDER_INPUT"].includes(sourceText(settings.emailCollectionType))&&supported;
     if(has(settings,"quizSettings")){const quiz=sourceObject(settings.quizSettings);supported=fieldsKnown(quiz,["isQuiz"])&&supported;optionalBool(quiz,["isQuiz"]);}}

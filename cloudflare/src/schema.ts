@@ -1,6 +1,6 @@
 import { indexExportEvent } from "./c2-export-lanes";
 
-export const APPLICATION_SCHEMA_VERSION = 15;
+export const APPLICATION_SCHEMA_VERSION = 16;
 
 function applyC0Schema(sql: SqlStorage): void {
   sql.exec(`
@@ -655,6 +655,19 @@ function applyC2AnnualArchiveSchema(sql: SqlStorage): void {
   }
 }
 
+function applyC2SourceAuthoritySchema(sql: SqlStorage): void {
+  const definition = `CREATE TABLE IF NOT EXISTS source_authority_pins (
+    season_id TEXT PRIMARY KEY REFERENCES seasons(season_id), source_operation_id TEXT NOT NULL UNIQUE,
+    actor_id TEXT NOT NULL REFERENCES coaches(coach_id), request_id TEXT NOT NULL,
+    pin_text TEXT NOT NULL, authority_digest TEXT NOT NULL, pinned_at TEXT NOT NULL,
+    UNIQUE(actor_id, request_id)
+  )`;
+  sql.exec(definition).toArray();
+  const actual = sql.exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='source_authority_pins'").one().sql;
+  const normalized = (text: string) => text.replace(/\s+/gu, " ").trim().replace(/ IF NOT EXISTS/gu, "");
+  if (normalized(actual) !== normalized(definition)) throw new Error("Unsupported source authority storage schema.");
+}
+
 export function applySchema(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
     const sql = storage.sql;
@@ -680,6 +693,7 @@ export function applySchema(storage: DurableObjectStorage): void {
     if (currentVersion < 13) applyC2AssociatedExportSchema(sql);
     if (currentVersion < 14) applyC2ExportLaneSchema(sql);
     if (currentVersion < 15) applyC2AnnualArchiveSchema(sql);
+    if (currentVersion < 16) applyC2SourceAuthoritySchema(sql);
     sql.exec(
       `INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

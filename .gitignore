@@ -1,4 +1,5 @@
 node_modules/
+.npm-cache-source-oauth/
 dist/
 .astro/
 .DS_Store

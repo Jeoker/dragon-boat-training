@@ -97,14 +97,14 @@ test("the C1 manifest lists every error raised directly by its business services
 test("the C2 manifest lists every error raised directly by its business services and bridge", async () => {
   const contract = JSON.parse(await readFile(new URL("../contracts/api-cloudflare-c2.json", import.meta.url), "utf8"));
   const sources = await Promise.all([
-    "../cloudflare/src/c2-sync-service.ts", "../cloudflare/src/c2-form-service.ts",
+    "../cloudflare/src/c2-sync-service.ts", "../cloudflare/src/c2-form-service.ts", "../cloudflare/src/c2-source-authority.ts",
     "../cloudflare/src/c2-member-export.ts", "../cloudflare/src/c2-schedule-export.ts",
     "../cloudflare/src/c2-schedule-projection.ts", "../cloudflare/src/c2-associated-export.ts",
     "../cloudflare/src/c2-associated-projection.ts", "../cloudflare/src/c2-sheet-bridge.ts",
     "../cloudflare/src/c2-export-lanes.ts", "../cloudflare/src/c2-form-bridge.ts", "../cloudflare/src/c2-sheet-diff.ts"
   ].map((file) => readFile(new URL(file, import.meta.url), "utf8")));
   const raised = new Set(sources.flatMap((source) =>
-    [...source.matchAll(/new ApiError\("([A-Z0-9_]+)"/g)].map((match) => match[1])));
+    [...source.matchAll(/(?:new ApiError|fail)\("([A-Z0-9_]+)"/g)].map((match) => match[1])));
   for (const code of raised) assert.ok(contract.errors.includes(code), `Missing C2 error ${code}`);
   assert.ok(contract.errors.includes("INVALID_JSON"));
 });
