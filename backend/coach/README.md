@@ -30,7 +30,7 @@ new_code要求16至128个无空白的ASCII可打印字符，应由私有密码�
   },
   "schema_version": 16,
   "coach_id": "<CURRENT_COACH_ID>",
-  "expected_credential_version": 1,
+  "expected_credential_version": 2,
   "request_id": "<FRESH_UNUSED_REQUEST_ID>",
   "credentials_file": "D:\\private-rotation\\credentials.json",
   "new_code_file": "D:\\private-rotation\\new-code.json",
@@ -41,13 +41,18 @@ new_code要求16至128个无空白的ASCII可打印字符，应由私有密码�
 }
 ```
 
-credentials输入文件是现行授权的`{transport_key,session_token}`；output位于另一个私有目录，绝不覆盖原文件。checkpoint首次必须存在且为空。运行：
+示例version2来自最近隔离核验；实际值必须与当前受保护读取和新保护包一致，不能从模板采纳。credentials输入文件是现行授权的`{transport_key,session_token}`；output位于另一个私有目录，绝不覆盖原文件。checkpoint首次必须存在且为空。先准备，再按明确的真实轮换决定执行：
 
 ```powershell
 npm run backup:business:build
+npm run coach:rotate -- prepare 'D:\private-rotation\config.json'
 npm run coach:rotate -- rotate 'D:\private-rotation\config.json' --rotate-own-coach-code
 npm run coach:rotate -- resume 'D:\private-rotation\config.json'
 ```
+
+`prepare`完整离线核验保护包及独立digest，再受保护读取当前Coach、schema和服务身份，调用只读prepare并再次核对原会话及本次新Code。输出`COACH_CODE_ROTATION_PREPARED`、`rotation_submitted=false`、预期版本、服务指纹、保护包时点及队列观测；不调用rotate／login，不写attempt header、receipt或新凭据，不撤销会话。锁仅在本次预检期间存在；已存在的attempt、非空checkpoint或output都拒绝，不能用prepare重解释未知轮换。
+
+准备结果只证明该次保护包与当前Coach检查通过，`verification=PROTECTION_AND_CURRENT_COACH_ONLY`。队列是独立时点的观测，不是冻结、待执行许可或全量业务对账；非零计数不能被解释成可直接执行。prepare不预留请求或固定未来授权，实际rotate会重新核全部前置，不能跳过prepare之外的业务与运维门槛。
 
 CLI固定唯一c2test目标；逐响应核验generation／epoch／service version／request等元数据，30秒deadline、100,000字节响应预算，拒绝redirect，无自动retry。独立核验保护包后，核当前actor／version／schema，prepare原payload，持久写一次header.json，之后最多提交一次rotate。header固定原config、actor、version、服务指纹、service version与派生login请求，不含Code／token或可离线猜解的裸CodeSHA；Code每次重读并在本次调用内保持一致。保护包完整性不证明来源或当前最新业务状态，实际运行前仍需业务冻结与差异核对。
 

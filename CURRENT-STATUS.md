@@ -1,6 +1,6 @@
 # 当前进度与接续入口
 
-更新：2026-10-07。隔离c2test首次schema16发布及保护包对账已完成。本轮审核代码与全部30份项目Markdown，清理未用导入及仅供测试使用的原始存储RPC，按当前组件边界修正文档。生产与Google状态仍以各自注明的最近核验日期为准；本轮未刷新远端或执行部署。
+更新：2026-10-07。隔离c2test首次schema16发布及保护包对账已完成，代码清理和文档审核提交已推送至开发分支。Coach自轮换的只读CLI准备入口已实现并通过本地验证；真实轮换仍待当前会话、新保护包及私有Code配置。生产与Google状态仍以各自注明的最近核验日期为准；本轮未刷新业务云端或执行部署。
 
 ## 当前设计
 
@@ -18,7 +18,7 @@
 | 私有云运行层 | 独立 SQLite CAS、双向命名 Service Binding、OAuth、capture／capture-native、journal、审核及独立 backup 已本地验收 | Google 为模型；未部署，真实云授权、Free 资源和审核页面未验收 |
 | 备份与封存恢复 | 原47／当前51表包、独立私有快照及 RecoveryRuntime／RecoveryState 已本地验证 | 不复活旧 sessions，不提供在线激活；云端恢复待验收 |
 | 原生 Tab 证明 | 签名原生观察及新 capture-native 的首 checkpoint／v2 候选已实现 | 真实 Google 观察和业务 capture 待验；普通 capture 及已有候选不追溯提升 |
-| Coach 自轮换 | self-only、HMAC 指纹、凭据 census／version CAS、撤销全部旧 sessions、receipt 及私有 CLI 已实现；远端只读prepare通过，当前credential_version=2保持 | 本轮未执行真实自轮换；生产 Apps Script 凭据另处理 |
+| Coach 自轮换 | self-only、HMAC 指纹、凭据 census／version CAS、撤销全部旧 sessions、receipt 及私有 CLI 已实现；独立CLI准备可重复核验且不提交轮换。最近远端只读prepare通过，所测credential_version=2保持 | CLI新增准备仅本地验收，远端版本不由本次刷新；未执行真实自轮换，生产 Apps Script 凭据另处理 |
 | 来源与年度资格 | SOURCE_NOT_VERIFIED、原 Sheet 行 PRIVATE_PENDING、annual_export_authorized=false | 原生单点关系、两遍一致、journal 回读及 HUMAN_ATTESTED 均不自动消除来源缺口 |
 
 完整证据、所测日期和具体未验证范围只在[验证索引](tests/CURRENT-VERIFICATION.md)维护。文档直接更新当前结论；运行数据、缓存及凭据遵守项目忽略与私有路径规则。
@@ -27,7 +27,7 @@
 
 | 顺序 | 下一项 | 完成门槛 |
 |---|---|---|
-| 1 | 重新核验当前Coach并刷新51表保护包，再实际 Cloudflare Coach 自轮换 | 包匹配当前 schema／Coach version，独立可信摘要，新 Code 登录及全部旧 sessions 拒绝 |
+| 1 | 重新核验当前Coach并刷新51表保护包，执行只读CLI准备，再显式 Cloudflare Coach 自轮换 | 准备不写attempt、不撤销会话；包匹配当前 schema／Coach version及独立可信摘要，真实轮换确认新 Code 登录及全部旧 sessions 拒绝 |
 | 2 | 独立 Recovery Worker 接线与云端封存恢复 | 固定 target／digest／身份和当前权威回调，新空 namespace，事务回读、逐表对账及公网拒绝 |
 | 3 | Google 管理配置及私有 Worker／SourceRuntime 隔离发布 | 真实 OAuth／owner 权限、原生观察与业务 capture、journal／checkpoint／审核故障恢复、Free 资源 |
 | 4 | 审核页面、来源资格与年度输出 | 其他 Coach 委派独立鉴权；完整性／资格逐项满足，年度文件、未知创建、receipt 及回读有独立证据 |

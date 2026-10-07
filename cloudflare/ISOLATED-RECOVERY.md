@@ -67,7 +67,7 @@ Google journal仅保存原core。原生观察及receipt的恢复权威在私有D
 
 1. 用[业务备份CLI](../backend/backup/README.md)取得与当前远端schema／身份匹配的保护包，完整核验并独立保管可信摘要；既有原包的实际证据见验证索引。下载不刷新全部同步状态或证明云端恢复，本地fixture不能替代真实原包演练。
 2. 原包离线核验及本地SQLite演练通过后，按[首次发布准备](#首次-schema16-发布准备)生成并评审业务schema16配置。首次提供SourceAuthority时，专用配置省略`PRIVATE_SOURCE_RUNTIME`与`ISOLATED_RECOVERY_RUNTIME`两个尚未发布服务的binding，保持所有polling和自动导出关闭。演练不覆盖云端鉴权／namespace接线；实际云端恢复在第4步，不能要求用未发布入口提前轮换。
-3. 新业务路由可用后，刷新匹配当前schema16／Coach version的51表保护包并独立核验，再按[自轮换指南](../backend/coach/README.md)实际轮换Cloudflare当前Coach、确认新Code与全部旧sessions拒绝。Code只在私有配置输入，unknown恢复只读原receipt，不重复轮换。生产Apps Script Code及Git历史独立处理，是否实际执行只看当前进度。
+3. 新业务路由可用后，刷新匹配当前schema16／Coach version的51表保护包并独立核验，按[自轮换指南](../backend/coach/README.md)先执行CLI `prepare`检查保护包、当前Coach、schema及服务身份；准备不提交轮换、撤销会话或预留未来授权，也不代替业务冻结与差异核对。前置通过后显式轮换Cloudflare当前Coach，确认新Code与全部旧sessions拒绝。Code只在私有配置输入，unknown恢复只读原receipt，不重复轮换。生产Apps Script Code及Git历史独立处理，是否实际执行只看当前进度。
 4. 使用独立恢复配置固定target／可信digest／身份和已存在SourceAuthority回调；先`npm run cf:recovery:dry-run`，再对专用配置执行`npx wrangler deploy --config <isolated recovery config>`。随后给业务c2test配置增加上述命名恢复binding，dry-run后发布。只在隔离服务执行保护包恢复与封存／逐表对账、公网拒绝验收。
 5. Google账号管理者核对项目、Forms／Sheets／Drive API、consent／audience／scopes和owner权限，私下注入`SOURCE_GOOGLE_OAUTH_CLIENT_ID`、`SOURCE_GOOGLE_OAUTH_CLIENT_SECRET`、`SOURCE_GOOGLE_OAUTH_REFRESH_TOKEN`。登录／probe／refresh适配通过不等于真实云授权通过；测试consent token的7日过期和长期授权策略须由管理者核实。
 6. 私有来源Worker先回绑已存在SourceAuthority、部署独立namespace，再由业务启用`PRIVATE_SOURCE_RUNTIME`→`SourceRuntime`。每份实际配置先dry-run；当前仓库c2test配置已声明来源binding，首次发布不能直接忽略服务不存在的依赖。完整backend构建的原生动作须单独发布到隔离Google项目，保留其Web App manifest及secret；probe不能替代。

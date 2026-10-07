@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile, writeFile, mkdir, readdir, access } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, access, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fixture, target } from "./backup-cli-test-runtime.mjs";
 import { assertPrivatePath } from "../backend/source-journal/private-paths.mjs";
+import { runCoachRotationCli } from "../backend/coach/cli.mjs";
 
 const newCode = "PRIVATE-FICTIONAL-ROTATION-CODE-SENTINEL";
 const route = "/internal/c1/rotate-coach-code", entrypoint = "backend/coach/cli.mjs";
@@ -28,6 +29,7 @@ async function setup() {
     const child = args => f.child(args, {}, entrypoint);
     return { ...f, rotationConfig: config, rotationConfigPath: configPath, codePath, store, before: rows,
       saveRotation: () => writeFile(configPath, JSON.stringify(config)), rotate: () => child(["rotate", configPath, "--rotate-own-coach-code"]),
+      prepare: () => child(["prepare", configPath]),
       resume: () => child(["resume", configPath]), rotationChild: child,
       rows: async () => (await f.invoke("/__fixture/rows", undefined, false)).body };
   } catch (error) { await f.close(); throw error; }
@@ -39,6 +41,86 @@ function noSecrets(result) {
 async function noOutput(f) { await assert.rejects(access(f.rotationConfig.output_credentials_file)); }
 function rotations(rows) { return rows.system_requests.filter(row => row.action === "rotateCoachCode"); }
 function rotateCalls(f) { return f.state.calls.filter(call => call.path === route); }
+
+test("read-only prepare repeats without changing real business/session rows or reserving a mutation; explicit rotate remains available", async () => {
+  const f = await setup();
+  try {
+    const before = await f.rows();
+    const protection = JSON.parse(await readFile(f.config.output_file, "utf8"));
+    const results = [];
+    for (let index = 0; index < 2; index++) {
+      const prepared = await f.prepare(); assert.equal(prepared.code, 0, prepared.output); noSecrets(prepared);
+      const result = JSON.parse(prepared.output); results.push(result);
+      assert.deepEqual(result, { status: "COACH_CODE_ROTATION_PREPARED", rotation_submitted: false,
+        coach_id: f.rotationConfig.coach_id, request_id: f.rotationConfig.request_id,
+        expected_credential_version: 1, next_credential_version: 2, schema_version: 16, server: target,
+        service_version: "0.17.0-c2-associated-export", payload_digest: result.payload_digest,
+        protection_digest: protection.manifest.content_digest, protection_captured_at: protection.manifest.created_at,
+        operations_observed_at: result.operations_observed_at,
+        outbox_pending: before.sync_outbox.filter(row => row.status === "PENDING").length,
+        jobs_pending: before.scheduled_jobs.filter(row => ["PENDING", "RUNNING"].includes(row.status)).length,
+        verification: "PROTECTION_AND_CURRENT_COACH_ONLY" });
+      assert.match(result.payload_digest, /^sha256_v1:[A-Za-z0-9_-]{43}$/u);
+      assert.ok(Number.isFinite(Date.parse(result.operations_observed_at)));
+      assert.deepEqual(await f.rows(), before); assert.deepEqual(await readdir(f.store), []); await noOutput(f);
+    }
+    assert.equal(results[0].payload_digest, results[1].payload_digest);
+    assert.equal(f.state.calls.length, 8);
+    assert.ok(f.state.calls.every(call => ["/internal/c1/coach-bootstrap", "/internal/c1/get-operations", "/internal/c1/prepare-coach-code-rotation"].includes(call.path)));
+    assert.equal(rotateCalls(f).length, 0);
+    const committed = await f.rotate(); assert.equal(committed.code, 0, committed.output); noSecrets(committed);
+    assert.equal(rotateCalls(f).length, 1); assert.equal(rotations(await f.rows()).length, 1);
+  } finally { await f.close(); }
+});
+
+test("prepare rejects wrong protection, wrong Coach version and occupied attempt/output before HTTP", async () => {
+  const f = await setup();
+  try {
+    const protectionDigest = f.rotationConfig.protection_digest;
+    f.rotationConfig.protection_digest = "sha256_v1:" + "a".repeat(43); await f.saveRotation();
+    assert.notEqual((await f.prepare()).code, 0); assert.equal(f.state.calls.length, 0);
+    f.rotationConfig.protection_digest = protectionDigest; f.rotationConfig.expected_credential_version = 2; await f.saveRotation();
+    assert.notEqual((await f.prepare()).code, 0); assert.equal(f.state.calls.length, 0);
+    f.rotationConfig.expected_credential_version = 1; await f.saveRotation();
+    const existingOutput = JSON.stringify({ fixture: "DO-NOT-OVERWRITE-PREPARE-OUTPUT" });
+    await writeFile(f.rotationConfig.output_credentials_file, existingOutput, { mode: 0o600 });
+    assert.notEqual((await f.prepare()).code, 0); assert.equal(f.state.calls.length, 0);
+    assert.equal(await readFile(f.rotationConfig.output_credentials_file, "utf8"), existingOutput);
+    await unlink(f.rotationConfig.output_credentials_file);
+    const headerPath = join(f.store, "header.json"), header = JSON.stringify({ format: "existing-unknown-attempt" });
+    await writeFile(headerPath, header, { mode: 0o600 });
+    const blocked = await f.prepare(); assert.notEqual(blocked.code, 0); noSecrets(blocked);
+    assert.equal(f.state.calls.length, 0); assert.equal(await readFile(headerPath, "utf8"), header);
+    assert.deepEqual(await f.rows(), f.before); await noOutput(f);
+  } finally { await f.close(); }
+});
+
+test("prepare refuses unexpected server fields, changed private Code and revoked current session without a rotation attempt", async () => {
+  const f = await setup();
+  try {
+    for (const mode of ["extra-field", "code-changed", "revoked"]) {
+      f.state.hook = async ({ path, body, response, invoke }) => {
+        if (path !== "/internal/c1/prepare-coach-code-rotation") return false;
+        const reply = await invoke(path, body);
+        if (mode === "extra-field") reply.body.data.new_code = newCode;
+        if (mode === "code-changed") await writeFile(f.codePath, JSON.stringify({ new_code: "CHANGED-PRIVATE-CODE-SENTINEL" }));
+        if (mode === "revoked") await invoke("/internal/c1/coach-logout", { request_id: "prepare_current_logout_001", session_token: f.session_token });
+        response.writeHead(reply.status, { "content-type": "application/json" }); response.end(JSON.stringify(reply.body)); return true;
+      };
+      const denied = await f.prepare(); assert.notEqual(denied.code, 0); noSecrets(denied);
+      assert.ok(!denied.output.includes("CHANGED-PRIVATE-CODE-SENTINEL"));
+      assert.equal(rotateCalls(f).length, 0); assert.deepEqual(await readdir(f.store), []); await noOutput(f);
+      if (mode !== "revoked") assert.deepEqual(await f.rows(), f.before);
+      await writeFile(f.codePath, JSON.stringify({ new_code: newCode }));
+    }
+    assert.equal(rotations(await f.rows()).length, 0);
+  } finally { await f.close(); }
+});
+
+test("prepare accepts only its two arguments and never treats a mutation flag as preparation", async () => {
+  for (const args of [["prepare"], ["prepare", "unused-path", "--rotate-own-coach-code"], ["rotate", "unused-path"], ["resume", "unused-path", "--prepare"]])
+    await assert.rejects(runCoachRotationCli(args), /^Error: COACH_CODE_ROTATION_UNCONFIRMED$/u);
+});
 
 test("real 51-table protected backup authorizes a private child CLI self rotation and original receipt; old sessions revoke and business bytes persist", async () => {
   const f = await setup();

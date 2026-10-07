@@ -34,7 +34,7 @@ export async function readCoachRotationConfig(path){
 export async function runCoachRotation(configPath,mode,ports={}){
   let lock,lockPath;
   try{
-    if(!["rotate","resume"].includes(mode))throw fail();
+    if(!["prepare","rotate","resume"].includes(mode))throw fail();
     const c=await readCoachRotationConfig(configPath),r=await runtime(),configText=r.canonicalJson(c);
     const protection=await r.verifyBusinessBackup(await readBackupPrivateJson(c.protection_file));
     if(protection.manifest.content_digest!==c.protection_digest || protection.sourceSchemaVersion!==c.schema_version ||
@@ -47,7 +47,7 @@ export async function runCoachRotation(configPath,mode,ports={}){
       if(mode!=="resume" || header.format!=="c1-self-coach-rotation-attempt-v1" || header.config_text!==configText || header.actor_id!==c.coach_id ||
         header.credential_version!==c.expected_credential_version || !digest(header.payload_digest) || header.login_request_id!==loginRequestId(c,header.payload_digest) ||
         typeof header.service_version!=="string" || !header.service_version)throw fail();
-    }else if(mode!=="rotate" || (await readdir(c.store_directory)).some(name=>name!=="rotation.lock") || await existingBackupPrivateJson(c.output_credentials_file,64_000)!==null)throw fail();
+    }else if(mode==="resume" || (await readdir(c.store_directory)).some(name=>name!=="rotation.lock") || await existingBackupPrivateJson(c.output_credentials_file,64_000)!==null)throw fail();
     let serviceVersion=header?.service_version;
     let invocationCode;
     const newCode=async()=>{
@@ -86,10 +86,23 @@ export async function runCoachRotation(configPath,mode,ports={}){
     const original=await credentials();
     if(!header){
       await bootstrap(original,c.expected_credential_version);
-      if((await fetchC1("get-operations",{session_token:original.session_token},original)).schema_version!==c.schema_version)throw fail();
+      const operations=await fetchC1("get-operations",{session_token:original.session_token},original);
+      if(operations.schema_version!==c.schema_version)throw fail();
       const prepared=await fetchC1("prepare-coach-code-rotation",{session_token:original.session_token,expected_credential_version:c.expected_credential_version,new_code:await newCode()},original);
       await bootstrap(original,c.expected_credential_version);exact(prepared,["coach_id","expected_credential_version","payload_digest"]);
       if(prepared.coach_id!==c.coach_id || prepared.expected_credential_version!==c.expected_credential_version || !digest(prepared.payload_digest))throw fail();
+      if(mode==="prepare"){
+        const counts=operations.counts;
+        if(!counts || [counts.outbox_pending,counts.jobs_pending].some(v=>!Number.isSafeInteger(v) || v<0))throw fail();
+        time(protection.manifest.created_at);time(operations.generated_at);await newCode();
+        // Preparation has no durable attempt: every explicit rotate repeats the checks.
+        return{status:"COACH_CODE_ROTATION_PREPARED",rotation_submitted:false,coach_id:c.coach_id,request_id:c.request_id,
+          expected_credential_version:c.expected_credential_version,next_credential_version:c.expected_credential_version+1,
+          schema_version:c.schema_version,server:c.server,service_version:serviceVersion,payload_digest:prepared.payload_digest,
+          protection_digest:c.protection_digest,protection_captured_at:protection.manifest.created_at,
+          operations_observed_at:operations.generated_at,outbox_pending:counts.outbox_pending,jobs_pending:counts.jobs_pending,
+          verification:"PROTECTION_AND_CURRENT_COACH_ONLY"};
+      }
       const loginId=loginRequestId(c,prepared.payload_digest);
       header={format:"c1-self-coach-rotation-attempt-v1",config_text:configText,actor_id:c.coach_id,credential_version:c.expected_credential_version,
         payload_digest:prepared.payload_digest,service_version:serviceVersion,login_request_id:loginId};
@@ -125,6 +138,7 @@ export async function runCoachRotation(configPath,mode,ports={}){
 }
 export async function runCoachRotationCli(args){
   const[action,path,flag]=args;
+  if(action==="prepare" && args.length===2)return runCoachRotation(path,action);
   if(action==="rotate" && args.length===3 && flag==="--rotate-own-coach-code")return runCoachRotation(path,action);
   if(action==="resume" && args.length===2)return runCoachRotation(path,action);throw fail();
 }

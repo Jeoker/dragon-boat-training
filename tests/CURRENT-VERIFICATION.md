@@ -1,6 +1,6 @@
 # 当前有效验证记录
 
-更新：2026-10-07。本页只汇总仍有效的证据及其范围，不记录实现演变。部署和接续位置见[当前进度](../CURRENT-STATUS.md)，复核命令和工具限制见[测试入口](README.md)。首次schema16隔离发布与保护包对账的证据保留原时点；本轮代码／文档审核只刷新本地证据，未轮换Code、调用Google、刷新远端或执行部署。
+更新：2026-10-07。本页只汇总仍有效的证据及其范围，不记录实现演变。部署和接续位置见[当前进度](../CURRENT-STATUS.md)，复核命令和工具限制见[测试入口](README.md)。首次schema16隔离发布与保护包对账的证据保留原时点；代码审核及CLI准备入口只刷新本地运行证据，源码开发分支已同步审核提交，未轮换Code、调用Google、重验业务云端或执行部署。
 
 ## 生产与浏览器
 
@@ -64,20 +64,21 @@ Apps Script／网页排座已有真实双窗口版本冲突恢复、登录未知
 | 独立恢复入口 | [12项](../cloudflare/source-private/test/recovery-entry.test.ts)：命名RecoveryRuntime、当前权威回调、独立SQLite及DO驱逐封存 | 本地workerd，不代表云鉴权／namespace或在线激活 |
 | 业务CLI | [18项](c2-business-backup-cli.test.mjs)：固定身份、原schema／actor／request、丢回复恢复、独立表列摘要与时间下界、ACL／链接拒绝、真实SQLite对账 | HTTP／Google为模型，不读取真实凭据；离线verify不执行SQL |
 | 首次配置 | [PowerShell模型1项](backup-setup-guide.test.mjs)：独占创建、masked输入、ACL及身份检查，固定错误诊断不泄漏依赖正文 | 不证明当前云secret或真实登录 |
-| Coach自轮换 | [服务16项](../cloudflare/test/c1-coach-rotation.test.ts)及[CLI19项](c1-coach-rotation-cli.test.mjs)：self-only／census／CAS／旧sessions撤销／receipt／UNKNOWN不重提交 | 真实轮换未执行；生产Apps Script和Git历史独立处理 |
+| Coach自轮换 | [服务16项](../cloudflare/test/c1-coach-rotation.test.ts)及[CLI23项](c1-coach-rotation-cli.test.mjs)：self-only／census／CAS／旧sessions撤销／receipt／UNKNOWN不重提交；新增重复prepare真实表／session不变、原attempt／output不覆盖、输入变化与会话撤销拒绝 | 新CLI prepare使用本地真实SQLite／HTTP模型，未执行远端预检或真实轮换；生产Apps Script和Git历史独立处理 |
 | 首次发布配置 | [Node19项](c2-bootstrap-config.test.mjs)：固定身份／既有namespace、无继承cron／runtime、配置漂移／secret拒绝及固定dry-run；真实Wrangler打包并完成上述固定c2test发布与配置核验 | 打包摘要不证明真实Google、私有来源／恢复接线或Free容量 |
 | 增量schema升级 | [真实SQLite3项](../cloudflare/test/c2-bootstrap-migration.test.ts)：14→16原47表及sessions保持、新4表为空、幂等、schema约束及不兼容DDL事务回滚 | 测试直接调用applySchema，不证明TeamState重启任务冻结；升级不撤销旧session，不执行云鉴权或Google |
 | 发布前后对账 | [Node14项](c2-bootstrap-reconcile.test.mjs)及本次两份真实保护包：完整原行重复计数、原请求／payload／审计身份、完整manifest、固定任务与时间范围；额外业务／审计／pin、损坏或上下文变化拒绝 | 严格固定首次发布协议；无并发冻结、DDL或session恢复证明 |
 
 ## 本地检查
 
-2026-10-07当前代码审核及本地复核：
+2026-10-07当前代码审核及Coach只读准备入口复核：
 
-- 最终单次完整 `npm test` 586／586通过，零skip，耗时253,843毫秒；包含Windows ACL、子进程、本地HTTP、bootstrap／对账及文档／API契约。业务Workers28文件342项、私有Workers6文件84项、恢复Worker1文件12项全部通过，四组共1024项。原生证明14项与文档2项的组合复核16／16通过，与完整Node组重叠，不重复累加。
-- 来源／业务／私有三项严格类型通过；最终测试调整后业务类型再次通过。Astro170文件、0错误／0警告／0提示及三页构建通过，正式backend／bridge-probe、私有host及backup工具四项构建通过。
-- 私有Worker dry-run通过，bundle182.06KiB／gzip40.43KiB，反向业务binding和隔离身份保持；仅本地打包，没有部署。本轮没有重跑业务bootstrap或Recovery dry-run，其实际发布／未部署状态仍按上文原时点证据解释。
+- 新CLI prepare调整后，最终单次完整 `npm test` 590／590通过，零skip，耗时239,668毫秒；包含CLI23项、Windows ACL、子进程、本地HTTP、bootstrap／对账及文档／API契约。业务Workers28文件342项、私有Workers6文件84项、恢复Worker1文件12项沿用本日代码审核通过的基线，本次未修改或重跑Worker代码，不把该基线说成本次重跑。原生证明14项与文档2项的组合复核16／16通过，与完整Node组重叠，不重复累加。
+- 来源／业务／私有三项严格类型及正式backend／bridge-probe、私有host和backup工具四项构建沿用本日代码审核通过的基线。当前CLI调整后的Astro170文件、0错误／0警告／0提示及三页构建再次通过。
+- 本日代码审核的私有Worker dry-run通过，bundle182.06KiB／gzip40.43KiB，反向业务binding和隔离身份保持；仅本地打包，没有部署。CLI准备入口切片没有重跑Worker打包，其实际发布／未部署状态仍按上文原时点证据解释。
 - 静态引用检查覆盖283个源码／测试／配置文件，并核对5个typed运行入口与7个Astro入口的依赖图；JS未用导入为0。三个单引用GS函数属于手动安装或探针入口，保留其操作协议。年度归档的四个模块及本地原始包审核入口当前由测试调用，属于尚未接运行路由的阶段组件，不据此宣布上线。
 - 私有DO只保留鉴权命令入口，原始存储读写由内部store承担；真实SQLite存储测试通过专用`runInDurableObject`夹具执行，并检查DO不提供原始存储RPC。两处并发回执测试使用Boolean release gate控制旧回执释放，以明确事件顺序核验新基线和并发失败保留，不用固定等待推测竞争顺序。
-- Document Agent审核全部30份项目Markdown，必要更新14份；文档维护当前组件分工、恢复支持范围与运维模板，去除重复状态、过时规划措辞、源码行号及易漂移的步骤编号。文档命令／本地链接与标题检查2／2通过，`git diff --check`通过。静态检查、依赖图及本地回归不能证明不存在任何潜在逻辑错误，也不替代真实Google、云端恢复或设备验收。
+- Coach CLI `prepare`复用受审查的私有路径／保护包／服务校验，stdout只报告版本、服务指纹、包时点及队列观测。重复调用不改变真实SQLite全部表或session，不产生header／receipt／新凭据；实际rotate重新核验。准备不冻结队列或授予未来执行许可，CLI验证不代表已在远端执行预检。
+- 本日Document Agent审核全部30份项目Markdown，必要更新14份；文档维护当前组件分工、恢复支持范围与运维模板，去除重复状态、过时规划措辞、源码行号及易漂移的步骤编号。CLI准备入口的Coach指南、隔离执行顺序和状态／验证索引另已同步，最终文档命令／本地链接与标题检查2／2通过，`git diff --check`通过。静态检查、依赖图及本地回归不能证明不存在任何潜在逻辑错误，也不替代真实Google、云端恢复或设备验收。
 
 bootstrap配置／manifest／bundle／日志、脱敏远端核验及临时脚本被Git忽略；源码、测试和现行文档正常追踪，生成配置、保护包及可信receipt不提交。Git凭据历史债继续按当前进度处理，本轮本地审核不证明已清理历史。
