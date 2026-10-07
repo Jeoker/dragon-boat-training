@@ -25,7 +25,7 @@ D:\private-backup-20261004\
 }
 ```
 
-`config.json`完整模板见下文“仓库外配置精确字段”；若采用此目录，所有`D:\\private-backup`路径改为`D:\\private-backup-20261004`。模板展示兼容的schema14，实际14或16必须由当前受保护读取确认；request_id每次新下载换全新随机值。不要自行创建header、manifest、chunk或保护包。下面安全准备脚本会生成两个JSON及空目录，避免手填session；它与手工准备模板二选一，不能在已经存在的目录再次运行。
+`config.json`完整模板见下文“仓库外配置精确字段”；若采用此目录，所有`D:\\private-backup`路径改为`D:\\private-backup-20261004`。模板展示schema16；工具也支持原schema14，但实际schema必须由当前受保护读取确认，不能因模板默认采纳；request_id每次新下载换全新随机值。不要自行创建header、manifest、chunk或保护包。下面安全准备脚本会生成两个JSON及空目录，避免手填session；它与手工准备模板二选一，不能在已经存在的目录再次运行。
 
 ### 首次准备（由操作员自行运行）
 
@@ -57,7 +57,7 @@ powershell -NoProfile -ExecutionPolicy RemoteSigned -File backend/backup/setup-p
     "backend_generation": "cf-c2-isolated-1",
     "writer_epoch": 0
   },
-  "schema_version": 14,
+  "schema_version": 16,
   "request_id": "backup_protection_20261004_0001",
   "credentials_file": "D:\\private-backup\\credentials.json",
   "store_directory": "D:\\private-backup\\checkpoint",

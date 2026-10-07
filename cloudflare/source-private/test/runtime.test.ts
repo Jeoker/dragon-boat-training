@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { type PrivateSourceEnv } from "../src/index";
-import { PrivateSourceRpcStore } from "../src/rpc-store";
+import { sqlStoreFixture } from "./sql-store-fixture";
 import { sha256Base64Url } from "../../src/crypto";
 import { sourceAuthorityText, type SourceAuthorityPinCore } from "../../../shared/c2-source-authority-contract";
 import { PrivateSourceTargetRegistry } from "../../../backend/source-journal/target-registry";
@@ -12,7 +12,7 @@ import { PrivateSourceReview } from "../../../backend/source-journal/private-rev
 // Google and current authority are explicit models; storage and DO eviction are real.
 async function fixture(name: string) {
   const stub = (env as unknown as PrivateSourceEnv).PRIVATE_SOURCE_STATE.getByName(name);
-  const store = new PrivateSourceRpcStore(stub), at = "2026-10-03T20:00:00Z";
+  const store = sqlStoreFixture(stub), at = "2026-10-03T20:00:00Z";
   const core: SourceAuthorityPinCore = { format: "c2-source-authority-pin-v1", state: "SERVER_AUTHORITY_PIN_ONLY",
     actor_id: "fixture_coach", source: { source_operation_id: "fixture_operation", team_id: "fixture_team",
       season_id: "fixture_season", binding_version: 1, backend_generation: "fixture_generation", writer_epoch: 0,

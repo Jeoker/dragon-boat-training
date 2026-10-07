@@ -1,6 +1,6 @@
 # 私有来源本地运行入口
 
-日期：2026-10-04。此入口是可信操作员使用的一次性 Node CLI，没有 HTTP 监听、后台轮询或自动调度。长期运行采用已确定的 [Cloudflare 私有组件](../cloudflare/PRIVATE-SOURCE-HOST-DESIGN.md)，本地工具不要求购买服务器或保持电脑长期在线。
+此入口是可信操作员使用的一次性 Node CLI，没有 HTTP 监听、后台轮询或自动调度。长期运行采用已确定的 [Cloudflare 私有组件](../cloudflare/PRIVATE-SOURCE-HOST-DESIGN.md)，本地工具不要求购买服务器或保持电脑长期在线。
 
 ## 配置与权限
 
@@ -71,6 +71,6 @@ stdout 只输出阶段／版本和状态元数据，错误统一 `PRIVATE_HOST_U
 
 ## 当前验证范围
 
-完整本地 CLI 组合使用虚构 Google／服务器响应；真实独立 Node 进程恢复原候选且零 Google／OAuth 重读、当前凭据拒绝、固定目标不变、锁冲突、动态 ACL 变更、配置拒绝和私有输出不覆盖已验证。当前没有用此 CLI 执行真实服务器 capture、journal stage 或审核追加；这些仍属第 3 至第 4 步的隔离验收。已有 [私有审核组件验收](../tests/CURRENT-VERIFICATION.md#来源采集与审核) 保留原范围，不由本入口自动提升。
+完整 CLI 组合、独立进程恢复、权限与输出保护的有效证据见[验证索引](../tests/CURRENT-VERIFICATION.md#来源采集与审核)。本地服务器／Google 模型不代表该 CLI 已执行真实业务 capture、journal stage 或审核追加；接续遵循[隔离发布顺序](../cloudflare/ISOLATED-RECOVERY.md#隔离发布顺序)中的 Google 管理配置、私有运行及来源审核门槛。
 
 全部结果继续保持 `SOURCE_NOT_VERIFIED` 和 `annual_export_authorized=false`。本地入口不构成远端部署、Coach 审核 UI 或生产迁移完成。

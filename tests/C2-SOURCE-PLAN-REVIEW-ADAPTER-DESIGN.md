@@ -6,7 +6,7 @@
 
 ## 1. 目标和边界
 
-新增两个纯入口，使用完整原 `c2-source-plan-v1` core text，内部完整验证其 canonical bytes、typed retained 内容、五 namespace、全部 chunks、条件集合、原 SHA 和权威身份，再生成现行私有 view／审核计划。调用方不需要原 `c2-source-input-v1` 文本，也不能补晚提交的完整正文。
+两个纯入口使用完整原 `c2-source-plan-v1` core text，内部完整验证其 canonical bytes、typed retained 内容、五 namespace、全部 chunks、条件集合、原 SHA 和权威身份，再生成现行私有 view／审核计划。调用方不需要原 `c2-source-input-v1` 文本，也不能补晚提交的完整正文。
 
 新入口恒 `LOCAL_REVIEW_PLAN_ONLY`／`SOURCE_NOT_VERIFIED`，外层显式标记 `validation_mode=RETAINED_PLAN_ONLY`。它证明本地声明锚下的保留内容与人审计划一致，不证明 Google 来源真实性、完整读取、实际 Coach 鉴权、fixed capture、immutable 存储或 receipt，也不授予年度导出许可。
 

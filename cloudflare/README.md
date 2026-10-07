@@ -60,6 +60,8 @@ npm run cf:accept:c1-staging
 
 完整接线时，标准c2test配置的`PRIVATE_SOURCE_RUNTIME`指向`dragon-boat-training-source-private-test`的命名入口`SourceRuntime.run`，再进入按team／source operation命名的DO；首次bootstrap配置省略该binding。私有Worker的`BUSINESS_SOURCE_AUTHORITY`反向绑定到`dragon-boat-training-api-c2-test`的`SourceAuthority.pin`，每次权威与依赖访问复核真实TeamState会话和原pin。私有vars为`SOURCE_TEAM_ID`、`SOURCE_BACKEND_GENERATION`、`SOURCE_WRITER_EPOCH`，必须与业务身份相同；绑定只配置在c2test，production入口拒绝。实际接线状态见当前进度。
 
+命名入口、DO命令与内部SQLite store的边界见[私有服务设计](PRIVATE-SOURCE-HOST-DESIGN.md#当前存储实现)；实际运行须沿当前Coach／pin鉴权的命令链。
+
 私有Worker平台secret为`SOURCE_GOOGLE_OAUTH_CLIENT_ID`、`SOURCE_GOOGLE_OAUTH_CLIENT_SECRET`、`SOURCE_GOOGLE_OAUTH_REFRESH_TOKEN`，通过Wrangler secret或Dashboard输入，禁止把secret值写入vars、SQL、普通备份、文档或日志。私有HTTP入口固定404，公网routes、workers.dev、preview、cron和observability关闭；实际部署后另验证不可访问。
 
 capture每次最多启动32个新来源请求；capture-native首次原生请求也计入并在STARTED前预留两个external槽。已确认checkpoint回放不计新请求预算，未决请求拒绝重取。每命令Google API、OAuth及native预留合计最多40次，固定错误为`SOURCE_PRIVATE_RUNTIME_UNCONFIRMED`；权限改变或失败不返回原依赖正文。审核命令第一次完整journal成功后可复用本命令的Google ACL／内容观测，当前Coach／pin／目标／候选／receipt／CAS仍复核，新命令及驱逐重新读Google。原候选及审核全文只由当前Coach受保护读取，不能进入普通业务备份或公开DTO。capture-native原proof／v2候选、旧候选不提升、受控单跳和私有receipt恢复说明见[当前指南](ISOLATED-RECOVERY.md#新capture消费原生证明)，资源门槛见[私有来源设计](PRIVATE-SOURCE-HOST-DESIGN.md)。

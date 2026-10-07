@@ -24,8 +24,8 @@
 - `src/FormBridge.gs`：C2.2 只读 Form 回答分页桥接，仅纳入完整后端构建；不进入独立 C0 探针。
 - `src/SheetBridge.gs`：C2.3 签名只读 Sheet 桥接，按当前赛季绑定读取登记 Tab 的显示值、稳定行号和数字 Tab ID；本地源码还覆盖排期模板／周次及仅返回 ID 的 Coach 引用读取。缺少或超出界限的 Tab 返回错误，不修复、不写入。只纳入完整后端构建，不进入独立 C0 探针。
 - `src/NativeTabBridge.gs`：`cloudflareReadNativeTabProof`核对Form destination、Spreadsheet、唯一numeric Tab及Sheet.getFormUrl对应真实Form，返回独立HMAC当前关系观察。纳入完整backend构建，不进入bridge-probe；Cloudflare显式capture-native已消费原观察，真实Google及云端流程仍待验收。
-- `src/BoundRowPatchBridge.gs`：C2.4 有界行补丁。成员、赛季名单版本及排期三表已在独立 Google 文件验收；报名、排座草稿、当前船位和不可变正式 revision 四个 scope 已部署至隔离 Apps Script version 14。Alpha 单行报名、20 格草稿五批船位与一批状态、正式 revision 1 及其状态回执已真实确认；最终七个受支持 scope B/C/G 零差异。所有补丁共用签名、绑定／前值检查、最多四行／payload 预算、私有 `BridgeExportReceipts` 及重放后目标行复核。赛季补丁不能新建赛季行或改写 Google 的 Form／Spreadsheet 绑定列。上述 Alpha 结果是核心四表历史切片；后续候补、关联受控故障及独立训练已分别隔离验收，最新范围见[当前进度](../CURRENT-STATUS.md)；只进入完整后端构建，不进入 C0 探针，生产未部署。
-- `src/FormNotify.gs`：C2.2 可安装的 Google Forms 提交触发器及签名 Cloudflare 通知。只在 Cloudflare 拥有写入权的赛季显式安装；现有生产赛季继续使用旧 Spreadsheet 提交触发器，不能并装或把独立 `c2test` 通知地址写入生产项目。当前仅在独立 C2 测试项目安装一个 Form 触发器，并已通过真实 responder 页面提交验收。
+- `src/BoundRowPatchBridge.gs`：C2.4 有界行补丁，覆盖成员、赛季名单版本、模板／周次／训练、报名、排座草稿／当前船位及不可变正式 revision。共用签名、绑定／前值检查、最多四行／payload 预算、私有 `BridgeExportReceipts` 及重放后目标行复核；赛季补丁不能新建赛季行或改写 Google 的 Form／Spreadsheet 绑定列。只进入完整后端构建，不进入 C0 探针；实际隔离验收与生产部署边界见[验证索引](../tests/CURRENT-VERIFICATION.md#google-同步)。
+- `src/FormNotify.gs`：C2.2 可安装的 Google Forms 提交触发器及签名 Cloudflare 通知。只在 Cloudflare 拥有写入权的赛季显式安装；切换前生产赛季继续使用旧 Spreadsheet 提交触发器，不能并装或把独立 `c2test` 通知地址写入生产项目。实际触发与补扫证据见验证索引。
 - `src/appsscript.json`：V8 运行时配置。
 - `.clasp.json.example`：测试项目配置示例；真实 Script ID 不提交仓库。
 - `build.mjs`：按固定顺序生成可直接粘贴到网页编辑器的单文件构建结果；从仓库根目录运行 `npm run build:backend`。

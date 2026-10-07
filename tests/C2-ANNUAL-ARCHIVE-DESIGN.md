@@ -13,17 +13,18 @@
 - 同一规格的归档规则及 [项目总览](../PROJECT-OVERVIEW.md)的取消／历史原则：取消训练不进入档案或公开历史；未发布草稿只进私有档案，不阻塞有效训练完成；24 小时最终更正边界不因任务延迟改变；迟到回答不改变已经固定的档案。私有失败维持 `COMPLETED`；公开发布可以单独恢复。
 - [迁移计划](../cloudflare-migration-plan.md)的 C2 阶段门槛及“备份、保留与恢复”章节：本地通过先于独立 Google 验收，C2.6 前不能宣布 C2 完成；年度档案不等于数据库备份或恢复。本切片不扩大到生产、cron 或 restore。
 
-现有实现可以支持本地冻结，但不是 C2.6 完整年度导出：
+现有 C1 维护本地冻结与兼容公开历史；C2 年度 capture／storage 另行固定完整私有业务计划，两者尚未接年度 Google 输出：
 
 | 现有位置 | 已实现 | 尚缺 |
 |---|---|---|
-| [c1-history-service.ts](../cloudflare/src/c1-history-service.ts)，`freezePractice` 、`buildFrozenSnapshot`  | 到期冻结最后正式 revision、当时姓名与安全公开投影；取消过滤；原请求去重 | 完整私有业务快照（包括稳定业务 ID、最终报名、私有草稿和相关事件）的固定内容及归档摘要 |
+| [c1-history-service.ts](../cloudflare/src/c1-history-service.ts)，`freezePractice` 、`buildFrozenSnapshot`  | 到期冻结最后正式 revision、当时姓名与安全公开投影；取消过滤；原请求去重 | 本组件不保存完整年度私有计划；计划由下述 C2 capture／storage 固定，Google 输出另接 |
 | 同文件 `archiveSeason`  | 全部有效已发布训练冻结后写 `season_history`、将季状态设为 `ARCHIVED`、产生 `HISTORY_CHANGED` | Google 私有业务文件及原始回答核验门槛 |
 | 同文件 `publicHistorySeasons` 、`publicSeasonHistory` 、`historyManagement`  | 按本地 `season_history` 提供公开目录及归档状态 | 区分本地冻结就绪和 Google 私有核验完成；此行为本切片保持不变 |
-| 同文件 `captureBackup` 、`finalizeBackup`  | 同事务固定表内容、块及清单；事务外算摘要后持久结果；可受保护下载核验 | 年度专用白名单投影。不能直接导出全库 backup，其包含凭据、请求等不属于年度档案的内容；现有全量物化方式也不是大季有界处理的证明 |
-| [ArchiveActions.gs](../backend/src/ArchiveActions.gs)，第 200、270、303、370 行 | 原 Apps Script 年度映射、四列 JSON 行、写后回读、单场与整季内容；本地 P4/P5 测试 | 从 DO 固定快照接收内容的签名桥接、源回答独立清单、完整不可变 receipt 和未知创建窗口的可靠恢复 |
+| 同文件 `captureBackup` 、`finalizeBackup`  | 同事务固定表内容、块及清单；事务外算摘要后持久结果；可受保护下载核验 | 属于运维备份，不是年度白名单档案；包含凭据与请求，不能直接导出为年度内容，完整物化也不证明大季有界处理 |
+| [c2-archive-capture.ts](../cloudflare/src/c2-archive-capture.ts)、[c2-archive-storage.ts](../cloudflare/src/c2-archive-storage.ts) | 同事务固定稳定业务 ID、最终报名、私有草稿、正式／冻结版本与适用事件；持久内容块、原请求及本地摘要 | 内部 service 尚未接 HTTP／调度、年度 Google receipt 和来源／公开资格门槛 |
+| [ArchiveActions.gs](../backend/src/ArchiveActions.gs) | 原 Apps Script 年度映射、四列 JSON 行、写后回读、单场与整季内容 | 从 DO 固定快照接收内容的签名桥接、源回答独立清单、完整不可变 receipt 和未知创建窗口的可靠恢复 |
 | [FormBridge.gs](../backend/src/FormBridge.gs)、[c2-form-bridge.ts](../cloudflare/src/c2-form-bridge.ts) | 稳定回答 ID、提交时间、姓名、分页导入 | 完整原始回答与响应 Sheet 内容。现有精简导入 DTO 不能充当原始回答档案 |
-| [bridge.ts](../cloudflare/src/bridge.ts)、[Code.gs](../backend/src/Code.gs)第 76–108 行 | 签名身份、绑定、代次、摘要；已注册读表和运行表有限补丁 | 年度归档 bridge action；不能把运行表 patch 当作文件创建协议 |
+| [bridge.ts](../cloudflare/src/bridge.ts)、[Code.gs](../backend/src/Code.gs) | 签名身份、绑定、代次、摘要；已注册读表和运行表有限补丁 | 年度归档 bridge action；不能把运行表 patch 当作文件创建协议 |
 
 本文维护当前归档协议；实际验证范围由[验证索引](CURRENT-VERIFICATION.md)汇总。源码版本不能替代部署证据。
 以下归档状态独立于当前 C1 HTTP 与 `seasons.status`；公开接线须满足相应门槛。

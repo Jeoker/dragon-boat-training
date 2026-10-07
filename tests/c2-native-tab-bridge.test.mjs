@@ -27,8 +27,7 @@ async function fixture() {
   assert.equal(post(backend.context, { action: "initializeSeason", request_id: "native_initialize", session_token: token,
     season_id: season.season_id, season_version: season.season_version, form: binding.formId,
     spreadsheet: binding.spreadsheetId, response_sheet: binding.responseSheet.getName(), display_name_header: "Display Name" }).ok, true);
-  binding.form.getId = () => binding.formId;
-  binding.form.getDestinationType = () => "SPREADSHEET";
+  Object.assign(binding.form, { getId: () => binding.formId, getDestinationType: () => "SPREADSHEET" });
   backend.context.FormApp.DestinationType = { SPREADSHEET: "SPREADSHEET" };
   const urls = [];
   backend.context.FormApp.openByUrl = url => {

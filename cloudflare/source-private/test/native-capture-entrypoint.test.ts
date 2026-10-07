@@ -7,6 +7,7 @@ import { seedBusiness, googleModel, target, fixtureEnv } from "./entrypoint-fixt
 import type { SourceAuthorityPin } from "../../../shared/c2-source-authority-contract";
 import { sha256Base64Url } from "../../src/crypto";
 import { sourceCanonical, type SourceJson } from "../../../shared/c2-source-capture-contract";
+import { sqlStoreFixture } from "./sql-store-fixture";
 
 const denied = { ok: false, code: "SOURCE_PRIVATE_RUNTIME_UNCONFIRMED" };
 const privateEnv = env as unknown as PrivateSourceEnv;
@@ -20,9 +21,7 @@ async function setup(name: string) {
       "SELECT key FROM source_private_records ORDER BY key").toArray());
     const values: any[] = [];
     for (const { key } of keys) {
-      const result = await stub.readRecord(key);
-      try { expect(result.ok).toBe(true); if (result.ok && "value" in result) values.push(structuredClone(result.value)); }
-      finally { (result as typeof result & { [Symbol.dispose]?: () => void })[Symbol.dispose]?.(); }
+      values.push(await sqlStoreFixture(stub).read(key));
     }
     return values;
   };

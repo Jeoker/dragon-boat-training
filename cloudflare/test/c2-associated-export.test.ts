@@ -1041,15 +1041,21 @@ it("preserves a new concurrent failure while an earlier Google batch confirms", 
   await runInDurableObject(stub, async (_instance: TeamState, context) => {
     context.storage.sql.exec("INSERT INTO sync_export_retries(season_id,binding_version,failure_count,next_attempt_at_ms,last_error,updated_at,action_required) VALUES (?,1,1,0,'BRIDGE_UNAVAILABLE',?,0)", seasonId, at).toArray();
   });
-  let reached = false;
-  mirror.afterPatch = async () => { reached = true; await new Promise(resolve => setTimeout(resolve, 200)); };
+  let reached = false, released = false, settled = false;
+  mirror.afterPatch = async () => {
+    reached = true;
+    while (!released) await new Promise<void>(resolve => setTimeout(resolve, 1));
+  };
   mirror.install();
-  const pending = next(testEnv, "concurrent_failure_batch_001");
-  for (let count = 0; count < 20 && !reached; count++) await new Promise(resolve => setTimeout(resolve, 5));
-  expect(reached).toBe(true);
-  await runInDurableObject(stub, async (_instance: TeamState, context) => {
-    context.storage.sql.exec("UPDATE sync_export_retries SET failure_count=2,next_attempt_at_ms=?,last_error='SERVICE_BUSY',updated_at=?", Date.now() + 600_000, "2026-10-01T01:00:00.000Z").toArray();
-  });
+  const pending = next(testEnv, "concurrent_failure_batch_001").finally(() => { settled = true; });
+  try {
+    while (!reached && !settled) await new Promise<void>(resolve => setTimeout(resolve, 1));
+    expect(reached).toBe(true);
+    expect(settled).toBe(false);
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec("UPDATE sync_export_retries SET failure_count=2,next_attempt_at_ms=?,last_error='SERVICE_BUSY',updated_at=?", Date.now() + 600_000, "2026-10-01T01:00:00.000Z").toArray();
+    });
+  } finally { released = true; }
   expect(await pending).toMatchObject({ data: { status: "BATCH_CONFIRMED" } });
   await runInDurableObject(stub, async (_instance: TeamState, context) => {
     expect(context.storage.sql.exec<{ failure_count: number; last_error: string }>("SELECT failure_count,last_error FROM sync_export_retries").one()).toEqual({ failure_count: 2, last_error: "SERVICE_BUSY" });

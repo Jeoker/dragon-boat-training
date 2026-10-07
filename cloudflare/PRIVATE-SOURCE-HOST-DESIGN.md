@@ -1,6 +1,6 @@
 # Cloudflare 私有来源服务设计
 
-日期：2026-10-04。状态：已确认，作为当前后台架构。独立私有DO、内部运行接线、云端OAuth、封存备份恢复及显式capture-native证明消费已有实现；真实部署、Google授权和免费资源另按门槛验证。承接 [当前进度](../CURRENT-STATUS.md) 的第 2 至第 4 步。
+状态：已确认，作为当前后台架构。独立私有DO、内部运行接线、云端OAuth、封存备份恢复及显式capture-native证明消费已有实现；真实部署、Google授权和免费资源另按门槛验证。接续位置见[当前进度](../CURRENT-STATUS.md)的私有来源发布、来源审核及年度输出门槛。
 
 ## 解决的问题
 
@@ -48,6 +48,8 @@ Free 超额时操作保持未确认并按原协议恢复，不自行购买或升
 ## 当前存储实现
 
 [PrivateSourceSqlStore](source-private/src/store.ts)使用独立SQLite schema1，包含版本表、record manifest和chunk表，不属于业务schema16／51表备份。单条canonical记录最多14 MB，按64 KB UTF8 BLOB拆分；manifest绑定key、revision、总字节数、块数及SHA。完整读回核对数量／次序／尺寸／UTF8／canonical正文与摘要，再由业务组件复核独立来源锚。
+
+命令沿命名 `SourceRuntime.run` → `PrivateSourceState.execute` 执行，前者固定当前业务 pin 与对象名，后者在命令范围内复核当前授权并使用内部 SQLite store。DO 的自定义 RPC 仅提供 `execute`；原始记录读取和 CAS 在存储组件内完成。存储测试通过 `cloudflare:test` 的 `runInDurableObject` 访问真实 SQLite，生产入口不承担测试数据读写。
 
 连续revision CAS在hash异步后再次核对原manifest；旧块替换、全部新块和manifest在同一事务提交，失败整体回滚。损坏、缺块和孤立块拒绝，不覆盖修复。每对象应用记录预算256,000,000字节，实际含索引的databaseSize仍需云端实测。RPC只传成功结果或固定失败回执，不透传依赖错误。有效本地运行时证据见[验证索引](../tests/CURRENT-VERIFICATION.md#来源采集与审核)，实际部署及缺项见当前进度。
 

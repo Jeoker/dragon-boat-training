@@ -3,33 +3,36 @@ import { runInDurableObject, evictDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import worker, { type PrivateSourceEnv } from "../src/index";
 import { PrivateSourceSqlStore, PRIVATE_STORE_LIMITS } from "../src/store";
-import { PrivateSourceRpcStore } from "../src/rpc-store";
+import { sqlStoreFixture } from "./sql-store-fixture";
 import { sha256Base64Url } from "../../src/crypto";
 
 const privateEnv = env as unknown as PrivateSourceEnv;
 const recordKey = "a".repeat(43);
 const stub = (name: string) => privateEnv.PRIVATE_SOURCE_STATE.getByName(name);
-const rpc = (object: ReturnType<typeof stub>) => new PrivateSourceRpcStore(object);
 const value = (revision = 1, raw = "虚构原回答 😀") => ({ key: recordKey, revision, format: "fixture-private-record", raw });
 
 describe("private source SQLite CAS", () => {
-  it("has no storage HTTP endpoint", async () => {
+  it("has no storage HTTP endpoint or raw storage RPC methods", async () => {
     const response = worker.fetch();
     expect(response.status).toBe(404); expect(await response.text()).toBe("");
+    await runInDurableObject(stub("no-raw-rpc"), instance => {
+      expect("readRecord" in instance).toBe(false);
+      expect("commitRecord" in instance).toBe(false);
+    });
   });
 
   it("persists multi-megabyte UTF8 bytes in bounded rows and survives actual DO eviction", async () => {
     const object = stub("large-record"), original = value(1, "虚构😀".repeat(230_000));
-    expect(await rpc(object).compareAndSet(recordKey, null, original)).toBe(true);
+    expect(await sqlStoreFixture(object).compareAndSet(recordKey, null, original)).toBe(true);
     await runInDurableObject(object, (_instance, ctx) => {
       const chunks = ctx.storage.sql.exec<{ size: number }>("SELECT length(bytes) AS size FROM source_private_chunks").toArray();
       expect(chunks.length).toBeGreaterThan(32);
       expect(chunks.every(row => row.size <= PRIVATE_STORE_LIMITS.chunkBytes)).toBe(true);
     });
     await evictDurableObject(object);
-    expect(await rpc(object).read(recordKey)).toEqual(original);
-    expect(await rpc(object).compareAndSet(recordKey, 1, value(2, "第二版"))).toBe(true);
-    expect(await rpc(object).compareAndSet(recordKey, 1, value(2, "过期覆盖"))).toBe(false);
+    expect(await sqlStoreFixture(object).read(recordKey)).toEqual(original);
+    expect(await sqlStoreFixture(object).compareAndSet(recordKey, 1, value(2, "第二版"))).toBe(true);
+    expect(await sqlStoreFixture(object).compareAndSet(recordKey, 1, value(2, "过期覆盖"))).toBe(false);
     await runInDurableObject(object, (_instance, ctx) => {
       expect(ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM source_private_chunks").one().count).toBe(1);
     });
@@ -37,16 +40,16 @@ describe("private source SQLite CAS", () => {
 
   it("permits only one same-revision concurrent commit and keeps object namespaces isolated", async () => {
     const object = stub("concurrent");
-    const results = await Promise.all([rpc(object).compareAndSet(recordKey, null, value(1, "A")), rpc(object).compareAndSet(recordKey, null, value(1, "B"))]);
+    const results = await Promise.all([sqlStoreFixture(object).compareAndSet(recordKey, null, value(1, "A")), sqlStoreFixture(object).compareAndSet(recordKey, null, value(1, "B"))]);
     expect(results.filter(Boolean)).toHaveLength(1);
-    const saved = await rpc(object).read(recordKey) as ReturnType<typeof value>;
+    const saved = await sqlStoreFixture(object).read(recordKey) as ReturnType<typeof value>;
     expect(["A", "B"]).toContain(saved.raw);
-    expect(await rpc(stub("separate")).read(recordKey)).toBeNull();
-    expect(await rpc(object).compareAndSet(recordKey, null, value())).toBe(false);
+    expect(await sqlStoreFixture(stub("separate")).read(recordKey)).toBeNull();
+    expect(await sqlStoreFixture(object).compareAndSet(recordKey, null, value())).toBe(false);
   });
 
   it("rolls back all chunks and the manifest when a write fails mid-transaction", async () => {
-    const object = stub("rollback"); await rpc(object).compareAndSet(recordKey, null, value());
+    const object = stub("rollback"); await sqlStoreFixture(object).compareAndSet(recordKey, null, value());
     await runInDurableObject(object, async (_instance, ctx) => {
       const native = ctx.storage.sql;
       const broken = new Proxy(native, { get(target, property) {
@@ -63,7 +66,7 @@ describe("private source SQLite CAS", () => {
   });
 
   it.each(["missing", "changed", "orphan", "manifest", "revision", "oversized-blob", "text-blob"])("rejects %s corruption without overwriting it", async mode => {
-    const object = stub(`corrupt-${mode}`); await rpc(object).compareAndSet(recordKey, null, value());
+    const object = stub(`corrupt-${mode}`); await sqlStoreFixture(object).compareAndSet(recordKey, null, value());
     await runInDurableObject(object, async (_instance, ctx) => {
       if (mode === "missing") ctx.storage.sql.exec("DELETE FROM source_private_chunks WHERE key=?", recordKey);
       if (mode === "changed") ctx.storage.sql.exec("UPDATE source_private_chunks SET bytes=? WHERE key=?", new TextEncoder().encode("PRIVATE_CORRUPTION_SENTINEL").buffer, recordKey);
@@ -86,13 +89,13 @@ describe("private source SQLite CAS", () => {
       await expect(new PrivateSourceSqlStore(ctx.storage).compareAndSet(recordKey, null, bad)).rejects.toThrow("SOURCE_PRIVATE_STORE_UNCONFIRMED");
       expect(called).toBe(false);
     });
-    await expect(rpc(object).compareAndSet(recordKey, null, value(2))).rejects.toThrow("SOURCE_PRIVATE_STORE_UNCONFIRMED");
-    await expect(rpc(object).compareAndSet(recordKey, null, value(1, "x".repeat(PRIVATE_STORE_LIMITS.recordBytes)))).rejects.toThrow("SOURCE_PRIVATE_STORE_UNCONFIRMED");
-    expect(await rpc(object).read(recordKey)).toBeNull();
+    await expect(sqlStoreFixture(object).compareAndSet(recordKey, null, value(2))).rejects.toThrow("SOURCE_PRIVATE_STORE_UNCONFIRMED");
+    await expect(sqlStoreFixture(object).compareAndSet(recordKey, null, value(1, "x".repeat(PRIVATE_STORE_LIMITS.recordBytes)))).rejects.toThrow("SOURCE_PRIVATE_STORE_UNCONFIRMED");
+    expect(await sqlStoreFixture(object).read(recordKey)).toBeNull();
   });
 
   it("refuses an unknown schema rather than modifying the private namespace", async () => {
-    const object = stub("schema"); await rpc(object).compareAndSet(recordKey, null, value());
+    const object = stub("schema"); await sqlStoreFixture(object).compareAndSet(recordKey, null, value());
     await runInDurableObject(object, (_instance, ctx) => {
       ctx.storage.sql.exec("UPDATE source_private_schema SET version=2 WHERE id=1");
       expect(() => new PrivateSourceSqlStore(ctx.storage)).toThrow("SOURCE_PRIVATE_STORE_UNCONFIRMED");
@@ -103,7 +106,7 @@ describe("private source SQLite CAS", () => {
   it("retains application-level source hashes instead of treating storage integrity as verification", async () => {
     const object = stub("hash");
     const original = { ...value(), source_status: "SOURCE_NOT_VERIFIED", annual_export_authorized: false, source_digest: await sha256Base64Url("original source") };
-    await rpc(object).compareAndSet(recordKey, null, original);
-    expect(await rpc(object).read(recordKey)).toEqual(original);
+    await sqlStoreFixture(object).compareAndSet(recordKey, null, original);
+    expect(await sqlStoreFixture(object).read(recordKey)).toEqual(original);
   });
 });

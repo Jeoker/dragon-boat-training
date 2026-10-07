@@ -1,6 +1,6 @@
 // Explicit isolated operator tool. No secret discovery, login, deployment or automatic retry.
 import { createHash, randomUUID } from "node:crypto";
-import { open, lstat, realpath, link, unlink, readdir } from "node:fs/promises";
+import { open, lstat, link, unlink, readdir } from "node:fs/promises";
 import { resolve, dirname, basename, isAbsolute, parse as parsePath, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertPrivatePath, readPrivateText } from "../source-journal/private-paths.mjs";

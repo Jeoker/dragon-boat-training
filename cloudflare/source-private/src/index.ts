@@ -1,13 +1,12 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { PrivateSourceSqlStore } from "./store";
-import { type PrivateSourceStoreRpc } from "./rpc-store";
 import { currentSourcePin, executePrivateSourceCommand, sourceObjectName, sourceRuntimeFailure, type SourceRuntimeEnv } from "./runtime";
 import { GoogleRefreshTokenProvider } from "./oauth";
 import { readPrivateSourceCommand, type PrivateSourceResult } from "../../../shared/c2-private-source-command";
 import { exportPrivateBackup } from "./backup";
 
 export interface PrivateSourceEnv extends SourceRuntimeEnv { PRIVATE_SOURCE_STATE: DurableObjectNamespace<PrivateSourceState>; }
-export class PrivateSourceState extends DurableObject<PrivateSourceEnv> implements PrivateSourceStoreRpc {
+export class PrivateSourceState extends DurableObject<PrivateSourceEnv> {
   private readonly store: PrivateSourceSqlStore;
   private readonly oauth: GoogleRefreshTokenProvider;
   private executing = false;
@@ -15,12 +14,6 @@ export class PrivateSourceState extends DurableObject<PrivateSourceEnv> implemen
     super(ctx, env);
     this.store = new PrivateSourceSqlStore(ctx.storage);
     this.oauth = new GoogleRefreshTokenProvider(env);
-  }
-  async readRecord(key: string): ReturnType<PrivateSourceStoreRpc["readRecord"]> {
-    try { return { ok: true, value: await this.store.read(key) }; } catch { return { ok: false }; }
-  }
-  async commitRecord(key: string, revision: number | null, value: unknown): ReturnType<PrivateSourceStoreRpc["commitRecord"]> {
-    try { return { ok: true, swapped: await this.store.compareAndSet(key, revision, value) }; } catch { return { ok: false }; }
   }
   async execute(command: unknown): Promise<PrivateSourceResult> {
     if (this.executing) return sourceRuntimeFailure();

@@ -28,11 +28,11 @@ server context 必须包含 team／season／actor及其允许审核的范围、�
 
 ## 4. 私有审核视图与显式命令
 
-已实现两步纯接口 prepareLocalMappingReview／planLocalMappingReview；下文保留原设计步骤：
+纯审核模型提供 prepareLocalMappingReview／planLocalMappingReview 两个入口；真实私有服务通过 retained plan 适配器复用其验证与投影：
 
 | 接口 | 输入／输出和限制 |
 |---|---|
-| prepareLocalMappingReview | 完整 validated source bundle＋server context；异步算 source plan、Form schema、Sheet schema及完整records摘要，输出仅供未来受保护私有视图使用的 bounded review view。没有公开或DO传输路径 |
+| prepareLocalMappingReview | 完整 source bundle＋server context；内部验证后异步算 source plan、Form schema、Sheet schema及完整records摘要，生成 bounded 私有 view。纯函数不提供传输；外层受保护 review-view 返回该视图 |
 | planLocalMappingReview | 同一完整 validated bundle＋此前ledger＋显式 command＋fresh context port；核双方定位／摘要，生成一个 append evidence及独立 derived资格版本。结果仅本地计划，带原ledger version/hash作为后续CAS前置，不执行持久写入 |
 
 视图中的 Form 候选仅从 FORM_CURRENT 或 PRIVATE_PENDING 中确有完整 `raw` 的 FORM_RESPONSE取出；Sheet 候选仅从 PRIVATE_PENDING 的完整 SHEET_ROW取出。每方视图保留完整raw、原namespace／record_type／chunk_index／row_offset定位以及相应完整schema，不只显示姓名或已知列。跨chunk选择必须先完成全plan核验，再按经过验证的定位取完整记录；不允许调用者上传一段裁剪答案当原record。raw对象和截图／可编辑网页不是权威摘要来源。

@@ -43,7 +43,7 @@ Form回答与response Sheet采用两个独立record namespace，分别保存完�
 
 [spreadsheets.get](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/get)支持指定grid range和field mask。范围分块必须证明完整覆盖、没有gap／重叠、保留空白和坐标；尾部省略的空cell按固定API规则表达，不能被当作删除。矩阵中间空行、重复header、重复值仍保存。日期serial不能按固定UTC偏移换算，原数值／类型与Spreadsheet时区都保留。
 
-Sheet原行号只作为这次观测的物理坐标，不成为永久response ID。当前没有可信映射时，不按名字、timestamp、顺序或“恰好唯一的相同内容”自动配对，也不向源表追加推测ID。按以下五类保存：
+Sheet原行号只作为这次观测的物理坐标，不成为永久response ID。当前没有可信映射时，不按名字、timestamp、顺序或“恰好唯一的相同内容”自动配对，也不向源表追加推测ID。按以下类别保存：
 
 | 行类别 | 处理 |
 |---|---|

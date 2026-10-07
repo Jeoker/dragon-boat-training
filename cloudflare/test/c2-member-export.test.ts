@@ -780,6 +780,7 @@ it("a late duplicate receipt cannot regress a newer confirmed baseline", async (
   const stub = await seed(environment);
   let attempts = 0;
   let savedReceipt: Record<string, unknown> | null = null;
+  let released = false, settled = false;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
     const envelope = JSON.parse(String(init?.body));
     const payload = JSON.parse(envelope.payload_json);
@@ -800,22 +801,26 @@ it("a late duplicate receipt cannot regress a newer confirmed baseline", async (
       payload_digest: envelope.payload_digest, spreadsheet_id: payload.spreadsheet_id,
       tab_id: payload.tab_id, verified_member_ids: [memberIds[0]],
       acknowledged_at: new Date().toISOString() };
-    if (attempts === 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    // Only flags cross I/O contexts; the first receipt waits for explicit release.
+    if (attempts === 1) while (!released) await new Promise<void>(resolve => setTimeout(resolve, 1));
     return Response.json({ ok: true, meta: { request_id: envelope.request_id }, data: savedReceipt });
   });
   const exportNext = async (id: string) => (await call(environment, "/internal/c2/export-next-member",
     { request_id: id, season_id: seasonId })).json() as Promise<any>;
-  const delayed = exportNext("export_late_first_001");
-  for (let index = 0; index < 20 && attempts < 1; index += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
+  const delayed = exportNext("export_late_first_001").finally(() => { settled = true; });
+  try {
+    while (attempts < 1 && !settled) await new Promise<void>(resolve => setTimeout(resolve, 1));
+    expect(settled).toBe(false);
+    expect(attempts).toBe(1);
+    expect(await exportNext("export_late_second_001")).toMatchObject({ data: {
+      status: "BATCH_CONFIRMED", member_id: memberIds[0] } });
+    await runInDurableObject(stub, async (_instance: TeamState, context) => {
+      context.storage.sql.exec(
+        "UPDATE sync_baselines SET cloud_version=2 WHERE entity_id=?", memberIds[0]).toArray();
+    });
+  } finally {
+    released = true;
   }
-  expect(attempts).toBe(1);
-  expect(await exportNext("export_late_second_001")).toMatchObject({ data: {
-    status: "BATCH_CONFIRMED", member_id: memberIds[0] } });
-  await runInDurableObject(stub, async (_instance: TeamState, context) => {
-    context.storage.sql.exec(
-      "UPDATE sync_baselines SET cloud_version=2 WHERE entity_id=?", memberIds[0]).toArray();
-  });
   expect(await delayed).toMatchObject({ data: { status: "BATCH_CONFIRMED" } });
   await runInDurableObject(stub, async (_instance: TeamState, context) => {
     expect(context.storage.sql.exec<{ cloud_version: number }>(

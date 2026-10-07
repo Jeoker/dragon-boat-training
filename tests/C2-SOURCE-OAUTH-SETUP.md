@@ -1,6 +1,6 @@
 # C2.6 独立来源 OAuth 配置与验收入口
 
-更新：2026-10-03。此入口仅供本机隔离来源验收，不进入 Apps Script／Worker 构建，不替换 clasp 默认账号，也不授权年度导出或生产切换。
+此入口仅供本机隔离来源验收，不进入 Apps Script／Worker 构建，不替换 clasp 默认账号，也不授权年度导出或生产切换。
 
 有效授权／隔离读取证据见[验证索引](CURRENT-VERIFICATION.md#来源采集与审核)。已有授权不证明 token 当前仍有效，执行前核对实际身份与权限。
 
@@ -24,6 +24,6 @@ probe先检查token所属client和完整scope，再对Forms／Sheets固定不存
 
 ## 本地验证与下一步
 
-OAuth专项6项覆盖项目／endpoint fence、完整grant、state／重复code拒绝、仓库内／相同文件及实际parent／junction与路径别名拒绝、无真实ID／错误正文泄漏的能力探测。当前项目验证见[验证索引](CURRENT-VERIFICATION.md)。直接声明已存在且锁定的 `google-auth-library` 10.5.0，没有更换其锁定版本。真实Google授权回调、令牌保存和后续新进程API调用已确认通过。
+OAuth 专项覆盖项目／endpoint fence、完整grant、state／重复code拒绝、仓库内／相同文件及实际parent／junction与路径别名拒绝、脱敏能力探测。测试数量与真实授权证据统一见[验证索引](CURRENT-VERIFICATION.md#来源采集与审核)。本地工具使用 package／lock 中声明的 `google-auth-library`，其依赖版本不表示云端 OAuth 已完成授权。
 
 上述API能力、隔离读取、私有journal及本机原operation／candidate／receipt恢复已有实际验收。业务会话／binding／census、私有runtime／审核和Cloudflare双向运行入口／OAuth refresh已有本地验证，Google为受控模型；真实云授权、实际服务器capture、原生Tab实际观察及新capture消费仍需独立验收。云端secret与管理员门槛见[当前指南](../cloudflare/ISOLATED-RECOVERY.md#隔离发布顺序)。OAuth工具只配置API用户授权，不替代Coach身份或业务source receipt；来源`SOURCE_NOT_VERIFIED`，年度false。

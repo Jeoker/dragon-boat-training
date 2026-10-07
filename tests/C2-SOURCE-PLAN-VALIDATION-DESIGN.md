@@ -77,14 +77,14 @@ declared_mappings没有独立metadata数组：其完整原对象保存在每个S
 
 ## 6. 最小共享实现，避免 synthetic input 或第二套业务规则
 
-本地实施采用最小抽取现有纯规则，让原builder与新validator共用；以下保留原设计约束，实际交付见验收记录。
+原 builder 与 retained validator 共用 typed 验证、分类和分块规则；各入口继续独立检查完整输入及权威锚。
 
 1. 从现contract／projection抽取schema、pinned身份、response、Sheet/cell、known census、声明mapping的有界 typed验证与分类 helper。支持范围、omitted defaults、unknown union整拒／unknown完整pending、finite IEEE754／纳秒规则保持不变；原builder的19专项作为兼容oracle。
-2. 共享record wrapper／理由／条件构造和v1 chunk assembler，保留现输出原字节。新adapter验证原record序列并比较共享期望wrapper／条件／chunks，不复制整套buildlogic，也不调用buildLocalSourcePlan构造伪input。开发时从已提交 `8fed6a9` 的Git tree独立加载原builder及其依赖，生成并提交固定输入的前版canonical golden文本／digests，对照core／metadata／全部chunks原字节；测试运行不依赖旧Git对象可用，避免CI shallow checkout缺历史对象。必要的独立旧helper只可作为明确版本化的测试oracle，不在生产重复业务规则。不能以新builder与新adapter调用同一helper自比代替旧字节oracle。
+2. 共享record wrapper／理由／条件构造和v1 chunk assembler，保留输出原字节。adapter 验证原record序列并比较共享期望wrapper／条件／chunks，不复制整套buildlogic，也不调用buildLocalSourcePlan构造伪input。[独立兼容夹具](fixtures/c2-source-plan-v1/goldens.json)保留前版 `8fed6a9` 的 core／metadata／全部chunk原文本及摘要；测试核验这些固定字节，不依赖旧Git对象或运行新旧路径的同helper自比。
 3. 对excluded使用**仅identity**的专门validator；不让通用response validator要求不存在的lastSubmittedTime，不填空答案或重新读活Form。不为绕过原UNSUPPORTED_LATE_RESPONSE规则制造“supported=true”。
-4. adapter输出供将来review消费的private retained集合／定位及条件摘要；现review入口迁移、权限／IO及真实manifest adapter均另行授权。不能修改旧sourceplan格式或将本地校验结果原地升级。
+4. adapter 输出 private retained集合／定位及条件摘要，已由[retained plan 审核入口](C2-SOURCE-PLAN-REVIEW-ADAPTER-DESIGN.md)消费；当前权限、Google journal 与持久CAS由外层私有服务承担。纯validator不提供权限／I/O，也不修改旧sourceplan格式或将本地校验原地升级为来源资格。
 
-有一项明确的兼容前置：现 `parseSourceJson` 的原raw文本scanner深度上限32，`sourceCanonical`允许生成包装层到40。原raw嵌入chunk record／payload后会多几层，不能直接把生成payload一律按raw32重新parse而误拒原builder合法输出。后续抽取**内部固定策略**的bounded scanner：raw入口仍32，生成core／chunk wrappers≤40；另将每份retained raw按可恢复的**原input字段固定路径**检查深度32，例如`{"form_schema":raw}`、`{"form_responses":[raw]}`、`{"sheet_rows":[raw]}`，Sheet schema／known census／mapping同理按各自原字段检查。这些临时路径仅作词法／深度校验，不是完整source input，不交给parseSourceCaptureInput／build，不包含虚构late body或input_bytes。独立raw深度≤32不等于原input深度≤32，不能漏掉固定父层；调用者不得自选无限depth，duplicate-key／Unicode／UTF8门槛不放宽。可证明这些retained字段的原路径深度，仍不能证明已排除正文的深度／内容。须以前版builder能实际产生的边界unknown完整pending样本证明生成包装兼容、原路径32通过而33拒绝。
+深度兼容采用固定策略：`parseSourceJson` 的原raw文本scanner上限32，`sourceCanonical`及`parseGeneratedSourceJson`的生成包装上限40。每份retained raw另按**原input字段固定路径**检查深度32，例如`{"form_schema":raw}`、`{"form_responses":[raw]}`、`{"sheet_rows":[raw]}`，Sheet schema／known census／mapping同理；不能因包装层增加而误拒原builder合法输出。这些临时路径只作词法／深度校验，不是完整source input，不交给parseSourceCaptureInput／build，不包含虚构late body或input_bytes。检查保留固定父层，调用者不能扩大深度；duplicate-key／Unicode／UTF8门槛不放宽。原路径32通过而33拒绝的边界由兼容夹具与负例核验，仍不能证明已排除正文的深度／内容。
 
 ## 7. 资源、失败与授权边界
 
