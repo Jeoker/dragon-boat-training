@@ -1,4 +1,9 @@
 node_modules/
+# Local acceptance credentials, snapshots and generated caches stay in this project.
+/.c2-form-test/
+/.build/
+/.npm-cache/
+**/.wrangler-recovery-dry-run/
 .npm-cache-source-oauth/
 dist/
 .astro/
@@ -6,10 +11,15 @@ dist/
 *.log
 .clasp.json
 backend/.build/
+backend/.private-host/
+backend/.backup-tool/
+cloudflare/source-private/.wrangler-dry-run/
 cloudflare/.dev.vars
 cloudflare/.dev.vars.*
 !cloudflare/.dev.vars.example
-cloudflare/.wrangler/
+**/.wrangler/
 **/.wrangler-dry-run/
+**/.wrangler-dry-run-c2test/
 cloudflare/coverage/
 cloudflare/.acceptance-artifacts/
+cloudflare/.bootstrap-c2test/

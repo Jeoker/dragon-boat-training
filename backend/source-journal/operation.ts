@@ -2,6 +2,7 @@ import { SOURCE_LIMITS, sourceBytes, sourceCanonical, sourceInstant, sourceInteg
   sourceObject, sourceText, type SourceJson } from "../../shared/c2-source-capture-contract";
 import { validateLocalSourcePlanCore } from "../../shared/c2-source-plan-validation-projection";
 import { readSourceContext, type SourceReadContext } from "./source-reader";
+import { validateNativeCaptureEvidence } from "./native-evidence";
 import { JOURNAL_FORMAT, journalParts, SourceJournalError, sanitizeJournalError, journalAssert, type JournalContext, type JournalControl } from "./service";
 
 export interface PrivateSourceOperationContext {
@@ -23,12 +24,13 @@ export interface PrivateSourceOperationRecord {
   receipt: { control: JournalControl; receipt_digest: string } | null;
 }
 /** This port stores RAW candidate content. It MUST be private, durable and CAS
- * atomic. Never implement it in the public Worker/DO or a public backup table. */
+ * atomic. Use isolated private storage, never business TeamState or public backups. */
 export interface PrivateSourceOperationStore {
   read(key: string): Promise<unknown | null>;
   compareAndSet(key: string, revision: number | null, value: PrivateSourceOperationRecord): Promise<boolean>;
 }
 export interface PrivateSourceOperationPorts {
+  nativeAuthorityDigest?: string;
   store: PrivateSourceOperationStore;
   hash(text: string): Promise<string>;
   checkAuthority?(context: PrivateSourceOperationContext): Promise<void>;
@@ -122,14 +124,17 @@ export class PrivateSourceOperation {
     journalAssert(sourceObject(sheetSchema.raw).title === context.read_context.response_tab_title &&
       canonical(mappings) === canonical(context.read_context.declared_mappings.map(canonical).sort()),
       "SOURCE_OPERATION_DECLARATIONS_CHANGED");
-    const row = exact(JSON.parse(canonical(observation)), ["format", "state", "observed_start_at", "observed_end_at", "passes",
-      "source_status", "annual_export_authorized", "response_tab_link_evidence"]);
-    journalAssert(row.format === "c2-source-observation-v1" && row.state === "TWO_READS_MATCHED_NOT_ATOMIC" && row.passes === 2 &&
+    const parsed = JSON.parse(canonical(observation)), native = parsed.format === "c2-source-observation-v2";
+    const row = exact(parsed, ["format", "state", "observed_start_at", "observed_end_at", "passes",
+      "source_status", "annual_export_authorized", "response_tab_link_evidence", ...(native ? ["native_tab_evidence"] : [])]);
+    journalAssert((row.format === "c2-source-observation-v1" || native) && row.state === "TWO_READS_MATCHED_NOT_ATOMIC" && row.passes === 2 &&
       row.source_status === "SOURCE_NOT_VERIFIED" && row.annual_export_authorized === false &&
-      row.response_tab_link_evidence === "SERVER_BINDING_DECLARATION_ONLY", "SOURCE_OPERATION_OBSERVATION_INVALID");
+      row.response_tab_link_evidence === (native ? "GOOGLE_NATIVE_TAB_LINK_OBSERVED" : "SERVER_BINDING_DECLARATION_ONLY"), "SOURCE_OPERATION_OBSERVATION_INVALID");
     const start = sourceText(row.observed_start_at, 1, 64), end = sourceText(row.observed_end_at, 1, 64);
     journalAssert(sourceInstant(end) >= sourceInstant(start) && sourceInstant(end) - sourceInstant(start) <= 15n * 60n * 1_000_000_000n,
       "SOURCE_OPERATION_OBSERVATION_INVALID");
+    if (native) await validateNativeCaptureEvidence(row.native_tab_evidence, context, this.ports.nativeAuthorityDigest,
+      text => this.hash(text, context), start, end);
     const metadata = validated.private_collection.metadata;
     journalAssert(metadata.observed_start_at === start && metadata.observed_end_at === end &&
       canonical(metadata.known_sources) === canonical(context.read_context.known_sources), "SOURCE_OPERATION_OBSERVATION_INVALID");
@@ -200,6 +205,7 @@ export class PrivateSourceOperation {
   private summary(row: PrivateSourceOperationRecord) {
     return { format: row.format, operation_key: row.key, phase: row.phase, revision: row.revision,
       candidate_digest: row.candidate?.candidate_digest ?? null, receipt_digest: row.receipt?.receipt_digest ?? null,
+      response_tab_link_evidence: row.candidate ? JSON.parse(row.candidate.observation_text).response_tab_link_evidence : null,
       source_status: "SOURCE_NOT_VERIFIED" as const, annual_export_authorized: false as const };
   }
   private async guarded<T>(action: () => Promise<T>): Promise<T> {
@@ -250,7 +256,10 @@ export class PrivateSourceOperation {
         row.receipt?.receipt_digest === source.receipt_digest,
         "SOURCE_REVIEW_CAPTURE_CHANGED");
       journalAssert(JSON.parse(row.candidate.observation_text).observed_end_at === source.observed_end_at, "SOURCE_REVIEW_CAPTURE_CHANGED");
-      await this.resume(); // Recheck current private ACL and exact original content; never stage or reread the source.
+      // The host validates current private Google ACL/content on this invocation.
+      // A cloud review invocation may reuse that readback proof for its repeated
+      // assertions; authority and the local candidate/receipt are always fresh.
+      await this.resume(); // Never stage or reread the live source.
       await this.authority(context);
     });
   }

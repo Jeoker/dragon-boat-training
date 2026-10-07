@@ -233,7 +233,7 @@ export function assertCleanSourceSets(current, deployed, head) {
 
 function generate() {
   assert.ok(process.argv.includes("--build-isolated-overlay"));
-  const privateRoot = new URL("../../.c2-form-test/", import.meta.url);
+  const privateRoot = new URL("../.c2-form-test/", import.meta.url);
   const artifactRoot = new URL("../cloudflare/.acceptance-artifacts/", import.meta.url);
   const identity = load(new URL("isolated-identities.json", privateRoot));
   const j = load(new URL("c2-waitlist-journal.json", artifactRoot));

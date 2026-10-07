@@ -167,7 +167,7 @@ async function main() {
   const phase = process.argv.find(a => a.startsWith("--phase="))?.slice(8);
   assert.ok(phases.includes(phase)); assert.ok(process.argv.includes("--write-test-data"));
   assert.ok(process.argv.includes("--capture-private-backup"));
-  const privateRoot = new URL("../../.c2-form-test/", import.meta.url);
+  const privateRoot = new URL("../.c2-form-test/", import.meta.url);
   const artifacts = new URL("../cloudflare/.acceptance-artifacts/", import.meta.url);
   const journalPath = new URL("c2-waitlist-journal.json", artifacts), statePath = new URL("c2-pause-drain-journal.json", artifacts);
   const plan = load(new URL("associated-fault-overlay/fault-plan.json", artifacts)), journal = load(journalPath);

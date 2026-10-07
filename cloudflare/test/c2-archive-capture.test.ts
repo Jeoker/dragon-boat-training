@@ -62,6 +62,27 @@ async function localClock<T>(at:string,fn:()=>Promise<T>):Promise<T>{
   try{return await fn();}finally{globalThis.Date=OriginalDate;}
 }
 describe("annual capture delivery1 real SQLite read-only adapter",()=>{
+  it("keeps real credential rotation operational audits out of annual business capture",async()=>{
+    const f=await setup("rotation_audit"), request_id="annual_rotation_request_001", new_code="ANNUAL-FICTIONAL-ROTATION-CODE";
+    const call=async(path:string,payload:Record<string,unknown>)=>{
+      const reply=await worker.fetch(new IncomingRequest(`https://fixture.test/internal/c1/${path}`,{method:"POST",
+        headers:{authorization:"Bearer local-c1-test-key","content-type":"application/json"},body:JSON.stringify(payload)}),f.testEnv);
+      const body:any=await reply.json();expect(reply.status,JSON.stringify(body)).toBe(200);return body.data;
+    };
+    const command={request_id,session_token:f.token,expected_credential_version:1,new_code};
+    const prepared=await call("prepare-coach-code-rotation",command);
+    const fixedTime=Date.now(),before=await inSql(f,ctx=>previewArchiveCapture(ctx.storage,f.command,f.identity,()=>fixedTime));
+    await call("rotate-coach-code",{...command,expected_payload_digest:prepared.payload_digest});
+    const after=await inSql(f,ctx=>{
+      expect(ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) n FROM audit_events WHERE action='rotateCoachCode'").one().n).toBe(1);
+      return previewArchiveCapture(ctx.storage,f.command,f.identity,()=>fixedTime);
+    });
+    expect(after.input).toEqual(before.input);
+    expect(after.plan.canonical_text).toBe(before.plan.canonical_text);
+    expect(after.proof.excluded_operational_audits).toBe(before.proof.excluded_operational_audits+1);
+    expect(after.input.audits.every(row=>row.action!=="rotateCoachCode")).toBe(true);
+    expect(after.plan.canonical_text).not.toContain(new_code);
+  });
   it("adapts actual C1 initial versions with explicit virtual metadata and consumes the real frozen history",async()=>{
     const f=await setup("initial");await inSql(f,ctx=>{
       const before=ctx.storage.sql.exec<{count:number}>("SELECT COUNT(*) AS count FROM audit_events").one().count;

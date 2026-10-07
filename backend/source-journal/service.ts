@@ -1,4 +1,4 @@
-// Private Google-side storage only. Never import into Worker/public DTOs.
+// Private Google-side journal storage. Never expose through public DTOs.
 import { SOURCE_LIMITS, parseGeneratedSourceJson, sourceBytes, sourceCanonical, sourceInteger,
   sourceObject, sourceText, type SourceJson } from "../../shared/c2-source-capture-contract";
 import { readPlanValidationContext, type PlanValidationContext, type PlanHashPort }

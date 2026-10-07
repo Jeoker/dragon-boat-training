@@ -151,7 +151,10 @@ export class TeamState extends DurableObject<Env> {
         const input = await readJsonObject(request);
         requestId = requireRequestId(input);
         const data = await this.handleC1Post(url.pathname, input);
-        if (c1Action?.writes) await this.repairScheduledWork();
+        // Authentication bookkeeping must not repair unrelated business jobs
+        // or usage, including the new-Code login used to confirm self rotation.
+        const authenticationOnly = ["/internal/c1/coach-login", "/internal/c1/coach-logout", "/internal/c1/rotate-coach-code"];
+        if (c1Action?.writes && !authenticationOnly.includes(url.pathname)) await this.repairScheduledWork();
         else await this.ensureNextAlarm();
         return apiSuccess(data, this.env, requestId, C1_CONTRACT_VERSION);
       }

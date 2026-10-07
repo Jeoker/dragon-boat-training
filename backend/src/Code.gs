@@ -77,6 +77,9 @@ function dragonBoatRoutes_() {
   if (typeof cloudflareReadFormResponses_ === "function") {
     add("cloudflareReadFormResponses", "POST", function (r) { return cloudflareReadFormResponses_(r); });
   }
+  if (typeof cloudflareReadNativeTabProof_ === "function") {
+    add("cloudflareReadNativeTabProof", "POST", function (r) { return cloudflareReadNativeTabProof_(r); });
+  }
   if (typeof cloudflareReadSheetRecords_ === "function") {
     add("cloudflareReadSheetRecords", "POST", function (r) { return cloudflareReadSheetRecords_(r); });
   }

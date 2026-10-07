@@ -1,6 +1,6 @@
 # Apps Script 现行实现规格
 
-产品规则和待定事项以 [项目说明](README.md) 为准；页面行为见 [前端规格](frontend-spec.md)。本文描述切换前仍运行的 Apps Script 存储、锁及 Google 实现协议，供维护和迁移适配使用，不再作为目标架构。已确认的 Cloudflare 主数据、同步和迁移规范统一见[Cloudflare 计划](cloudflare-migration-plan.md)。下文的 Sheet 权威读取、脚本锁和触发器仅适用于旧运行环境；切换后由 SQLite 事务和持久任务接替，Apps Script 收敛为 Google 桥接。实际交付范围、部署版本和验证边界统一见[当前进度](CURRENT-STATUS.md)。
+产品规则和待定事项以 [项目说明](README.md) 为准；页面行为见 [前端规格](frontend-spec.md)。本文描述切换前仍运行的 Apps Script 存储、锁及 Google 实现协议，供维护和迁移适配使用，不再作为目标架构。已确认的 Cloudflare 主数据、同步和迁移规范统一见[Cloudflare 计划](cloudflare-migration-plan.md)。下文的 Sheet 权威读取、脚本锁和触发器适用于当前生产 Apps Script；切换后由 SQLite 事务和持久任务接替，Apps Script 收敛为 Google 桥接。实际交付范围、部署版本和验证边界统一见[当前进度](CURRENT-STATUS.md)。
 
 ## 架构与存储
 
@@ -40,12 +40,12 @@ GitHub Pages 通过单一数据模块访问 Apps Script Web App 的 `doGet`／`d
 | `Members` | `member_id`、`source_key`、原始响应引用、`source_display_name`、`display_name_override`、派生 `display_name`、`status`（`ACTIVE`／`INACTIVE`）、`default_preference`、`member_version`、创建及更新时间 |
 | `ScheduleTemplates` | `template_id`、星期、本地开始结束时间、时区、地点及地址、启停状态与模板版本；仅用于生成实例 |
 | `TrainingWeeks` | `week_id`、所属周及赛季时区、`scheduled_open_at`、草稿及公开场次集合、发布状态、`week_version`、`confirmed_version`、`confirmed_by`、`confirmed_at`、首次发布时间；整周确认只适用于首次开放的当前版本，之后新增草稿不影响已有公开场次 |
-| `Practices` | `practice_id`、`week_id`、可空模板引用、生成去重键、`start_at`、`end_at`、`timezone`、`location`、`address`、`map_url`、左右容量、`signup_cutoff_at`、`practice_version`、取消信息及日程发布信息 `schedule_published_at`／`schedule_published_by`；P3 的角色、正式版本和冻结指针保存在排座状态表，`archive_due_at` 由 `end_at + 24 小时` 推导；`completed_snapshot_id` 与 `archived_at` 由 BE-07 在 P4 接入 |
+| `Practices` | `practice_id`、`week_id`、可空模板引用、生成去重键、`start_at`、`end_at`、`timezone`、`location`、`address`、`map_url`、左右容量、`signup_cutoff_at`、`practice_version`、取消信息及日程发布信息 `schedule_published_at`／`schedule_published_by`；角色、正式版本和冻结指针保存在排座状态表，`archive_due_at` 由 `end_at + 24 小时` 推导；`completed_snapshot_id` 与 `archived_at` 由归档组件维护 |
 | `SignupsCurrent` | `(season_id, practice_id, member_id)` 唯一；`preference` 为 `LEFT`／`AMBIENT`／`RIGHT`，`status` 为 `CONFIRMED`／`WAITLISTED`／`CANCELLED`；`queue_at` 与 `queue_sequence` 记录本次原始报名时间及服务器入队顺序，直接修改偏好均保留，取消后重新报名时重置；保留 `updated_at`、`last_request_id`，旧排队信息保存在事件中 |
 | `SeatPlanCurrent` | 每个训练当前草稿的完整物理座位行：`row_number`、`side`、`member_id`、对应 `seat_plan_version`、修改人和时间 |
 | `SeatPlanState` | 每个训练一行，保存 `seat_plan_version`、Coach／Steerer 成员 ID、最新 `published_revision`、`frozen_revision`、冻结时间及最后修改信息 |
 | `SeatPlanRevisions` | 手动发布或系统取消、偏好修改、递补产生的不可变正式快照，包含来源、角色、座位、当时姓名、发布人、发布时间和请求编号；未发布草稿不能覆盖或混入正式版本 |
-| `PracticeFinalSnapshots` | 在精确 `archive_due_at` 边界冻结到期前最后正式 revision 的角色、座位及姓名；没有正式版本时保存明确的未发布结果，供 P4 归档读取 |
+| `PracticeFinalSnapshots` | 在精确 `archive_due_at` 边界冻结到期前最后正式 revision 的角色、座位及姓名；没有正式版本时保存明确的未发布结果，供归档组件读取 |
 
 休赛提示只在已激活且未到结束边界的赛季内，根据已发布且未结束的训练计算。周计划空缺不改变名单、绑定或结束日期；恢复发布或增加场次继续使用该 `season_id`。到结束边界后返回已完成状态，不能从缺少训练、缓存缺失或读取错误推断正式完成。
 
@@ -109,15 +109,15 @@ Code 仅人工交付时使用明文，服务端保存校验摘要，浏览器会
 
 Google Sheets 不提供跨表数据库事务。使用可恢复阶段和批量写入，不能暴露半个排座版本；故障恢复期间不把不一致数据标为最新。长导入分批持久化检查点，不跨请求一直持锁。训练取消及最终座位更正同样受此协议约束；冻结后的更正仅追加说明，不覆盖快照。
 
-报名与排座在修改前将确定的变更行、排队时间、递补或 revision 结果、目标版本和响应分别存入 `SystemRequests.result_json` 的 `plan` 与 `result`；既有报名动作保留 `P2` 请求范围，排座动作使用 `P3` 请求范围，两者都包含赛季和操作者。完成请求只返回原 `result`，不因后来截止、停用或版本变化重新执行；管理重放仍须有效会话。未完成请求按原计划恢复，不重新生成队列、递补或 revision。进入脚本锁后的业务读取和写入先恢复适用的未完成操作，包括 P1 管理写入及名单同步；恢复失败返回可重试错误。恢复赛季数据只更新本次目标字段，不用旧整行覆盖后来配置；审计使用确定 ID，恢复不重复追加。
+报名与排座在修改前将确定的变更行、排队时间、递补或 revision 结果、目标版本和响应分别存入 `SystemRequests.result_json` 的 `plan` 与 `result`；既有报名动作保留 `P2` 请求范围，排座动作使用 `P3` 请求范围，两者都包含赛季和操作者。完成请求只返回原 `result`，不因后来截止、停用或版本变化重新执行；管理重放仍须有效会话。未完成请求按原计划恢复，不重新生成队列、递补或 revision。进入脚本锁后的业务读取和写入先恢复适用的未完成操作，包括排期管理写入及名单同步；恢复失败返回可重试错误。恢复赛季数据只更新本次目标字段，不用旧整行覆盖后来配置；审计使用确定 ID，恢复不重复追加。
 
 报名与排座的持锁提交顺序为：保存完整计划并 `SpreadsheetApp.flush()` → 写业务行及审计并 `flush()` → 写 `COMPLETED` 并 `flush()` → 释放锁。释放前仍保证刷新缓冲；任何 `flush` 失败都不能返回成功，异常路径也须释放锁。这个顺序确保恢复依据先于业务持久化，完成标记晚于业务持久化，缓冲写入不会越过锁边界。
 
 同次最外层脚本锁内复用 Spreadsheet／Sheet 句柄和已读记录，避免重复远程读取。记录读取返回副本，写入后使对应表的记录缓存失效；进入与退出锁时清空请求内缓存，异常路径也不例外。这些缓存不跨请求复用，与十分钟公开名单缓存分开。
 
-每场报名的 `signup_version` 和单调递增入队序号保存在现有 `Settings` 的 `signup:<practice_id>` 项，不更改已部署 P1 表头。报名写入同时携带读取时的 `practice_version` 与 `signup_version`，陈旧操作先刷新并重新确认。公开页面与 Coach 客户端的单次请求超时上限为 30 秒，不是整个操作的总时限；结果未知时保留原请求编号及完整参数，暂停有冲突的后续提交，沿用原请求重试。操作结果与后来发生的变更分开表达；当前视图由提交响应或必要补读提供，P2.1 优化约束见下节。
+每场报名的 `signup_version` 和单调递增入队序号保存在现有 `Settings` 的 `signup:<practice_id>` 项，不更改现有表头。报名写入同时携带读取时的 `practice_version` 与 `signup_version`，陈旧操作先刷新并重新确认。公开页面与 Coach 客户端的单次请求超时上限为 30 秒，不是整个操作的总时限；结果未知时保留原请求编号及完整参数，暂停有冲突的后续提交，沿用原请求重试。操作结果与后来发生的变更分开表达；当前视图由提交响应或必要补读提供，提交结果和读取约束见下节。
 
-确认名额继续由唯一报名分配逻辑按容量和排队顺序计算。P3 在同一持锁、可恢复写入内同步报名当前状态、草稿船位及必要的系统正式 revision，并在报名和队员维护路径检查 Coach／Steerer 角色冲突；停用关联检查同时覆盖报名、船位及带队角色。
+确认名额继续由唯一报名分配逻辑按容量和排队顺序计算。排座联动在同一持锁、可恢复写入内同步报名当前状态、草稿船位及必要的系统正式 revision，并在报名和队员维护路径检查 Coach／Steerer 角色冲突；停用关联检查同时覆盖报名、船位及带队角色。
 
 容量判断采用项目报名规则；允许的取消或偏好修改、从草稿及公开船位移除、候补递补和相应版本更新在同次锁内完成。按服务器记录的 `(queue_at, queue_sequence)` 升序扫描符合当前空缺的候补，跳过当前不能合法补位的人；保留时间的修改者也使用此排序，不抢占已确认名额。已有公开船位时按公开空位侧向检查，否则按草稿空位检查；尚未排座则按确认人数与偏好容量判断可安排性。
 
@@ -143,15 +143,15 @@ Google Sheets 不提供跨表数据库事务。使用可恢复阶段和批量写
 
 P1 排期管理使用 `P1M:` 请求范围及 `P1_MANAGEMENT` 确定计划。默认赛季、赛季日期、模板、周确认与预约发布、增补、单场修改和取消均先持久化完整计划及不可变结果，再写业务、审计及完成标记；与 P2／P3 共用脚本锁及读取前恢复屏障。已完成旧版 P1 请求仍按原摘要重放；没有确定计划的旧未完成写入必须人工核对。周模板生成继续使用已有 `TRAINING_WEEK_PLAN_V1`，不混用新计划格式。
 
-`setDefaultSeason` 同时核对目标 `season_version` 和首页指针的 `settings_version`，只允许有效季，不迁移名单或旧链接。赛季到期由请求入口或后台扫描记录完成事件，只清除仍指向本季的默认值；没有新默认季时首页显示最近完成季的只读结果。整季归档仍由 P4 负责。
+`setDefaultSeason` 同时核对目标 `season_version` 和首页指针的 `settings_version`，只允许有效季，不迁移名单或旧链接。赛季到期由请求入口或后台扫描记录完成事件，只清除仍指向本季的默认值；没有新默认季时首页显示最近完成季的只读结果。整季归档由归档组件负责。
 
 `previewPracticeChange` 返回修改前后安排、确认及候补人数、报名版本和绑定输入的 `preview_token`；`updatePractice`／`cancelPractice` 保存时重新核对赛季、周、训练及报名状态。改期保留原训练编号、原周发布批次、报名队列和排座；实际日期可以跨日历周，但不借此创建新的发布或报名。新增加场初次建立在所选周内。私有和已公开场次取消后均保留不可重新生成的内部取消标记及审计，关闭其写入并从普通公开投影移除；不生成训练冻结快照、归档 Tab 或荣誉墙条目，也不触发递补。
 
 修改尚未开放周的场次（包括增补和移除）推进 `week_version` 并撤回原预约确认。确认整周也推进版本；预约采用赛季时区的本地日期和时间，服务端检查夏令时歧义。触发器晚到可发布已确认批次，但不能延后训练原有报名截止。管理写入可附带最新 `current_view`；不可变操作结果不作为重试时的最新状态，投影失败仍返回已成功提交，页面只重读。
 
-## P2.1 提交结果与读取优化
+## 提交结果与读取优化
 
-本节已纳入 [API 契约](contracts/api-v1.json) 的可选 `current_view` 扩展，自服务 `0.5.0-p2.1` 提供，契约版本保持兼容。部署及验收状态见[当前进度](CURRENT-STATUS.md)。现行 Apps Script 环境在 Sheet 可靠提交后确认；Cloudflare 迁移保留结果／当前视图语义，改为 SQLite 提交后确认并通过 outbox 同步 Google，见迁移计划。
+[API 契约](contracts/api-v1.json)提供可选 `current_view`。现行 Apps Script 在 Sheet 可靠提交后确认；Cloudflare 迁移保留结果／当前视图语义，改为 SQLite 提交后确认并通过 outbox 同步 Google，见迁移计划。
 
 1. 扩展报名及队员维护响应，为当前操作返回足够渲染的训练状态、受影响成员、计数、相关版本与视图生成时间；字段按公开／管理身份分别投影，私人字段不进入公开响应或缓存。优先利用锁内已有数据，名单版本不变时不要求客户端再拉全量名册。
 2. 不可变的操作结果继续用于幂等重放；请求 `include_current_view=true` 时另附同次锁内生成的 `current_view`，不存入请求日志。重放时不得把保存的旧结果或旧快照包装成当前状态，也不得重新执行业务写入。若视图生成失败，写入仍明确成功，返回 `view_status=refresh_required`，客户端只补读；旧服务没有可选视图时同样回读。`getMemberWorkspace` 仅供已登录管理员按需读取合并工作区，名单版本相同时省略全量成员，始终提供当前报名关联。
@@ -185,7 +185,7 @@ P1 排期管理使用 `P1M:` 请求范围及 `P1_MANAGEMENT` 确定计划。默�
 
 后台按赛季时区从启用模板生成周排期草稿，并与手动增补场次一起管理。用 `(season_id, week_id, template_id)` 标识默认实例；重复任务恢复已有进度，不覆盖人工时间地点调整。移除的默认实例保留生成标记，避免下次扫描重新出现；默认模板与具体训练分开存储。
 
-当前 `updateTrainingWeek` 在首行写入前持久化 `TRAINING_WEEK_PLAN_V1` 完整实例计划，`plan` 与 `result` 分离。中断重试只补齐原计划缺失实例，不读取新模板重算、不覆盖已调整或取消记录；已有结果只重放结果，不重建删除项。旧未完成请求若已有周却无可恢复计划，返回 `RECOVERY_REQUIRED`，不猜测原计划或报告空周成功。该路径已有故障注入回归，不代表其他 P1 写入路径的中断恢复全部完成。
+当前 `updateTrainingWeek` 在首行写入前持久化 `TRAINING_WEEK_PLAN_V1` 完整实例计划，`plan` 与 `result` 分离。中断重试只补齐原计划缺失实例，不读取新模板重算、不覆盖已调整或取消记录；已有结果只重放结果，不重建删除项。旧未完成请求若已有周却无可恢复计划，返回 `RECOVERY_REQUIRED`，不猜测原计划或报告空周成功。该路径已有故障注入回归，不代表其他排期写入路径的中断恢复全部完成。
 
 公开页面只读取已完成发布的场次集合。首次整周确认记录当前 `week_version`、操作者和时间；确认不跨周复用，编辑待开放版本后旧确认失效。首次发布在锁内检查有效管理确认、`confirmed_version == week_version`、开放时间及当前赛季状态；确认时已到点随即发起发布，否则由定时任务到点执行。定时任务不能自动替管理人员确认，也不能把仅保存的草稿公开。
 
@@ -221,15 +221,15 @@ P1 排期管理使用 `P1M:` 请求范围及 `P1_MANAGEMENT` 确定计划。默�
 
 周期触发器按持久化游标分批工作。默认每轮最多八个工作单元并受 210 秒预算约束；一次到期冻结、一次单场归档、一次整季私有快照或一次公开投影各计一个工作单元。冻结和归档分别保存下一起点；优先及时冻结开放赛季中已经到期的训练，再处理私有归档。可用 `DRAGON_BOAT_ARCHIVE_BATCH_LIMIT` 和 `DRAGON_BOAT_ARCHIVE_TIME_BUDGET_MS` 在规定范围内调整。预算用尽时返回 `has_more`；时间和容量截止仍由业务请求实时判断，不因任务分批而延后。
 
-整季快照包含截止范围内的原始入队响应、名单、周模板，以及未取消训练的计划、报名、排座、关联配置、事件和更正窗口内的正式修订；不复制取消训练的日程、报名、排座或取消事件。使用固定快照标识和分步检查点，保留源运营文件；迟到回答不能改变档案。私有归档失败维持 `COMPLETED` 并重试；公开目录发布另行恢复，不重新开放赛季。
+当前生产整季归档读取当时的成员、模板和未取消训练及相关运行表，过滤取消记录；响应来源直接保存当前 response Sheet 的 `getValues()` 全矩阵，没有按 Form `createTime` 筛选，也不包含完整 Form schema。`ERROR` 重试会重新读取当前源值；已成功的私有快照继续复用。这项生产技术债不能表述为不可变完整来源或迟到回答隔离保证，迁移目标须满足独立来源协议。
 
-原始来源采用已批准的“归档时完整源快照”语义：首次成功固定的不可变 source capture 保存当时完整的绑定 Form 回答与 response Sheet 状态，按事先固定的提交 cutoff 选择回答范围。提交 cutoff 与实际捕获／观测时间不同，`captured_at`／`observed_at` 记录实际时间，不声称保存了首次提交值或某个历史截止瞬间的完整值。已知回答已删除或无法稳定对应时保留明确缺口／待核查状态，不静默省略或标为来源已完整核验；未保存的过去完整答案不能由当前值或 DO 精简字段补回。固定后重试恢复原 manifest、chunks 和 source operation，不重新读取当前来源替换原内容；之后新发现的回答或迟到回答不追加旧档。此来源协议由 C2.6 后续独立实现、核验，不表示现行 `ArchiveActions` 已具备这些保证。
+完整原始来源使用[不可变捕获协议](tests/C2-ANNUAL-SOURCE-CAPTURE-DESIGN.md)，人工关联使用[只追加审核协议](tests/C2-SOURCE-MAPPING-REVIEW-DESIGN.md)。这些目标协议不表示当前生产 `ArchiveActions` 已具备完整来源、原内容恢复或 SOURCE_VERIFIED 保证；实现与验证边界见[当前进度](CURRENT-STATUS.md)。
 
-2026-10-01，用户接受已认证 Coach 对同一次固定 capture 内双方完整内容逐条人工确认，作为 Sheet 行与 Form 回答映射的可信依据（`HUMAN_ATTESTED`）。确认须绑定原 source operation／snapshot、binding／generation／epoch、双方稳定定位与完整内容 hash，并保留审核者、理由及时间的审计证据。它是责任人的关联声明，不保证关联客观无误，也不恢复历史缺口；重复、歧义、known missing 和其他未解释缺口不能因填入一个回答 ID 自动消除。提交资格仍严格依据对应 Form 的 `createTime` 与固定 cutoff，不能改用 Sheet 当前 Timestamp。审核证据只追加，派生资格文件独立版本化并引用原固定 hash，不修改旧 raw manifest／chunks，不追加新发现或迟到回答。政策已定，纯模块、独立私有来源读取与持久恢复已有证据；实际本地HTTP／SQLite Coach会话、原已确认候选读取／journal复核及只追加审核CAS随后已[本地验收](tests/C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)，长期host和实际服务器capture尚未验收。人工确认不自动使整体来源verified，所有Sheet原行仍保留为`PRIVATE_PENDING`，结果恒为`SOURCE_NOT_VERIFIED`；当前Apps Script生产归档不因该独立组件增加能力。
+HUMAN_ATTESTED 的关联声明、完整候选审核及只追加证据由上述独立协议维护；生产归档没有因此获得来源核验能力。
 
-上述“尚未接线”指业务服务接线。独立私有 `backend/source-journal` 适配器已有真实隔离来源读取、Google journal 和本机持久恢复证据，见[实际验收](tests/C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)；它不属于现行 Apps Script 构建，也不向现行年度归档提供来源已核验的证明。完整来源及业务鉴权门槛继续按[当前进度](CURRENT-STATUS.md)维护。
+完整来源组件不属于现行Apps Script构建。长期后台采用[Cloudflare私有Worker／DO](cloudflare/PRIVATE-SOURCE-HOST-DESIGN.md)，原回答、checkpoint和审核全文与业务TeamState分开。Apps Script仍承担生产，是待C4替换的技术债；它的当前年度归档不具备来源已核验能力。实际接线和迁移门槛统一见[当前进度](CURRENT-STATUS.md)。
 
-Tab 可命名为 `2026-Q3 2026-08-22 1000 p_ab12`，身份仍以完整赛季和训练 ID 为准。年度文件可命名为 `Dragon Boat Training Archive 2026`；名称只供人识别，读取必须使用 `AnnualArchiveFiles` 中已校验的文件 ID。创建结果未知时重放原创建请求并恢复映射，不能按名称另建文件。取消训练不创建任何归档 Tab。
+Tab 可命名为 `2026-Q3 2026-08-22 1000 p_ab12`，身份仍以完整赛季和训练 ID 为准。年度文件可命名为 `Dragon Boat Training Archive 2026`；名称只供人识别，读取必须使用 `AnnualArchiveFiles` 中已校验的文件 ID。当前创建会先记录 CREATING，再保存新文件 ID；普通异常保留可取得的 ID，已登记 ID 只重开核验，不按名称搜索。创建成功到映射保存之间若被平台硬终止，重试可能创建另一文件并留下孤立私有文件；只有核验映射的文件是系统有效目标，当前尚无严格未知创建恢复保证。取消训练不创建任何归档 Tab。
 
 赛季已归档且私有快照校验完成后，才向 `PublicHistoryIndex` 批量发布白名单快照，并同步更新 `PublicHistorySeasons`。只取未取消训练的最终正式版本，不以草稿填补；没有正式版本时按项目说明显示未发布，取消训练不写入目录。目录按赛季和训练 ID 去重，内部定位不发给浏览器。发布失败保留任务重试，不影响原归档和新季。
 

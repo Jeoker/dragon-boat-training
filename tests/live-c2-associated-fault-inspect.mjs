@@ -128,7 +128,7 @@ async function inspect() {
   const phase = process.argv.find(a => a.startsWith("--phase="))?.slice(8);
   assert.ok(["probe", "partial", "lost-reply", "recovered"].includes(phase));
   if (phase !== "probe") assert.ok(process.argv.includes("--capture-private-backup"));
-  const privateRoot = new URL("../../.c2-form-test/", import.meta.url);
+  const privateRoot = new URL("../.c2-form-test/", import.meta.url);
   const artifactRoot = new URL("../cloudflare/.acceptance-artifacts/", import.meta.url);
   const plan = load(new URL("associated-fault-overlay/fault-plan.json", artifactRoot));
   const journal = load(new URL("c2-waitlist-journal.json", artifactRoot));

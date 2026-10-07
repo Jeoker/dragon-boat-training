@@ -16,6 +16,8 @@ export class PrivateGoogleClient {
     private readonly fetchPort: (url: string, init: RequestInit) => Promise<Response> = fetch) {}
   async request(url: string, method: "GET" | "POST", body?: unknown, limit = 64_000,
     sourceJson = false): Promise<GoogleObject> {
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let response: Response | undefined;
     try {
       const address = new URL(url);
       journalAssert(address.protocol === "https:" && !address.username && !address.password && !address.port &&
@@ -26,9 +28,11 @@ export class PrivateGoogleClient {
         !/[\r\n]/u.test(token), "JOURNAL_OAUTH_UNAVAILABLE");
       const payload = body === undefined ? undefined : JSON.stringify(body);
       journalAssert(payload === undefined || sourceBytes(payload) <= 14_000_000, "JOURNAL_BUDGET_EXCEEDED");
-      const response = await this.fetchPort(url, { method, redirect: "error", headers: {
+      const controller = new AbortController();
+      deadline = setTimeout(() => controller.abort(), 30_000);
+      response = await this.fetchPort(url, { method, redirect: "error", headers: {
         Authorization: `Bearer ${token}`, "Content-Type": "application/json",
-      }, body: payload, signal: AbortSignal.timeout(30_000) });
+      }, body: payload, signal: controller.signal });
       journalAssert(response.ok, "JOURNAL_GOOGLE_REQUEST_UNCONFIRMED");
       const declared = response.headers.get("content-length");
       journalAssert(declared === null || /^\d+$/u.test(declared) && Number(declared) <= limit,
@@ -43,7 +47,7 @@ export class PrivateGoogleClient {
           count += next.value.byteLength;
           journalAssert(count <= limit, "JOURNAL_BUDGET_EXCEEDED"); chunks.push(next.value);
         }
-      } finally { await reader.cancel().catch(() => {}); }
+      } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
       const bytes = new Uint8Array(count);
       let offset = 0;
       for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
@@ -53,6 +57,9 @@ export class PrivateGoogleClient {
       return googleObject(sourceJson ? parseSourceJson(text) : JSON.parse(text));
     } catch (error) {
       throw sanitizeJournalError(error, "JOURNAL_GOOGLE_REQUEST_UNCONFIRMED");
+    } finally {
+      if (deadline !== undefined) clearTimeout(deadline);
+      try { await response?.body?.cancel(); } catch { /* Never expose transport cleanup errors. */ }
     }
   }
 }

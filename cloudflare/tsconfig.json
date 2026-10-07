@@ -14,6 +14,7 @@
     "../shared/**/*.ts",
     "test/**/*.ts",
     "vitest.config.ts",
+    "recovery.vitest.config.ts",
     "worker-configuration.d.ts"
   ],
   "exclude": []

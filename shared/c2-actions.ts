@@ -1,6 +1,9 @@
 export const C2_CONTRACT_VERSION = "2026-09-30.c2.5-associated-export";
 
 export const C2_SYNC_ACTIONS = {
+  "/internal/c2/native-tab-proof": { method: "POST", authentication: "session_token", writes: true },
+  "/internal/c2/restore-isolated-backup": { method: "POST", authentication: "session_token", writes: true },
+  "/internal/c2/private-source-run": { method: "POST", authentication: "session_token", writes: true },
   "/internal/c2/pin-source-authority": { method: "POST", authentication: "session_token", writes: true },
   "/internal/c2/import-sync-foundation": { method: "POST", authentication: "transport_only", writes: true },
   "/internal/c2/get-sync-overview": { method: "POST", authentication: "session_token", writes: false },

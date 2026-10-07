@@ -1,10 +1,10 @@
 # C2.6 原 source plan 完整验证 adapter - 设计
 
-日期：2026-10-01。原设计经双独审后，supervisor已授权最小共享抽取及本地纯validator；本地实现与双审已完成，事实见[本地验收](C2-SOURCE-PLAN-VALIDATION-LOCAL-ACCEPTANCE.md)。旧source canonical字节与人工审核入口保持兼容，没有schema、Google、存储或公开／runtime接线。
+本文维护完整 retained plan validator 的现行协议；实现证据见[本地验收](CURRENT-VERIFICATION.md#来源采集与审核)。v1 canonical 字节保持兼容；实际存储和权威接线由外层私有 runtime 承担。
 
-目标是验证完整原 `c2-source-plan-v1` canonical core 及其中全部 chunks，而不需要原 `c2-source-input-v1` 文本。迟到 Form 完整正文已从 plan 排除，不能为了重建长期保存它、制造空答案或重新读活来源。现行人工审核仍使用原 input＋plan 双文本重建；本设计不提前更换其入口。
+目标是验证完整原 `c2-source-plan-v1` canonical core 及其中全部 chunks，而不需要原 `c2-source-input-v1` 文本。迟到 Form 完整正文已从 plan 排除，不能为了重建长期保存它、制造空答案或重新读活来源。人工审核支持原 input＋plan 工具及 retained plan 适配器；私有运行服务只从已认证的原 candidate／receipt 提供完整 retained core。
 
-依据：[source contract](../shared/c2-source-capture-contract.ts)、[projection](../shared/c2-source-capture-projection.ts)、[source 技术设计](C2-ANNUAL-SOURCE-CAPTURE-DESIGN.md)、[人工审核设计](C2-SOURCE-MAPPING-REVIEW-DESIGN.md)。用户批准的 current capture／固定 cutoff／不追加迟到回答及 HUMAN_ATTESTED 政策保持不变，没有新产品选择。
+依据：[source contract](../shared/c2-source-capture-contract.ts)、[projection](../shared/c2-source-capture-projection.ts)、[source 技术设计](C2-ANNUAL-SOURCE-CAPTURE-DESIGN.md)、[人工审核设计](C2-SOURCE-MAPPING-REVIEW-DESIGN.md)。采用 current capture、固定 cutoff、不追加迟到回答及 HUMAN_ATTESTED 政策。
 
 ## 1. 三个独立门槛
 
@@ -18,13 +18,13 @@
 
 ## 2. 输入、权威与输出
 
-最小纯接口拟为 `validateLocalSourcePlanCore(originalCoreText, contextPort, hashPort)`；名称及具体 DTO 在实施时审定。
+纯接口为 `validateLocalSourcePlanCore(originalCoreText, contextPort, hashPort)`，定义于[validator](../shared/c2-source-plan-validation-projection.ts)，DTO见[contract](../shared/c2-source-plan-validation-contract.ts)。
 
 - 唯一正文输入是完整原 canonical core text。当前 v1 的 `chunks[].payload_text` 已内嵌全部 chunk 原文本；不能只送选中的两块、已解析片段或“摘要相同”的裁剪版本。没有原 input 参数，也不接受附加 full late responses。
 - 独立 context port 给定原 pinned source（team／season／sourceop／Form／Spreadsheet／Tab／binding／generation／epoch／season_ends_at）、固定格式与预期原 plan digest。调用者正文或 command 不能指定／替换这个 expected digest 或扩大 cutoff。端口目前只表示本地权威声明，不能自己认证会话。
 - local 模型继续使用现审核的 `c2-source-review-source-v1\n`＋原 core text 的 UTF8 SHA-256／base64url 规则，便于未来校验同一 LOCAL_INPUT 锚。真实 capture 的文件／manifest 格式和摘要域若不同，另审适配，不能拿 local digest 冒充真实 source receipt。
 - 正文先经预算／重复 key／深度校验并固定为内部不可变值，再 await；摘要后再取当前 context，比对完整身份／scope／原摘要及 binding／generation／epoch。端口、getter／Proxy 与 hash 依赖异常只返回固定受控错误，不暴露原消息／值／URL。
-- 输出受预算约束的**私有内部** validated retained records／schema 与定位，供未来受保护 review view 使用；小控制结果只含格式、状态、身份、digest、counts 和验证限制。完整 core／raw 不进入控制、DO、普通日志或 public DTO。没有原内容持久保存、读取适配、事务 CAS 或 authenticated view 路径。
+- 输出受预算约束的**私有内部** validated retained records／schema 与定位，供受保护 review view 使用；小控制结果只含格式、状态、身份、digest、counts 和验证限制。完整 core／raw 不进入控制元数据、业务 TeamState、普通日志或 public DTO。validator 本身不承担存储、CAS 或鉴权；这些由 Cloudflare 私有 runtime 承担。
 
 将来私有来源采用外部 chunk 文件时，读取层必须按原 manifest 取得完整集合、逐块身份／digest／bytes 及原 core 的固定字节。若不存在本格式完整原 core，需独立版本 adapter；不能临时拼一个新 v1 core 或以当前读到的块替换原摘要。
 
@@ -90,11 +90,11 @@ declared_mappings没有独立metadata数组：其完整原对象保存在每个S
 
 原core≤2MB；完整chunk及包装record／raw各≤64KB，≤100record/chunk、≤5000输出record、≤50k cells。metadata及payload字符串分别先受原core／chunk预算约束，再解析；namespace／index／offset／counts都是safe nonnegative integers，不允许数值TEXT／NaN／无限值。完整集合扫描与验证，不跳到选中的块或以分页漏掉旧条件。
 
-private validated输出实际canonical另限≤2MB；若未来review再展开view，仍沿其独立≤2MB／每候选≤64KB门槛，不能以输入小为理由豁免输出。小控制context/result拟≤8KB，不复制raw／原core文本。超限整体失败，无部分validated结果或截断；不修改原input/core/chunks。
+private validated输出实际canonical另限≤2MB；若未来review再展开view，仍沿其独立≤2MB／每候选≤64KB门槛，不能以输入小为理由豁免输出。小控制context/result≤8KB，不复制raw／原core文本。超限整体失败，无部分validated结果或截断；不修改原input/core/chunks。
 
 这些只是正文／输出预算，不是固定heap、CPU、stream或SQL证明。原text、parsed core、chunk原文、raw、共享期望序列及输出可能共存；完整重算成本随记录量增长。无真实存储写、原request journal、跨重启恢复、authenticated Coach、manifest receipt、Google或公开传播。
 
-## 8. 本地验收与交付 gates
+## 8. 验收约束
 
 | 验收 | 必须真实证明 |
 |---|---|
@@ -108,4 +108,4 @@ private validated输出实际canonical另限≤2MB；若未来review再展开vie
 | 预算与隐私 | 合法输入导致private输出越界整失败；控制与错误无raw／URL／expectedactual；original bytes未改变，source status恒NOT_VERIFIED，不产生receipt或公开年度chunks |
 | 未实施事实 | 不提供原input、late完整body仍成功验证retained plan；明确input_bytes只是原声明，三门槛分开；不得把通过纯测试标为SOURCE_FIXED／实际读取／持久CAS／Google通过 |
 
-共享抽取、plan-core-only纯validator、独立Node对抗测试及报告已完成双审。将完整原plan接入私有人审是下一独立切片；真实IO／manifest／权限／存储协议不随这个最小纯切片自动接线。
+共享抽取、plan-core-only纯validator及独立Node对抗测试已完成；完整retained plan已接入私有审核。纯validator只证明core内部一致性。显式capture-native的原生观察属于外层v2 candidate／receipt，原core／plan摘要和LOCAL provenance不变；Google core单独不能恢复此proof，依赖私有DO／完整backup。真实Google、云端部署、整体来源及年度资格仍须独立验收，当前协议见[指南](../cloudflare/ISOLATED-RECOVERY.md#新capture消费原生证明)。

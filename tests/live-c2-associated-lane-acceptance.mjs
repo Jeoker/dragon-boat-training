@@ -390,7 +390,7 @@ async function main() {
   if (phase !== "preflight") assert.ok(process.argv.includes("--capture-private-backup"));
   if (!['preflight', 'capture', 'final'].includes(phase)) assert.ok(process.argv.includes("--write-test-data"));
   const args = name => process.argv.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
-  const root = new URL("../cloudflare/.acceptance-artifacts/", import.meta.url), privateRoot = new URL("../../.c2-form-test/", import.meta.url);
+  const root = new URL("../cloudflare/.acceptance-artifacts/", import.meta.url), privateRoot = new URL("../.c2-form-test/", import.meta.url);
   const journalPath = new URL("c2-associated-lane-journal.json", root);
   const config = load(new URL("../cloudflare/wrangler.jsonc", import.meta.url));
   // This local guard prevents all network calls while the previous Worker is still configured.

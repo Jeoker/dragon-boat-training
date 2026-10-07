@@ -64,6 +64,37 @@ export interface SessionRequest {
   session_token: string;
 }
 
+export interface CoachCodeRotationRequest extends SessionRequest {
+  expected_credential_version: number;
+  new_code: string;
+  expected_payload_digest?: string;
+  rotation_request_id?: string;
+}
+
+export function parseCoachCodeRotation(value: unknown, kind: "prepare" | "rotate" | "receipt"): CoachCodeRotationRequest {
+  const input = object(value);
+  const fields = ["request_id", "session_token", "expected_credential_version", "new_code",
+    ...(kind === "prepare" ? [] : ["expected_payload_digest"]), ...(kind === "receipt" ? ["rotation_request_id"] : [])];
+  if (Object.keys(input).length !== fields.length || fields.some(key => !Object.hasOwn(input, key))) {
+    throw new ContractValidationError("Rotation fields are invalid.");
+  }
+  const code = input.new_code;
+  if (typeof code !== "string" || !/^[\x21-\x7e]{16,128}$/u.test(code)) {
+    throw new ContractValidationError("new_code must contain 16 to 128 printable ASCII characters without whitespace.", "new_code");
+  }
+  const version = integer(input, "expected_credential_version", 1);
+  if (version >= Number.MAX_SAFE_INTEGER) throw new ContractValidationError("The credential version cannot be incremented.");
+  const result: CoachCodeRotationRequest = { ...sessionRequest(input), expected_credential_version: version, new_code: code };
+  if (kind !== "prepare") {
+    if (typeof input.expected_payload_digest !== "string" || !/^sha256_v1:[A-Za-z0-9_-]{43}$/u.test(input.expected_payload_digest)) {
+      throw new ContractValidationError("The prepared payload digest is invalid.");
+    }
+    result.expected_payload_digest = input.expected_payload_digest;
+  }
+  if (kind === "receipt") result.rotation_request_id = identifier(input, "rotation_request_id");
+  return result;
+}
+
 export interface CreateSeasonRequest extends SessionRequest {
   name: string;
   start_date: string;

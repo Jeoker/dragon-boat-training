@@ -51,7 +51,9 @@ export class GoogleSourceReader {
   constructor(private readonly contextPort: () => unknown, private readonly token: () => Promise<string>,
     private readonly fetchPort: (url: string, init: RequestInit) => Promise<Response> = fetch,
     private readonly now: () => string = () => new Date().toISOString(),
-    private readonly checkpoint?: SourceReadCheckpointPort) {}
+    private readonly checkpoint?: SourceReadCheckpointPort,
+    private readonly nativeObservation?: { url: string; read(): Promise<Record<string, unknown>>;
+      validate(value: unknown, start: string, end: string): Promise<void> }) {}
 
   private context(): SourceReadContext {
     try { return readSourceContext(this.contextPort()); }
@@ -96,6 +98,17 @@ export class GoogleSourceReader {
       const result = checkpoint ? await checkpoint.request(url, body, read) : await read();
       fresh(); return result;
     };
+    // This is a trusted internal observation callback, never a fetch to this
+    // synthetic URL. The same durable STARTED/reply transcript covers it.
+    journalAssert(!this.nativeObservation || checkpoint, "SOURCE_NATIVE_CHECKPOINT_REQUIRED");
+    const nativeEvidence = this.nativeObservation ? await checkpoint!.request(this.nativeObservation.url, undefined,
+      this.nativeObservation.read) : null;
+    fresh();
+    // Validate a confirmed native replay before any subsequent source request.
+    // Its clock is the retained attempt, never a refreshed proof observation.
+    if (this.nativeObservation) await this.nativeObservation.validate(nativeEvidence, start,
+      checkpoint?.observed_end_at ?? sourceText(this.now(), 1, 64));
+    fresh();
     const identity = async () => {
       const result = await get("https://www.googleapis.com/drive/v3/about?fields=user(permissionId)");
       journalAssert(object(result.user).permissionId === context.api_user_permission_id, "SOURCE_READ_API_USER_CHANGED");
@@ -199,8 +212,9 @@ export class GoogleSourceReader {
     const input = canonical({ format: "c2-source-input-v1", observed_start_at: start, observed_end_at: end,
       ...first, known_sources: context.known_sources, declared_mappings: context.declared_mappings });
     const plan = buildLocalSourcePlan(input, context.source); fresh();
-    return { plan, observation: { format: "c2-source-observation-v1", state: "TWO_READS_MATCHED_NOT_ATOMIC",
+    return { plan, observation: { format: nativeEvidence ? "c2-source-observation-v2" : "c2-source-observation-v1", state: "TWO_READS_MATCHED_NOT_ATOMIC",
       observed_start_at: start, observed_end_at: end, passes: 2, source_status: "SOURCE_NOT_VERIFIED",
-      annual_export_authorized: false, response_tab_link_evidence: "SERVER_BINDING_DECLARATION_ONLY" } };
+      annual_export_authorized: false, response_tab_link_evidence: nativeEvidence ? "GOOGLE_NATIVE_TAB_LINK_OBSERVED" : "SERVER_BINDING_DECLARATION_ONLY",
+      ...(nativeEvidence ? { native_tab_evidence: nativeEvidence } : {}) } };
   }
 }

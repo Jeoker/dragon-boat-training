@@ -2,11 +2,7 @@
 
 更新：2026-10-03。此入口仅供本机隔离来源验收，不进入 Apps Script／Worker 构建，不替换 clasp 默认账号，也不授权年度导出或生产切换。
 
-## 当前证据
-
-用户提供测试Cloud项目 `dragon-boat-source-test`、仓库外客户端JSON，并完成浏览器授权。程序已核对desktop类型、project_id、Google endpoint和实际token audience／四项scope，refresh token已保存；未打印客户端ID、secret或令牌。
-
-新客户端实测Forms／Sheets固定不存在ID返回404、Drive身份读取200；随后既有隔离Form／Spreadsheet／数字response Tab真实读取和新私有journal验收通过。原 `SERVICE_DISABLED` 属于旧clasp客户端。完整证据和未核验边界见[2026-10-03真实验收](C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)。
+有效授权／隔离读取证据见[验证索引](CURRENT-VERIFICATION.md#来源采集与审核)。已有授权不证明 token 当前仍有效，执行前核对实际身份与权限。
 
 ## 本地命令
 
@@ -28,6 +24,6 @@ probe先检查token所属client和完整scope，再对Forms／Sheets固定不存
 
 ## 本地验证与下一步
 
-OAuth专项5/5：项目／endpoint fence、完整grant、state／重复code拒绝、仓库内／相同文件目标拒绝、无真实ID／错误正文泄漏的能力探测。10-02当时完整Node414/414；10-03后的最终项目计数见最新真实验收。直接声明已存在且锁定的 `google-auth-library` 10.5.0，没有更换其锁定版本。真实Google授权回调、令牌保存和后续新进程API调用已确认通过。
+OAuth专项6项覆盖项目／endpoint fence、完整grant、state／重复code拒绝、仓库内／相同文件及实际parent／junction与路径别名拒绝、无真实ID／错误正文泄漏的能力探测。当前项目验证见[验证索引](CURRENT-VERIFICATION.md)。直接声明已存在且锁定的 `google-auth-library` 10.5.0，没有更换其锁定版本。真实Google授权回调、令牌保存和后续新进程API调用已确认通过。
 
-上述API能力、隔离来源读取、私有journal和本机原operation／candidate／receipt恢复已有实际验收。随后业务会话／服务器binding／census、内部HTTP与私有runtime、认证原候选读取和持久审核CAS已有[本地验收](C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)，长期host、实际服务器capture和可信native Tab仍需独立验收。提交前review另补实际parent／junction与路径别名检查，OAuth专项现为6项；历史5／5及414计数保留，最新项目基线见[最终review](C2-COMMIT-REVIEW-2026-10-03.md)。该OAuth工具只配置API用户授权，不替代Coach身份或业务source receipt；来源状态继续 `SOURCE_NOT_VERIFIED`，年度导出false。
+上述API能力、隔离读取、私有journal及本机原operation／candidate／receipt恢复已有实际验收。业务会话／binding／census、私有runtime／审核和Cloudflare双向运行入口／OAuth refresh已有本地验证，Google为受控模型；真实云授权、实际服务器capture、原生Tab实际观察及新capture消费仍需独立验收。云端secret与管理员门槛见[当前指南](../cloudflare/ISOLATED-RECOVERY.md#隔离发布顺序)。OAuth工具只配置API用户授权，不替代Coach身份或业务source receipt；来源`SOURCE_NOT_VERIFIED`，年度false。

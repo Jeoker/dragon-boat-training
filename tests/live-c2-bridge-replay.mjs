@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 if (!process.argv.includes("--write-isolated-receipt")) {
   throw new Error("Explicit --write-isolated-receipt is required.");
 }
-const secretFile = fileURLToPath(new URL("../../.c2-form-test/worker-secrets.json", import.meta.url));
+const secretFile = fileURLToPath(new URL("../.c2-form-test/worker-secrets.json", import.meta.url));
 const { GOOGLE_BRIDGE_URL: rawUrl, GOOGLE_BRIDGE_SECRET: secret } =
   JSON.parse(readFileSync(secretFile, "utf8"));
 const url = new URL(rawUrl);

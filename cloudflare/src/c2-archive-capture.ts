@@ -8,7 +8,7 @@ export const ARCHIVE_BUSINESS_ACTIONS = ["createSeason","updateMember","updateSc
   "signup","signupByCoach","updateSignup","updateSignupByCoach","cancelSignup","cancelSignupByCoach","saveSeatPlanDraft",
   "publishSeatPlan","freezePracticeHistory","completeSeason","archiveSeasonHistory","appendHistoryCorrection",
   "resolveFormSource","pullFormResponses"] as const;
-export const ARCHIVE_OPERATIONAL_ACTIONS = ["coachLogin","coachLogout","importCoreSnapshot","importScheduleSnapshot",
+export const ARCHIVE_OPERATIONAL_ACTIONS = ["coachLogin","coachLogout","rotateCoachCode","importCoreSnapshot","importScheduleSnapshot",
   "importSignupSnapshot","importSeatingSnapshot","importHistorySnapshot","createBackupSnapshot","importSyncFoundation",
   "exportNextMember","exportNextSchedule","exportNextAssociated","pollDueExports","setExportPause","retryExport"] as const;
 const quoted = (values:readonly string[]) => values.map(value=>`'${value}'`).join(",");

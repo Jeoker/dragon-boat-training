@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const documentationDirectories = ["backend", "cloudflare", "contracts", "epics", "tests"];
+const generatedDirectories = new Set(["node_modules", "dist", "coverage"]);
 
 // The repository uses ATX headings. Ignore fenced examples and retain duplicate
 // heading suffixes so an existing file alone cannot hide a broken fragment link.
@@ -34,10 +35,21 @@ async function documentationFiles() {
   const topLevel = (await readdir(root, { withFileTypes: true }))
     .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
     .map((entry) => path.join(root, entry.name));
-  const nested = await Promise.all(documentationDirectories.map(async (directory) =>
-    (await readdir(path.join(root, directory), { withFileTypes: true }))
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-      .map((entry) => path.join(root, directory, entry.name))));
+  async function walk(directory) {
+    const files = [];
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      // Dirent checks do not follow symlinks/junctions. Hidden directories include
+      // private state and Wrangler output; generated/vendor trees are not docs.
+      if (entry.isSymbolicLink()) continue;
+      const filename = path.join(directory, entry.name);
+      if (entry.isFile() && entry.name.endsWith(".md")) files.push(filename);
+      else if (entry.isDirectory() && !entry.name.startsWith(".") && !generatedDirectories.has(entry.name)) {
+        files.push(...await walk(filename));
+      }
+    }
+    return files;
+  }
+  const nested = await Promise.all(documentationDirectories.map((directory) => walk(path.join(root, directory))));
   return [...topLevel, ...nested.flat()];
 }
 

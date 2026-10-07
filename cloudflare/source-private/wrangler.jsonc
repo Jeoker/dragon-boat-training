@@ -1,0 +1,19 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "dragon-boat-training-source-private-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-19",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [],
+  "triggers": { "crons": [] },
+  "observability": { "enabled": false },
+  "vars": {
+    "SOURCE_TEAM_ID": "pentasus-c2-test",
+    "SOURCE_BACKEND_GENERATION": "cf-c2-isolated-1",
+    "SOURCE_WRITER_EPOCH": "0"
+  },
+  "services": [{ "binding": "BUSINESS_SOURCE_AUTHORITY", "service": "dragon-boat-training-api-c2-test", "entrypoint": "SourceAuthority" }],
+  "durable_objects": { "bindings": [{ "name": "PRIVATE_SOURCE_STATE", "class_name": "PrivateSourceState" }] },
+  "migrations": [{ "tag": "source-private-v1", "new_sqlite_classes": ["PrivateSourceState"] }]
+}

@@ -5,6 +5,9 @@ export const C1_CORE_ACTIONS = {
   "/internal/c1/coach-login": { method: "POST", authentication: "coach_code", writes: true },
   "/internal/c1/coach-logout": { method: "POST", authentication: "session_token", writes: true },
   "/internal/c1/coach-bootstrap": { method: "POST", authentication: "session_token", writes: false },
+  "/internal/c1/prepare-coach-code-rotation": { method: "POST", authentication: "session_token", writes: false },
+  "/internal/c1/rotate-coach-code": { method: "POST", authentication: "session_token", writes: true },
+  "/internal/c1/get-coach-rotation-receipt": { method: "POST", authentication: "session_token", writes: false },
   "/internal/c1/create-season": { method: "POST", authentication: "session_token", writes: true },
   "/internal/c1/update-member": { method: "POST", authentication: "session_token", writes: true },
   "/internal/c1/public-roster": { method: "GET", authentication: "public", writes: false }

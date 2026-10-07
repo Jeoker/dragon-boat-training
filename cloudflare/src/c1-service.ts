@@ -1,5 +1,5 @@
 import {
-  parseCoachLogin, parseCreateSeason, parseImportCoreSnapshot,
+  parseCoachLogin, parseCoachCodeRotation, parseCreateSeason, parseImportCoreSnapshot,
   parseSessionRequest, parseUpdateMember, type CoachSnapshot, type ImportCoreSnapshotRequest,
   type MemberSnapshot, type SeasonSnapshot
 } from "../../shared/c1-contract";
@@ -107,6 +107,9 @@ export class C1Service {
       case "/internal/c1/coach-login": return this.login(raw);
       case "/internal/c1/coach-logout": return this.logout(raw);
       case "/internal/c1/coach-bootstrap": return this.bootstrap(raw);
+      case "/internal/c1/prepare-coach-code-rotation": return this.rotateCode(raw, "prepare");
+      case "/internal/c1/rotate-coach-code": return this.rotateCode(raw, "rotate");
+      case "/internal/c1/get-coach-rotation-receipt": return this.rotateCode(raw, "receipt");
       case "/internal/c1/create-season": return this.createSeason(raw);
       case "/internal/c1/update-member": return this.updateMember(raw);
       default: throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);
@@ -487,12 +490,81 @@ export class C1Service {
     const setting = firstRow<{ value_json: string; settings_version: number }>(sql,
       "SELECT value_json, settings_version FROM settings WHERE setting_key = 'default_season_id'");
     return {
-      coach: { coach_id: auth.coach_id, display_name: auth.display_name },
+      coach: { coach_id: auth.coach_id, display_name: auth.display_name, credential_version: auth.credential_version },
       default_season_id: setting ? JSON.parse(setting.value_json) : null,
       settings_version: Number(setting?.settings_version ?? 0),
       seasons: sql.exec<SqlRow>("SELECT * FROM seasons ORDER BY start_date DESC, season_id").toArray().map(seasonProjection),
       generated_at: new Date().toISOString()
     };
+  }
+
+  private async rotateCode(raw: Record<string, unknown>, kind: "prepare" | "rotate" | "receipt"): Promise<Record<string, unknown>> {
+    const input = parseContract(() => parseCoachCodeRotation(raw, kind));
+    // Even original receipts are available only to a currently authorized Coach.
+    const auth = await this.authenticateSession(input.session_token);
+    const originalRequest = input.rotation_request_id ?? input.request_id;
+    const secret = requiredSecret(this.env.COACH_CODE_SECRET, "COACH_CODE_SECRET");
+    const fingerprint = await hmacSha256Base64Url(canonicalJson({ purpose: "self-coach-code-rotation-v1",
+      team_id: this.env.TEAM_ID, coach_id: auth.coach_id, request_id: originalRequest, new_code: input.new_code }), secret);
+    const identity = await this.createRequestIdentity(auth.coach_id, "rotateCoachCode", originalRequest,
+      { expected_credential_version: input.expected_credential_version, new_code_fingerprint: fingerprint });
+    this.assertSessionCurrent(auth);
+    if (kind !== "prepare" && identity.payloadDigest !== input.expected_payload_digest) {
+      throw new ApiError("ROTATION_PAYLOAD_CONFLICT", "The prepared rotation input changed.", 409);
+    }
+    if (kind === "receipt") {
+      if (auth.credential_version !== input.expected_credential_version + 1) {
+        throw new ApiError("CREDENTIAL_VERSION_CONFLICT", "The Coach credential version changed.", 409);
+      }
+      const coach = firstRow<SqlRow>(this.ctx.storage.sql, "SELECT * FROM coaches WHERE coach_id=?", auth.coach_id)!;
+      const digest = await legacyCredentialDigest(String(coach.code_salt), input.new_code, secret);
+      this.assertSessionCurrent(auth);
+      if (!constantTimeEqual(digest, String(coach.code_digest))) throw new ApiError("ROTATION_PAYLOAD_CONFLICT", "The current credential does not confirm this rotation.", 409);
+      const receipt = this.replayRequest(identity.requestKey, identity.payloadDigest);
+      if (!receipt) throw new ApiError("ROTATION_UNCONFIRMED", "The original rotation has no confirmed receipt.", 409);
+      return receipt;
+    }
+    if (auth.credential_version !== input.expected_credential_version) {
+      throw new ApiError("CREDENTIAL_VERSION_CONFLICT", "The Coach credential version changed.", 409);
+    }
+    // Capture the entire credential census before asynchronous hashing. The
+    // transaction rechecks it, so two Coaches cannot concurrently choose one Code.
+    const census = this.ctx.storage.sql.exec<SqlRow>(
+      "SELECT coach_id,code_salt,code_digest,credential_version,active FROM coaches ORDER BY coach_id").toArray();
+    for (const coach of census) {
+      const digest = await legacyCredentialDigest(String(coach.code_salt), input.new_code, secret);
+      if (constantTimeEqual(digest, String(coach.code_digest))) {
+        throw new ApiError("COACH_CODE_CONFLICT", "The proposed Coach Code is already in use.", 409);
+      }
+    }
+    this.assertSessionCurrent(auth);
+    if (kind === "prepare") return { coach_id: auth.coach_id, expected_credential_version: auth.credential_version, payload_digest: identity.payloadDigest };
+    const salt = crypto.randomUUID().replaceAll("-", ""), codeDigest = await legacyCredentialDigest(salt, input.new_code, secret);
+    const at = new Date().toISOString();
+    const result = { operation: operationReceipt("rotateCoachCode", originalRequest, at), result: {
+      coach_id: auth.coach_id, previous_credential_version: auth.credential_version,
+      credential_version: auth.credential_version + 1, rotated_at: at, payload_digest: identity.payloadDigest } };
+    return this.ctx.storage.transactionSync(() => {
+      this.assertSessionCurrent(auth);
+      const currentCensus = this.ctx.storage.sql.exec<SqlRow>(
+        "SELECT coach_id,code_salt,code_digest,credential_version,active FROM coaches ORDER BY coach_id").toArray();
+      if (canonicalJson(currentCensus) !== canonicalJson(census)) {
+        throw new ApiError("CREDENTIAL_VERSION_CONFLICT", "Coach credentials changed during rotation.", 409);
+      }
+      // An old session cannot replay after commit. A newly authorized session
+      // confirms the original operation through the read-only receipt route.
+      if (this.replayRequest(identity.requestKey, identity.payloadDigest)) {
+        throw new ApiError("ROTATION_ALREADY_RECORDED", "Confirm the original rotation with the current credential.", 409);
+      }
+      const changed = this.ctx.storage.sql.exec<SqlRow>(
+        "UPDATE coaches SET code_salt=?,code_digest=?,credential_version=?,updated_at=? WHERE coach_id=? AND credential_version=? AND active=1 RETURNING coach_id",
+        salt, codeDigest, auth.credential_version + 1, at, auth.coach_id, auth.credential_version).toArray();
+      if (changed.length !== 1) throw new ApiError("CREDENTIAL_VERSION_CONFLICT", "The Coach credential version changed.", 409);
+      this.ctx.storage.sql.exec("UPDATE coach_sessions SET revoked_at=COALESCE(revoked_at,?) WHERE coach_id=?", at, auth.coach_id).toArray();
+      this.recordRequest(identity, auth.coach_id, "rotateCoachCode", originalRequest, result,
+        { coach_id: auth.coach_id, previous_credential_version: auth.credential_version, credential_version: auth.credential_version + 1 }, at);
+      return result;
+    });
   }
 
   private async createSeason(raw: Record<string, unknown>): Promise<Record<string, unknown>> {

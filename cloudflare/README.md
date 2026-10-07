@@ -1,12 +1,14 @@
 # Cloudflare 数据服务
 
-这里是 C0 起建立的 Worker、`TeamState` Durable Object、SQLite schema 和持久调度代码。C1.1–C1.6 已加入并在隔离 staging 验收核心身份、赛季／成员、排期、报名候补、排座、冻结历史和运维；生产仍使用 Apps Script，本目录的实现不代表已经切换写入归属。
+本目录包含业务 Worker／TeamState 与[独立私有来源 Worker／DO](PRIVATE-SOURCE-HOST-DESIGN.md)。Cloudflare 是现行目标后台，生产仍运行 Apps Script；实际部署与验收门槛集中于[当前进度](../CURRENT-STATUS.md)。
 
 ## 环境边界
 
 - 默认配置名为 `dragon-boat-training-api-staging`，供本地和隔离 staging 使用。
 - `--env c2test` 是专用 C2 隔离环境，独立于默认 staging。production 必须显式使用 `--env production`；三个环境分别拥有自己的 Worker、Durable Object 命名空间、数据和 secret。
 - `.dev.vars`、Wrangler 本地状态、干运行产物和覆盖率目录均被忽略。仓库只保留 `.dev.vars.example`。
+- `source-private/wrangler.jsonc` 定义独立私有来源 namespace，关闭 routes、workers.dev、预览和 cron；当前只有本地验证，不属于现行业务部署。
+- `recovery.wrangler.jsonc`定义独立RecoveryState封存namespace，同样关闭公网和cron；默认无target／digest允许配置，业务无恢复binding，恢复拒绝。配置与发布顺序见[隔离恢复指南](ISOLATED-RECOVERY.md)。
 - C0 内部测试入口仅在非 production 且请求提供 `C0_TEST_KEY` 时可用。C1 隔离业务入口另用 `C1_TEST_KEY`，并在内部继续验证 Coach Code 或新后端 session；C2 使用独立 `C2_TEST_KEY`，受保护读取还要求 C1 Coach session。三类入口在 production 均固定返回 `NOT_FOUND`。
 
 ## 本地命令
@@ -16,6 +18,13 @@ npm run cf:types
 npm run cf:check
 npm run cf:test
 npm run cf:dry-run
+npm run cf:bootstrap:prepare
+npm run cf:bootstrap:dry-run
+npm run cf:private:check
+npm run cf:private:test
+npm run cf:private:dry-run
+npm run cf:recovery:test
+npm run cf:recovery:dry-run
 npm run cf:dev
 npm run cf:accept:c1-staging
 ```
@@ -24,112 +33,41 @@ npm run cf:accept:c1-staging
 
 `npm run cf:deploy:staging` 创建或更新隔离 staging。`npm run cf:accept:c1-staging` 使用 Git 忽略的 `.dev.vars` 执行显式远端验收；跨部署只读复验增加 `-- --verify-only`。该脚本不会随普通测试运行。`npm run cf:deploy:production` 只保留为明确的后续命令；C4 前不得用它接管生产业务。Cloudflare 和 Google secret 分别通过平台配置，不写入代码、Wrangler vars 或日志。
 
-账户首次部署还需要在 Cloudflare Dashboard 启用一个 `workers.dev` 子域；Worker 上传成功不代表该公网地址已经可用。已启用环境所需的 `C0_TEST_KEY`、`C1_TEST_KEY`、`COACH_CODE_SECRET`、`SESSION_SECRET` 及测试桥接配置必须用 Wrangler secret 或平台 secret 配置，不能加入 `wrangler.jsonc`。`C2_TEST_KEY` 仅配置在专用 `c2test`；原 staging 目前故意缺少它，C2 入口因此被拒绝。远端验收使用的 `C1_ACCEPTANCE_COACH_CODE` 只放在本地 `.dev.vars`，不上传为 Worker secret。Code secret 只核对迁入的旧摘要；新后端 session 使用独立 secret。`wrangler dev --remote` 可以验证 Worker 本身，但当前 Wrangler 不支持以该模式访问 Durable Objects SQLite，因此远端 DO 验收必须走已部署的 staging 地址。
+账户首次部署还需要在 Cloudflare Dashboard 启用一个 `workers.dev` 子域；Worker 上传成功不代表该公网地址已经可用。已启用环境所需的 `C0_TEST_KEY`、`C1_TEST_KEY`、`COACH_CODE_SECRET`、`SESSION_SECRET` 及测试桥接配置必须用 Wrangler secret 或平台 secret 配置，不能加入 `wrangler.jsonc`。`C2_TEST_KEY` 仅配置在专用 `c2test`；原 staging 目前故意缺少它，C2 入口因此被拒绝。远端验收使用的 `C1_ACCEPTANCE_COACH_CODE` 只放在本地 `.dev.vars`，不上传为 Worker secret，不能当作c2test的隔离Code。Code secret用于迁入／自轮换的凭据HMAC及轮换payload指纹，新后端session使用独立secret。`wrangler dev --remote` 可以验证 Worker 本身，但当前 Wrangler 不支持以该模式访问 Durable Objects SQLite，因此远端 DO 验收必须走已部署的 staging 地址。
 
-## C0 已验证边界
+## 组件边界
 
-SQLite schema v1 包含不可变请求结果、审计、outbox、持久任务和用于验收的原子计数器。alarm 每次领取有界任务，使用租约和尝试次数识别迟到结果；失败会在应用层继续排期。C1.1–C1.5 已在相同事务结构中加入核心、排期、报名候补、排座、冻结历史和运维规则；C1.6 已完成隔离 staging 全链路、跨 deployment 持久化、故障恢复和备份验收，C2 才接入完整 Google 同步。证据见 [C1.6 验收](../tests/C1-STAGING-ACCEPTANCE.md)。
+| 组件 | 当前职责 |
+|---|---|
+| index／TeamState | 固定团队路由、格式／权限、SQLite 初始化及持久调度 |
+| C1 服务与 shared DTO | 赛季、排期、报名、排座、冻结历史、审计、保护备份和 Coach 自轮换 |
+| C2 同步与 bridge | Form 导入、B/C/G、物理诊断、固定事件导出、暂停／退避及训练通道 |
+| 年度 capture／storage | 同事务固定私有业务计划，原 request／text／digest CAS；尚未接年度 Google 输出 |
+| source-private | 独立原文／checkpoint／审核 CAS、OAuth、capture-native 及私有 backup |
+| RecoveryRuntime／RecoveryState | 业务或私有保护包恢复到独立新空 namespace 并封存，不提供在线激活 |
 
-## C1 核心切片
+公开读取不返回草稿／私人来源。所有 C2 入口在 production 拒绝；影子 epoch0 不自动取得生产写入权。API 方法、动作及失败码由[清单](../contracts/README.md)和契约测试与实现对照。
 
-schema v2 在 v1 表之上增加 `coaches`、`coach_sessions`、`settings`、`seasons`、`members` 和 `migration_snapshots`，不重建或清空 C0 表。动作、DTO 和运行时解析统一在 `shared/c1-contract.ts`；完整输入输出见 [C1 接口清单](../contracts/api-cloudflare-c1.json)。
+当前源码 schema、远端版本、特性开关和有效证据只看[当前进度](../CURRENT-STATUS.md)及[验证索引](../tests/CURRENT-VERIFICATION.md)，不从源码配置推断已经部署。默认 staging 保留十分钟 cron 配置且 polling 关闭；c2test 与 production 无 cron。显式导出开关不等于自动轮询。
 
-`import-core` 是受 `C1_TEST_KEY` 保护的完整核心影子快照导入：保留稳定 ID、旧 Code salt／digest、实体版本和来源键；同版本不同内容、版本倒退、跨季悬空引用和来源键换人均停止。快照省略的实体不解释为删除，且影子导入不创建 Google outbox。它目前不是浏览器接口。
+首次 schema16 发布使用[bootstrap 工具](tools/c2-bootstrap.mjs)生成的单环境配置，具体评审与发布前后检查见[首次发布准备](ISOLATED-RECOVERY.md#首次-schema16-发布准备)。工具只提供本地准备和 dry-run，不提供部署动作。
 
-迁入 Code 经旧 HMAC 规则核对；登录后只签发包含 `backend_generation` 和 `writer_epoch` 的新会话，数据库不保存明文 Code、session token 或 Code secret。所有启用的 Coach、Steerer 和其他管理员仍使用同一权限。新建赛季和成员修改在业务行、不可变请求结果、审计和 `CORE_CHANGED` outbox 同一 SQLite 事务提交；C2 前 outbox 只积累，不安排假 Google 成功。
+业务事务、同步节奏及切换见[迁移计划](../cloudflare-migration-plan.md)，完整原始来源协议见[来源设计](../tests/C2-ANNUAL-SOURCE-CAPTURE-DESIGN.md)。
 
-当前公开名单仅为隔离测试投影，外层仍要求 C1 测试 key。它按明确 `season_id` 读取，只返回有效成员的 ID、最终显示姓名、默认偏好和版本。
+## 私有来源运行入口
 
-## C1.2 排期切片
+业务`POST /internal/c2/private-source-run`仅供C2隔离环境，使用现有`C2_TEST_KEY` Bearer传输门，非POST返回405；正文为严格解析的`action`、`request_id`、`season_id`、`session_token`。动作是`pin`、`register`、`capture`、`capture-native`、`stage`、`resume`、`review-view`、`review-append`、`backup`；`register`另带固定`target`，`stage`须显式`confirm_private_journal=true`，`review-append`另带严格审核`command_text`，`backup`須`confirm_private_backup=true`并在导出前后复核当前权限。请求不接受客户端proof、actor、cutoff、binding、generation或epoch；当前Coach会话与服务器原pin决定这些值。
 
-schema v3 原地增加模板、训练周、训练场次、报名／排座版本占位和排期影子快照表。动作注册集中在 `shared/c1-actions.ts`，核心与排期 DTO／运行时解析分别在 `shared/c1-contract.ts` 和 `shared/c1-schedule-contract.ts`。服务实现拆分为核心身份与排期两个模块，共用严格契约错误转换、SQL 单行读取、操作回执、会话、请求身份、不可变回执、审计和 outbox。
+完整接线时，标准c2test配置的`PRIVATE_SOURCE_RUNTIME`指向`dragon-boat-training-source-private-test`的命名入口`SourceRuntime.run`，再进入按team／source operation命名的DO；首次bootstrap配置省略该binding。私有Worker的`BUSINESS_SOURCE_AUTHORITY`反向绑定到`dragon-boat-training-api-c2-test`的`SourceAuthority.pin`，每次权威与依赖访问复核真实TeamState会话和原pin。私有vars为`SOURCE_TEAM_ID`、`SOURCE_BACKEND_GENERATION`、`SOURCE_WRITER_EPOCH`，必须与业务身份相同；绑定只配置在c2test，production入口拒绝。实际接线状态见当前进度。
 
-周草稿从有效模板一次性生成并保持私有；立即开放在一个 SQLite 事务中公开整周有效训练。预约开放把确认版本和 `OPEN_TRAINING_WEEK` 任务一起提交，alarm 到期后重新核对 generation、writer epoch、赛季状态、周版本及确认版本；修改过的预约任务只完成为无操作，不会发布旧计划。到期发布保留管理员当时确认的版本、人员、时间和预约时间，只新增实际发布时间。开放周新增场次仍保持私有，必须单独发布。
+私有Worker平台secret为`SOURCE_GOOGLE_OAUTH_CLIENT_ID`、`SOURCE_GOOGLE_OAUTH_CLIENT_SECRET`、`SOURCE_GOOGLE_OAUTH_REFRESH_TOKEN`，通过Wrangler secret或Dashboard输入，禁止把secret值写入vars、SQL、普通备份、文档或日志。私有HTTP入口固定404，公网routes、workers.dev、preview、cron和observability关闭；实际部署后另验证不可访问。
 
-修改与取消先返回绑定赛季、周、训练及报名版本的预览 token。改期保留原 publication week；取消只保留管理及恢复所需墓碑，公开排期不返回取消场次，全部场次取消后也不留下空周。业务行、回执、审计及 `SCHEDULE_CHANGED` outbox 同事务提交；可选 `current_view` 不进入不可变回执。
+capture每次最多启动32个新来源请求；capture-native首次原生请求也计入并在STARTED前预留两个external槽。已确认checkpoint回放不计新请求预算，未决请求拒绝重取。每命令Google API、OAuth及native预留合计最多40次，固定错误为`SOURCE_PRIVATE_RUNTIME_UNCONFIRMED`；权限改变或失败不返回原依赖正文。审核命令第一次完整journal成功后可复用本命令的Google ACL／内容观测，当前Coach／pin／目标／候选／receipt／CAS仍复核，新命令及驱逐重新读Google。原候选及审核全文只由当前Coach受保护读取，不能进入普通业务备份或公开DTO。capture-native原proof／v2候选、旧候选不提升、受控单跳和私有receipt恢复说明见[当前指南](ISOLATED-RECOVERY.md#新capture消费原生证明)，资源门槛见[私有来源设计](PRIVATE-SOURCE-HOST-DESIGN.md)。
 
-`import-schedule` 保留稳定 ID 和版本，验证跨表引用、周一边界、时区、发布／取消配对、报名截止及来源身份。影子导入不创建 outbox，也不为导入的 `SCHEDULED` 周启动任务，避免未取得写入归属时执行生产到期动作。
+## 隔离恢复与原生证明入口
 
-写入的请求摘要只由客户端提交字段产生，不把赛季当前时区等可变服务端状态写入摘要；已经完成的同编号重放先返回不可变结果，再处理当前业务校验。持久任务逐条解析并隔离失败，单条损坏 JSON 不会阻断同批其他任务；失败至少一秒后重试，outbox 会同步记录尝试次数和错误。
+`POST /internal/c2/restore-isolated-backup` 经 C2 传输门及当前 Coach 调用独立 RecoveryRuntime，严格固定 target／digest／来源对象；默认未配置时拒绝。封存恢复不执行业务、Google、cron／alarm，不恢复旧 sessions，也不激活为在线对象。
 
-公开排期和管理工作区仍是 C1 隔离投影，外层要求测试 key；报名、排座和冻结历史已分别由 C1.3–C1.5 接入。默认赛季修改、Google 执行、浏览器 CORS 和 Pages 路由仍未进入当前 C1 实现。
+`POST /internal/c2/native-tab-proof` 通过业务 SourceAuthority 和完整 Apps Script 原生动作核验当前 Tab／Form 关系；独立观察不修改已有候选。新 `capture-native` 才保存首 checkpoint 和 v2 候选，普通 capture 与旧候选不追溯提升。
 
-## C1.3 报名候补切片
-
-schema v4 在训练版本状态中加入单调递增的队列序号，并增加报名、公开限流及报名影子快照表。报名 DTO 与严格解析在 `shared/c1-signup-contract.ts`，业务实现在 `cloudflare/src/c1-signup-service.ts`；公开和 Coach 的报名、换侧、取消动作仍统一经过 `shared/c1-actions.ts` 注册。
-
-服务端按已发布且未结束的训练、赛季状态、成员资格、训练与报名版本执行写入。普通队员受报名截止约束，Coach 可在训练结束前代操作。容量分配和候补递补在单个 SQLite 事务中完成，固定侧和 Ambient 共用按 `(queue_at, queue_sequence)` 排序的唯一队列。没有草稿或正式版时按左右容量判断；已有排座后由真实空位和角色约束决定可行性。换侧保留原队列身份，但不保留已经主动放弃的船位；取消后重新报名取得新的时间和序号。
-
-业务行、不可变回执、审计和 `SIGNUPS_CHANGED` outbox 同事务提交；同编号同参数重放不重复写入。公开入口对每个成员按分钟做有界限流，已完成请求重放不重复计数。成员停用和核心影子导入都不能绕过未来有效报名关联；排期修改预览读取真实确认／候补人数并绑定当前报名版本。
-
-`import-signups` 是受测试 key 保护的版本化影子导入，验证来源身份、引用、容量、队列顺序、递补完整性、时间边界和版本漂移；省略行不表示删除，导入不创建 Google outbox。`public-practice` 返回公开训练、报名及最新正式排座投影；私有排座草稿不会进入公开响应。全部 C1.3／C1.4 入口仍是隔离接口，没有连接 Pages 或 Google。
-
-## C1.4 排座切片
-
-schema v5 增加排座状态、完整私有草稿、不可变正式 revision、每版船位／姓名快照及排座影子快照表。严格 DTO 在 `shared/c1-seating-contract.ts`，服务实现位于 `cloudflare/src/c1-seating-service.ts`；影子导入、工作区读取、保存草稿和发布正式版统一由动作注册与契约清单约束。
-
-Coach／Steerer 可由同一队员兼任，但角色成员不能同时拥有有效报名或桨位。训练前只有已确认报名可进入桨位，发布时必须为全部已确认报名排座；固定侧与实际船位不一致需要显式确认。草稿只在管理工作区可见，公开页始终读取最新不可变正式 revision。取消、换侧及候补递补与相关船位、系统 revision、版本、回执、审计和 outbox 在同一 SQLite 事务完成；Coach 已私下调整而偏离正式版的草稿不会被系统 revision 覆盖。
-
-训练结束后至 `end_at + 24h` 可进行最终更正，可使用本季成员而不改报名。到精确截止时服务端立即返回 `SEAT_PLAN_FROZEN`，不等待后台扫描。C1.4 的 `FROZEN` 只表示写入边界和当前正式投影已锁定；C1.5 另从最终正式 revision 生成永久姓名／座位快照，当前投影本身仍不能当成年度历史。
-
-`import-seating` 验证完整草稿、连续 revision、稳定编号、版本单调、成员引用、角色／报名冲突及不可变内容。相同状态版本必须连更新时间和操作者元数据也完全一致；最新正式 revision 会按当前成员、报名和完整排座规则重新验证，每版姓名快照只能包含该版角色及实际入座成员。省略记录不表示删除，导入不产生 Google outbox。成员停用同时检查未来有效报名、草稿角色／船位及最新正式角色／船位，不能绕过关联保护。
-
-## C1.5 冻结历史与运维切片
-
-schema v6 增加不可变训练历史、历史说明、赛季荣誉墙索引、历史影子快照、按赛季审计索引、应用用量快照及分块备份表。严格 DTO 位于 `shared/c1-history-contract.ts`，服务实现位于 `cloudflare/src/c1-history-service.ts`；C1 当前共四十二个集中注册动作。
-
-已发布且未取消的训练在 `end_at + 24h` 后冻结。正式排座保存最终 revision 的显示姓名、角色和船位；没有正式排座的已发布训练明确保存为 `UNPUBLISHED`。冻结结果不再读取成员当前姓名，历史修正只追加单行说明并递增 `history_version`，不重写原快照。取消训练不会进入单场或整季历史。赛季截止时自动完成，全部有效训练冻结后创建赛季索引并把赛季置为 `ARCHIVED`；公开赛季目录、赛季内训练和管理审计均使用稳定 keyset cursor。
-
-历史自动任务在影子阶段默认关闭：`writer_epoch=0` 且内部 `history_maintenance_enabled` 未开启时，只允许历史影子导入和读取，不会把导入数据当成当前写入权。C4 切换时才允许正式启用；C1.5 的本地专项测试显式开启该内部设置以验证冻结、重试与归档。修复扫描只检查未取消且尚未冻结的已发布训练，待执行任务的到期时间会随训练时间调整；应用用量统计每小时最多刷新一次，避免每次写入重复全库计数。
-
-受保护备份在单个 SQLite 事务中截取业务、不可变请求、审计、outbox、任务和迁移状态，按一百行分块并生成 SHA-256 分块摘要和 manifest 摘要；读取和校验都要求有效 Coach 会话。短期 `coach_sessions`、公开限流状态、备份自身表不进入导出。C1.6 已在 125 名成员样本上下载并复算 191 条记录、29 个分块，且跨 Worker deployment 保持同一备份。这个结果只覆盖当前小团队规模，不代表无界数据量。备份内容仍含私人业务数据，必须由后续运维流程下载到仓库外的私有位置；Google 年度文件和外部存储导出属于 C2。
-
-C0 桥接小样使用 `2026-09-19.bridge.v1` 信封；签名绑定方向、团队、绑定版本、`writer_epoch`、时间戳、nonce、操作编号及负载摘要。传输 nonce 与操作幂等编号分离。staging 的受保护探针允许选择有效、过期、篡改负载、错团队、错 binding 和错代次场景，以验证真实 Google 拒绝路径；production 固定关闭这些入口。独立 C0 探针只保存少量回执用于证明协议；完整 C2 桥接另用私有 BridgeExportReceipts 持久表和逐行回执，两个构建入口不能混用。
-
-## C2.1 同步基础
-
-概览响应中的 `binding_current` 明确标识所存绑定是否匹配赛季当前版本；旧绑定仍可诊断，但其旧版基线不计入当前基线数。
-
-schema v7 在 C1 表之上增加赛季 Google 绑定、字段依赖组基线、稳定 Form／旧来源映射、冲突、同步批次和迁移快照。v6 原地升级保留全部 C1 数据，C1 备份范围也包含这些新表。`shared/c2-sync-rules.ts` 是唯一三方比较规则：以确认基线 `B`、Cloudflare 当前值 `C` 和 Google 值 `G` 按依赖组判断导出、自动导入、业务校验、人工确认、拒绝或冲突；删行和未映射字段不会被猜测成有效操作。
-
-`import-sync-foundation` 只接收受控影子元数据，不访问 Google、不创建或确认 outbox。它保留稳定绑定和来源身份，拒绝版本倒退、同版本身份或映射漂移、跨赛季复用 Form／Spreadsheet、非法 Sheet tab ID、错误实体身份及来源重新指派。同一绑定版本可更新响应 Tab 名称、暂停标志和同步时间，但必须推进 `updated_at`，同步时间不可倒退；更换字段映射须提升绑定版本，不能更换文件或 Tab 身份。Form 和旧行来源的稳定键跨绑定版本保留，同一来源内容未变时无需提高来源版本。`get-sync-overview` 需要有效 Coach session；基线计数只看当前绑定版本，来源计数覆盖整个赛季。实现和本地证据见 [C2.1 验收](../tests/C2-SYNC-FOUNDATION-ACCEPTANCE.md)。
-
-## C2.2 Form 来源导入
-
-隔离 staging 已部署服务 `0.9.0-c2-form-import`、schema v8、代次 `cf-c2-staging-4`；v6→v8 升级保留既有 C1 数据和待同步 outbox。`pull-form-responses` 经签名 Apps Script 桥接读取当前绑定 Form；Cloudflare 校验页范围并在同一事务里提交成员、来源、核查、游标和回执。按回答 ID 保持稳定身份，以时间加回答 ID 排序，24 小时重叠补扫；同一请求 ID 重放结果。旧行不能用姓名推断关联，Coach 先用只读 `list-form-reviews` 分页查看，再用 `resolve-form-source` 显式关联。业务 outbox 仍只是待同步，未写 Google。
-
-原 staging 十分钟定时器保留配置，但 `C2_FORM_POLL_ENABLED=false`、无 Google Form 绑定和 C2 测试 Key；production 无该定时器和 C2 路由。独立 `c2test` 已验证真实 Form 提交触发、实际十分钟补扫、桥接故障恢复、人工核查及跨部署持久化。轮询只读取当前绑定的开放／已完成赛季，截止后还须成功完成最后一轮所有分页才停止，避免漏掉截止前失败的通知；该边界目前由本地测试覆盖。严格同时竞态由本地 Workers／DO 测试覆盖；远端接近同时到达不作为毫秒级竞态证明。详见 [C2.2 验收记录](../tests/C2-FORM-IMPORT-ACCEPTANCE.md)。
-
-`wrangler --env c2test` 指向专用的**另一条** Worker／DO 命名空间，不是原 staging 或 production；无 cron、`writer_epoch=0`，使用独立服务端 secret。`tests/live-c2-form-acceptance.mjs` 等远端脚本硬性限制测试 Worker 主机；写入阶段必须显式传 `--write-test-data`。敏感绑定通过仓库外本地环境提供，不要将 `.dev.vars` 的旧 staging secret 上传给新环境。原 staging 仍部署 C2.2／schema v8，不要把 `wrangler.jsonc` 中较新的源码版本误当成它的远端状态。
-
-## C2.3 Sheet 读取与持久差异
-
-`check-sheet-differences` 在独立 `c2test` 通过五类登记 Sheet 的真实只读验收：`Seasons`、`Members`、`SignupsCurrent`、`Practices`、`SeatPlanState`／`SeatPlanCurrent`。它受 C2 测试传输门及 Coach session 双重保护，经签名桥接读取，再按稳定 ID 和已确认基线逐依赖组比较。schema v11 已将模板与周次比较部署到专用 `c2test`；排期写回后四类范围零差异，随后模板被测试桥接绕过 Worker 修改时发现差异，恢复原值后开放冲突清零。这不等于人工 Google UI 全流程验收。排序不改变业务判断；未知列、缺行、重复／改 ID、跨季行和坏座位结构会停止不安全的比较。Sheet 的角色和座位属于同一依赖组。桥接只读，不自动补建缺少的 Tab。当前远端版本见下方 C2.4 段落。
-
-`CONFLICT`、`REVIEW_REQUIRED`、`REJECTED` 被保存到 `sync_conflicts`，相同现场重读不重复建，完整且未截断的复查后消失的记录标记 `SUPERSEDED`；结构损坏时不清除任何旧诊断。响应最多列出 100 条诊断并报告总数，超限时优先保留冲突／拒绝、再保留需核查项，不能将截断列表当作完整同步计划；`conflict_records` 给出本次创建、过时和当前开放数量。后续审查已让报名／座位行 ID 按 C1 业务 ID 规则校验，并在 Apps Script 与 Worker 两端限制主附表合计 100,000 个单元格、2,000,000 个字符及单格 10,000 字符；超限拒绝整次检查。这些修正已部署到独立测试服务，并通过五类真实只读复验；大量差异下的优先级和异常拒绝路径仍以本地测试为证。该入口虽然不改业务数据，仍会写诊断元数据，因此动作清单标为 `writes=true`，但不会触发其他业务维护任务。C2.3 入口本身不导入 Google 修改，也不写回业务行；后续 C2.4 成员切片另提供有界补丁与确认回执。真实隔离证据见 [C2.3 验收](../tests/C2-SHEET-DIFF-ACCEPTANCE.md)。
-
-## C2.4 成员、排期与报名排座关联导出
-
-`export-next-member` 只处理已到十分钟期限的 Form 成员导入或 Coach 成员修正 outbox。每次先准备一个成员目标；多人事件逐个持久确认。成员目标全部核验后，再对系统 `Seasons` 的既有行单独准备受限补丁，只更新该事件捕获的 `roster_version`；**赛季行回执、B 和事件在同一 SQLite 事务确认**。新事件在入队／管理员修改事务中捕获名单版本；未捕获版本的旧事件若后面已有名单事件，则在 Google 写入前停止，不猜测旧版本。已有赛季行必须具备完整 B，Google 中的业务字段或系统版本偏离 B 时停止；绑定字段始终保留。首次发送成员目标前重新读取完整登记的 `Members` Tab 和该成员的全部 B 依赖组；Google 行缺失且无 B 时可新增，已有行必须有完整 B 且没有待导入或人工核查的 Google 改动。批次、前值、目标、版本及摘要先写入 SQLite，Google 私有回执表在写业务行前记 `PREPARED`，逐行记 `PARTIAL`，重读通过后记 `VERIFIED`。响应丢失时沿原批次重试，不重新规划目标；仅严格回执能推进捕获版本的 B。独立行写入仍受 Google 人工编辑窗口限制，无法声称具备数据库级条件更新。
-
-`SIGNUPS_CHANGED` outbox 在 C1 报名事务内固定 `snapshot_schema=2`、当时的训练／报名版本以及所有变化的报名行（包括自动递补）。若报名联动排座，同一事件也固定变化后的角色／版本状态、完整草稿船位或新正式 revision 的座位和姓名；未变化的一侧为 `null`。教练手动草稿保存／正式发布的 `SEATING_CHANGED` 以 `snapshot_schema=1` 使用同一持久结果读取函数。新草稿事件包含顶层 `published_revision`；热修解析器仅兼容先前已排队、缺该顶层字段而 `seating_snapshot.state` 完整的 `saveSeatPlanDraft` 旧事件。其他旧无完整快照事件不能从当前行猜测目标。见[事件快照本地记录](../tests/C2-SIGNUP-EVENT-SNAPSHOT-LOCAL.md)及[隔离验收](../tests/C2-ASSOCIATED-ISOLATED-ACCEPTANCE-2026-09-30.md)。
-
-关联导出器把源快照投影到 `SignupsCurrent`、`SeatPlanCurrent`、`SeatPlanRevisions` 和 `SeatPlanState`，按报名→完整草稿船位→不可变正式 revision→状态顺序执行。每个签名补丁只包含同一张表的最多四行，并受实际 payload 长度限制；已准备批次重试沿用原目标与回执，不能用后来的报名状态重算。写前核验训练／成员引用、绑定与逐场版本游标；已有 Google 行需要完整物理行基线，Google 人工改动、额外船位、缺失基线及版本断层均停止新写入。最终重读各目标及完整草稿船位后，逻辑 B、物理行 B、游标和 outbox 在同一 SQLite 事务确认。跨 Google Tab 的写入并非原子，期间事件保持待处理；报名侧和排座侧的物理审计列也必须纳入整行比较。已有但没有物理行 B 的 Google 行需要受控 bootstrap／逐行核对，不能直接从当前行推断已确认基线。Alpha 单行报名、完整 20 格草稿／状态及正式 revision 1 已在隔离 Google 连贯确认。
-
-排期写回仅在专用 `c2test` 开启显式调用；本地导出器及验收边界见下段。`SCHEDULE_CHANGED` outbox 在七条 C1 排期事务内固定 `snapshot_schema=1`、赛季版本，以及本次改变的完整模板、周次和训练行。未来开放的确认事件只含周次变化；到期发布事件再含实际发布的训练。连续改期、取消和模板替换不会改变较早事件的快照。见[排期快照本地记录](../tests/C2-SCHEDULE-EVENT-SNAPSHOT-LOCAL.md)。
-
-Google 桥接可只读 `ScheduleTemplates`／`TrainingWeeks`，并对这两张表和 `Practices` 各执行最多四行的签名、绑定核验、前值保护和可恢复回执补丁。`SCHEDULE_TEMPLATE`／`TRAINING_WEEK` 已进入同步 B/C/G、基线及批次约束；`PRACTICE` 使用真实 Google 原始列。`export-next-schedule` 逐行按模板→周次→训练推进，以赛季版本补丁核验后确认整事件。Coach 引用只通过受签名保护的只读桥接返回 ID，不传凭据摘要。旧无源快照事件和旧格式 B 均阻断；当前隔离验收边界见下段。
-
-2026-09-30 核心关联链路历史快照：当时专用 `c2test` 为 Worker `0.16.1-c2-associated-export`／schema v13，隔离 Google Apps Script version 14。升级前 v12 的排期跨表、out-of-band 改动阻断／恢复、部分写入和丢回执恢复已[远端验收](../tests/C2-SCHEDULE-FAULT-ISOLATED-2026-09-30.md)。升级及热修前私有备份均已校验下载，后者为 37 分块。`2026-10-05` 测试周的排期、虚构 Alpha 左侧报名、20 格草稿／状态及正式 revision 1 已依序真实确认；旧草稿事件的顶层 `published_revision` 缺失经 0.16.1 严格兼容恢复。最终独立只读复查关联四表 1／1／20／1，七个受支持 scope B/C/G 零差异，outbox／未完成批次／retry／冲突零，Coach 已退出。**C2.4 核心四表隔离链路通过，候补、关联部分写入远端故障和同季冲突等未验收；C2.4 整体未完成。**当前专用 `c2test` 的 `C2_EXPORT_POLL_ENABLED=false` 且无 cron；原 staging／生产及 Pages 未切换。见[隔离关联验收](../tests/C2-ASSOCIATED-ISOLATED-ACCEPTANCE-2026-09-30.md)。
-
-2026-09-30 运维故障历史快照：v11 将每季运行时暂停与影子绑定的 `export_paused` 分开：暂停后不准备新批次，已准备／发送的旧批次仍沿原批次核验；概览在排空期间显示 `PAUSING`，未排空不能恢复。恢复后成员／排期仍重读 Google 并比较 B/C/G。Coach 可分页读冲突与完整 B/C/G；概览提供积压、退避和注意项。v12 把非重试错误停在 `ACTION_REQUIRED`，Coach 可在核查后显式重试。这些能力已随 v13 保留。此前无故障暂停／恢复及拒绝路径已远端通过；新一轮在专用 `c2test` 以 Google 成员行整行 CAS 测试标记触发 `ACTION_REQUIRED`，第二次手动轮询为零。精确恢复原行后，Coach retry 经新比较在两次相隔至少 60 秒的轮询确认批次与事件。最终七 scope B/C/G 零差异、outbox／batch／冲突零、Coach 已退出；`sync_export_retries` 故障标志清零但保留历史调度行，造成概览下次时间陈旧的小缺陷；无 outbox 且 `next_due_at=null`，不会发 Google 请求。41 分块私有备份已校验下载，尚未恢复。临时手动轮询开关已用原配置恢复 false，远端 409 核验且始终无 cron。真实配额耗尽／随机断网、自动 cron、暂停中已发送批次排空、备份恢复及同季独立冲突仍未远端验收，C2.5 整体门槛未通过。见[C2.5 故障验收](../tests/C2-ACTION-REQUIRED-ISOLATED-ACCEPTANCE-2026-09-30.md)。
-
-## 当前隔离与本地年度边界
-
-2026-10-01 当前隔离基线：专用 c2test 已部署 Worker 0.17.0-c2-associated-lanes／schema14，轮询关闭、crons=[]。候补递补、关联受控部分写入／丢回复、既存 FAILED 批次暂停排空及独立训练阻塞／恢复已按各自范围验收；并发 SENT 暂停仅有本地真实调用链证据。真实配额耗尽、随机网络故障、自动 cron、restore 和更广实体仍未验收，C2.4／C2.5 整体未完成。见[最新实际报告](../tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)与[当前进度](../CURRENT-STATUS.md)。
-
-本地源码 schema16／51表已实现年度业务持久计划及来源权威元数据，未部署到远端 schema14。[`C2SourceAuthority`](src/c2-source-authority.ts) 使用真实 C1 会话，从 SQLite 固定已结束赛季的 actor、cutoff、binding／generation／epoch、响应 Tab 声明及全部数据库已知来源 ID；`source_authority_pins` 进入完整备份，不保存回答、姓名、OAuth 或私有候选正文。同一赛季只保留原 pin 和 census，恢复检查当前会话与来源绑定。新增 `/internal/c2/pin-source-authority` 返回受保护的权威元数据，必须同时通过 C2 transport gate 和 Coach 会话，不调用 Google、不推进业务任务或消费 outbox；生产仍拒绝全部 C2 路由。API manifest 已同步该本地动作与错误码，既有 contract version 保持兼容。
-
-私有 HTTPS 客户端、不可替换的持久目标登记及完整 reader／checkpoint／journal runtime 组合已[本地验收](../tests/C2-SOURCE-TRANSPORT-LOCAL-ACCEPTANCE-2026-10-03.md)；已认证原候选读取、独立私有审核 CAS、实际 HTTP／SQLite会话撤销及跨Node进程恢复随后也已[本地验收](../tests/C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)。审核正文及ledger不进入Worker／DO、公开备份或新增HTTP路由，没有远端部署或长期服务配置。独立 Google 来源与 journal 的既有真实证据见[实际验收](../tests/C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)；可信原生响应 Tab 关联、全部逐块故障和实际服务器capture仍待完成。来源为 SOURCE_NOT_VERIFIED，Sheet 行为 PRIVATE_PENDING，年度导出未授权；当前阶段以[当前进度](../CURRENT-STATUS.md)为准。
-
-配置须分别核对：默认原 staging 保留十分钟 cron 配置且轮询关闭；专用 c2test 与 production 无 cron。c2test 显式导出开关不等于自动轮询；production C2 写回仍关闭。
+接口、包及流式预算、原生证明恢复边界与有序隔离发布统一见[当前操作指南](ISOLATED-RECOVERY.md)。运行层已有本地 SQLite／workerd 证据，真实 Google、部署、云端 restore、Free 资源和年度资格分别验收。

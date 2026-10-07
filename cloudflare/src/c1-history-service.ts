@@ -16,20 +16,8 @@ const USAGE_SNAPSHOT_INTERVAL_MS = 60 * 60 * 1000;
 const RETRY_MS = 60_000;
 const BACKUP_CHUNK_ROWS = 100;
 
-const BACKUP_TABLES = [
-  "app_meta", "c0_counters", "system_requests", "audit_events", "sync_outbox", "scheduled_jobs",
-  "coaches", "settings", "seasons", "members", "migration_snapshots", "schedule_templates",
-  "training_weeks", "practices", "practice_versions", "schedule_migration_snapshots", "signups",
-  "signup_migration_snapshots", "seat_plan_states", "seat_plan_draft_seats", "seat_plan_revisions",
-  "seat_plan_revision_seats", "seat_plan_revision_names", "seating_migration_snapshots",
-  "practice_history", "history_corrections", "season_history", "history_migration_snapshots",
-  "usage_snapshots", "sync_bindings", "sync_baselines", "source_imports", "sync_conflicts",
-  "sync_batches", "sync_batch_items", "sync_migration_snapshots", "form_import_cursors",
-  "form_import_receipts", "form_source_observations", "sync_export_controls",
-  "sync_export_retries", "sync_associated_cursors", "sync_associated_physical_baselines",
-  "sync_export_event_index", "sync_export_event_blocks", "sync_export_request_selections", "sync_export_poll_plans",
-  "annual_archive_plans", "annual_archive_chunks", "annual_archive_requests", "source_authority_pins"
-] as const;
+export { BACKUP_TABLES } from "../../shared/c2-business-backup-tables";
+import { BACKUP_TABLES } from "../../shared/c2-business-backup-tables";
 
 interface HistoryJobOutcome { reschedule_at_ms?: number; }
 

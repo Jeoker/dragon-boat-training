@@ -1,8 +1,8 @@
 # C2.6 完整原 plan 接入私有人审 - 纯 adapter 设计
 
-日期：2026-10-01。本文设计已获supervisor及两名独立reviewer审阅，supervisor已授权最小本地纯adapter；本地实现及验证事实见[验收记录](C2-SOURCE-PLAN-REVIEW-ADAPTER-LOCAL-ACCEPTANCE.md)。下文保留已审实施门槛。现有人工审核政策已获用户接受，没有新用户选择；本切片不接实际权限、存储、Google或runtime。
+本文维护 retained plan 人工审核适配器的当前协议；实现证据见[验收记录](CURRENT-VERIFICATION.md#来源采集与审核)。适配器只负责纯验证与投影，权限、Google、私有存储与 CAS 由外层 runtime 承担。
 
-依据：[原 plan validator 设计](C2-SOURCE-PLAN-VALIDATION-DESIGN.md)、[完整 validator](../shared/c2-source-plan-validation-projection.ts)、[validator context](../shared/c2-source-plan-validation-contract.ts)、[人工审核设计](C2-SOURCE-MAPPING-REVIEW-DESIGN.md)、[既有人审 projection](../shared/c2-source-mapping-review-projection.ts)及[人审 contract](../shared/c2-source-mapping-review-contract.ts)。完整 validator 已完成本地实现、作者337项Node全量及两名独审；具体范围见[本地验收](C2-SOURCE-PLAN-VALIDATION-LOCAL-ACCEPTANCE.md)。这是本地纯校验，不是实际来源已核验。
+依据：[原 plan validator 设计](C2-SOURCE-PLAN-VALIDATION-DESIGN.md)、[完整 validator](../shared/c2-source-plan-validation-projection.ts)、[validator context](../shared/c2-source-plan-validation-contract.ts)、[人工审核设计](C2-SOURCE-MAPPING-REVIEW-DESIGN.md)、[既有人审 projection](../shared/c2-source-mapping-review-projection.ts)及[人审 contract](../shared/c2-source-mapping-review-contract.ts)。完整 validator 已实现；有效证据范围见[本地验收](CURRENT-VERIFICATION.md#来源采集与审核)。这是本地纯校验，不是实际来源已核验。
 
 ## 1. 目标和边界
 
@@ -14,7 +14,7 @@
 
 ## 2. 最小新接口与 mode
 
-拟新增独立 pure adapter module；名称可在实施时按现有目录习惯确定：
+现行独立适配器为 `shared/c2-source-plan-review-adapter.ts`，提供：
 
 ```ts
 prepareLocalMappingReviewFromPlan(coreText, reviewContextPort, hashPort)
@@ -39,7 +39,7 @@ mode 只在新 API 外 wrapper，不写入 `ReviewAnchor`、command、record/sch
 
 跨 await 必须固定的 identity 是现有 `contextIdentity` 覆盖的全部字段：actor_id、permission_scope、完整 source（team/season/sourceop/Form/Spreadsheet/Tab/cutoff/binding/generation/epoch）、source_plan_digest、local_snapshot_id、ledger_version、ledger_digest。不能把审核端口降为只 source context 后丢弃 actor/ledger 核验。
 
-`reviewed_at` 沿旧语义：第一次读取的本次时间保存在内部；fresh getter 可以给出更晚合法 clock，identity fence 不要求两次时间相等，也不以更晚时间覆盖本次已捕获值。旧请求重放直接取 ledger 内原 evidence 时间；A(T1) 后 B(T2) 已追加，使用当前权威 ledger 与 A 的 T1 context 重放仍返回 A 原 prefix，不把 T1 当整条 ledger 的上界。纯接口不证明真实 wallclock，未来权限／持久服务另核首次 server time。
+`reviewed_at` 沿旧语义：第一次读取的本次时间保存在内部；fresh getter 可以给出更晚合法 clock，identity fence 不要求两次时间相等，也不以更晚时间覆盖本次已捕获值。旧请求重放直接取 ledger 内原 evidence 时间；A(T1) 后 B(T2) 已追加，使用当前权威 ledger 与 A 的 T1 context 重放仍返回 A 原 prefix，不把 T1 当整条 ledger 的上界。纯接口不证明真实 wallclock，持久服务另核首次 server time。
 
 完整审核 fence 至少发生于：validator 所有 context 读取、完整 validator 返回后、view 全部 schema/record/gap SHA await 后，以及 plan 的 ledger chain／command／derived／最终 next-ledger SHA await 后。最后一次 await 之后、返回之前再次读完整审核端口；不可只在入口检查一次。若后续新增 await，最终 fence 必须随之移到末尾。
 
@@ -47,7 +47,7 @@ mode 只在新 API 外 wrapper，不写入 `ReviewAnchor`、command、record/sch
 
 ## 4. 共用内部 helper，旧字节不变
 
-建议最小拆分现行 projection 中两段内部工作，不复制整个审核算法：
+适配器复用 `shared/c2-source-mapping-review-internal.ts` 的两段内部工作：
 
 1. **retained records → PreparedBundle**：从证明过的完整记录及 locator 生成私有 view，复用原 `reviewAnchor`、schema/record/gap hash、unsupported 传播、完整 Form/Sheet raw 与 unreviewable identities。
 2. **PreparedBundle → 审核计划**：复用 `selectedRecords`、完整 ledger parse/原 digest/chain、command hash、one-to-one、append/replay、derived prefix 与最后 fence。
@@ -84,9 +84,9 @@ HUMAN_ATTESTED 只记录关联声明。新 mode 不删除原 GAP_LEDGER、missin
 
 超限或任何 hash/context/语义失败整体不返回结果，不部分 view、不截断 ledger、不推进状态；这是纯返回原子性，不是持久事务。检查与 helper 必须先证明输入预算再展开，输出按实际 canonical UTF8验证。完整 parsed core、validator private集合、view 和预期重算对象可能共存，不声称固定 heap、CPU 或 streaming 上限；成本随完整 records/evidence 增长。
 
-## 7. 本地实现切片和必须验收
+## 7. 实现边界与验收
 
-第一切片仅新增两个纯入口、必要私有 helper 重构、Node作者／独立专项及本地报告。既有 schema/SQL/backup、Worker routes/import、bridge、HTTP、UI、auth、public、alarm、Google、service/manifest版本全部不接。代码经双独审后由 supervisor 保存，本文不预授权真实来源或权限接线。
+纯适配器承担完整验证、私有 view 与只追加计划；实际权限、Google journal 和持久 CAS 由外层私有 runtime 承担。Cloudflare 运行入口和审核 UI 的部署状态见[当前进度](../CURRENT-STATUS.md)。
 
 | 验收 | 必须实际证明 |
 |---|---|
@@ -98,4 +98,4 @@ HUMAN_ATTESTED 只记录关联声明。新 mode 不删除原 GAP_LEDGER、missin
 | 预算和隐私 | 原合法core导致私有view新wrapper>2M整失败、合法ledger追加>512K整失败、依赖异常固定；mode只wrapper，控制/ledger/error无raw、答案或URL；oldAPI返回不加mode |
 | 范围 | 始终LOCAL_REVIEW_PLAN_ONLY/NOT_VERIFIED/falseexport，无持久request/noauth/noGoogle/noactualcapture，不以通过adapter当authenticated receipt |
 
-上述最小本地实施已获授权，不需要用户再次选择已接受的人工信任政策。实际 fixed source artifact、完整读取协议、权限、持久审核与年度 source verification 仍为后续独立门槛。
+完整读取、原候选鉴权与持久审核已有组件验收。真实业务 capture、可信原生 Tab、其他 Coach 委派、审核 UI 与年度 source verification 仍须独立验收。

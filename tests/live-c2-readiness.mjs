@@ -14,7 +14,7 @@ assert.equal(base.pathname, "/");
 const c1Key = process.env.C1_TEST_KEY;
 const c2Key = process.env.C2_TEST_KEY;
 assert.ok(c1Key && c2Key, "The isolated acceptance keys are required.");
-const privateFile = fileURLToPath(new URL("../../.c2-form-test/review-private.json", import.meta.url));
+const privateFile = fileURLToPath(new URL("../.c2-form-test/review-private.json", import.meta.url));
 const { coach_code: coachCode } = JSON.parse(readFileSync(privateFile, "utf8"));
 assert.ok(coachCode, "The isolated Coach credential is required.");
 const requestId = () => `c2_readiness_${randomUUID().replaceAll("-", "")}`;

@@ -40,6 +40,21 @@
       "request": ["request_id", "session_token"],
       "response": ["coach", "default_season_id", "settings_version", "seasons", "generated_at"]
     },
+    "/internal/c1/prepare-coach-code-rotation": {
+      "method": "POST", "authentication": "session_token", "writes": false,
+      "request": ["request_id", "session_token", "expected_credential_version", "new_code"],
+      "notes": "Self only. Validates an ASCII non-whitespace16..128 new Code and returns coach_id/expected_credential_version/payload_digest; no persistence. Stable payload identity uses a server-secret HMAC Code fingerprint, not a plaintext or bare Code hash."
+    },
+    "/internal/c1/rotate-coach-code": {
+      "method": "POST", "authentication": "session_token", "writes": true,
+      "request": ["request_id", "session_token", "expected_credential_version", "new_code", "expected_payload_digest"],
+      "notes": "Current Coach self rotation only. Full credential census is rechecked with current-session authentication and version CAS in one transaction. Server generates salt/HMAC digest, increments version once and revokes all of this Coach's sessions including the caller. Receipt/audit/request contain only versions, timestamps and server fingerprints. A lost reply is confirmed using a new-Code login and the protected receipt route, never by replay with revoked authorization."
+    },
+    "/internal/c1/get-coach-rotation-receipt": {
+      "method": "POST", "authentication": "session_token", "writes": false,
+      "request": ["request_id", "session_token", "rotation_request_id", "expected_credential_version", "new_code", "expected_payload_digest"],
+      "notes": "Requires the current Coach session at exactly original version+1, matching current new Code and original prepared payload. Reads the immutable original rotation receipt without re-rotation or audit writes. No unauthenticated or revoked-session receipt recovery."
+    },
     "/internal/c1/create-season": {
       "method": "POST",
       "authentication": "session_token",
@@ -308,7 +323,7 @@
       "writes": true,
       "request": ["request_id", "session_token"],
       "response_result": ["snapshot_id", "manifest"],
-      "notes": "Captures an immutable transaction-consistent private snapshot into bounded JSON chunks, then creates SHA-256 chunk digests and a manifest. The same request resumes an interrupted finalization."
+      "notes": "Captures a transaction-consistent protected snapshot and finalizes SHA-256 chunk and manifest digests. This creates snapshot/request/audit/finalize system records but does not edit training entities. Request identity binds team, actor, action and request_id; changing actor may create a different snapshot, and schema changes conflict with the original payload. Current schema16 covers51 tables, excludes coach_sessions and backup storage tables, and retains protected credential salts/digests. The local backup CLI pins isolated target/current identity/schema/actor/request and first authenticated server_time before create, rejects older replayed snapshots, preserves original47/schema14 or51/schema16 package and resumes unknown create replies under the same identity/time boundary only. captured_at retains the original snapshot time and does not prove latest server state at download completion. Its offline digest/table/column checks are independent of remote verified=true; SQL constraints and actual recovery remain separate gates."
     },
     "/internal/c1/get-backup-chunk": {
       "method": "POST",
@@ -337,6 +352,7 @@
     "INVALID_JSON", "INVALID_REQUEST", "INVALID_REQUEST_ID", "METHOD_NOT_ALLOWED", "NOT_FOUND", "C1_ACCESS_DENIED",
     "CONFIGURATION_ERROR", "IDEMPOTENCY_CONFLICT", "IMPORT_CONFLICT", "IMPORT_VERSION_REGRESSION",
     "IMPORT_SNAPSHOT_CONFLICT", "IMPORT_REFERENCE_MISSING", "COACH_CODE_INVALID", "SESSION_INVALID",
+    "ROTATION_PAYLOAD_CONFLICT", "CREDENTIAL_VERSION_CONFLICT", "ROTATION_UNCONFIRMED", "COACH_CODE_CONFLICT", "ROTATION_ALREADY_RECORDED",
     "SESSION_EXPIRED", "SESSION_REVOKED", "SEASON_NOT_FOUND", "SEASON_NOT_OPEN", "SEASON_NOT_PUBLIC",
     "MEMBER_NOT_FOUND", "MEMBER_INACTIVE", "MEMBER_HAS_ACTIVE_LINKS", "WEEK_NOT_FOUND", "WEEK_START_NOT_MONDAY", "WEEK_OUTSIDE_SEASON",
     "SCHEDULE_TEMPLATES_REQUIRED", "WEEK_EMPTY", "WEEK_ALREADY_OPEN", "WEEK_NOT_DUE", "WEEK_NOT_OPEN",

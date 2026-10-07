@@ -17,8 +17,8 @@ if (!["seed", "before", "resolve"].includes(phase)) throw new Error("Use seed, b
 if (phase !== "before" && !process.argv.includes("--write-test-data")) {
   throw new Error("Mutating acceptance phases require --write-test-data.");
 }
-const privateFile = fileURLToPath(new URL("../../.c2-form-test/review-private.json", import.meta.url));
-const secretsFile = fileURLToPath(new URL("../../.c2-form-test/worker-secrets.json", import.meta.url));
+const privateFile = fileURLToPath(new URL("../.c2-form-test/review-private.json", import.meta.url));
+const secretsFile = fileURLToPath(new URL("../.c2-form-test/worker-secrets.json", import.meta.url));
 const privateData = existsSync(privateFile) ? JSON.parse(readFileSync(privateFile, "utf8")) : null;
 const seasonId = "season_c2_isolated_2026";
 const coachId = "coach_c2_isolated_2026";

@@ -54,6 +54,18 @@ Apps Script 业务失败可能仍是 HTTP 200，必须检查 envelope。客户�
 
 ## C1／C2 接口设计约束
 
-C1.1–C1.6 已按业务域建立独立请求／响应 DTO、运行时解析、集中动作注册和契约测试；C2 继续沿用这一结构。C2.1 的 `shared/c2-sync-contract.ts` 校验 Google 文件 ID、数字 Sheet tab ID、字段映射、依赖组基线及稳定来源键；同步概览用 `binding_current` 区分旧绑定和当前赛季版本。C2.2 增加 Form 签名读取、分页导入、核查列表、显式关联和默认关闭的轮询。C2.3 的 `check-sheet-differences` 要求当前绑定与 Coach 会话，按登记 Tab 比较 B/C/G；它只写诊断元数据，不修改业务行或 Google。2026-10-01 当前隔离基线：专用 c2test 已部署 Worker 0.17.0-c2-associated-lanes／schema14，轮询关闭、crons=[]。候补递补、关联受控部分写入／丢回复、既存 FAILED 批次暂停排空及独立训练阻塞／恢复已按各自范围验收；并发 SENT 暂停仅有本地真实调用链证据。真实配额耗尽、随机网络故障、自动 cron、restore 和更广实体仍未验收，C2.4／C2.5 整体未完成。见[最新实际报告](../tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md)与[当前进度](../CURRENT-STATUS.md)。 冲突业务解决／导入和浏览器同步管理页面仍未实现。年度业务捕获与持久计划已在本地 schema15／50表实现；完整来源、人工映射和 plan-only 审核为内部纯模块，没有年度／来源 HTTP 动作或真实 Coach 认证接线。接口清单不代替运行时类型、授权或来源真实性证明。
+C1.1–C1.6 已按业务域建立独立请求／响应 DTO、运行时解析、集中动作注册和契约测试；C2 继续沿用这一结构。C2.1 的 `shared/c2-sync-contract.ts` 校验 Google 文件 ID、数字 Sheet tab ID、字段映射、依赖组基线及稳定来源键；同步概览用 `binding_current` 区分旧绑定和当前赛季版本。C2.2 增加 Form 签名读取、分页导入、核查列表、显式关联和默认关闭的轮询。C2.3 的 `check-sheet-differences` 要求当前绑定与 Coach 会话，按登记 Tab 比较 B/C/G；它只写诊断元数据，不修改业务行或 Google。成员、排期、报名排座导出及暂停／重试接口的隔离验收和剩余运维门槛见[当前进度](../CURRENT-STATUS.md)。冲突业务解决／导入和浏览器同步管理页面仍未实现。
+
+C2.6 当前源码为schema16，业务备份覆盖51表，排除coach_sessions及备份自身两表；年度业务捕获与持久计划、来源权威元数据已有本地实现。`/internal/c2/pin-source-authority`已列入[C2接口清单](api-cloudflare-c2.json)，须同时通过C2 transport gate与当前Coach会话，只返回服务器固定的权威元数据，不调用Google或返回原始回答。该接口与私有HTTPS客户端、固定目标登记及强制checkpoint的运行组合已有[本地验收](../tests/CURRENT-VERIFICATION.md#来源采集与审核)。已认证原候选读取和只追加审核CAS已在私有Node组件中[本地验收](../tests/CURRENT-VERIFICATION.md#来源采集与审核)，并接入下述私有命令入口；浏览器审核页面与年度导出动作未接入。当前远端版本、实际服务器来源采集和未完成门槛统一见[当前进度](../CURRENT-STATUS.md)。接口存在不代表远端部署、Pages接入或来源核验；生产仍拒绝C2路由。
 
 新接口统一写入回执与可选视图；异步维护返回任务标识及任务状态。旧动作和历史日志由兼容适配器承接，不破坏重试摘要。接口清单中的服务版本、动作、方法、权限和直接业务错误必须由测试与实现对照；修改 `wrangler.jsonc` 后必须重新生成 Worker 类型。前端接入前验证完整业务响应形状、缓存代次、结果查询权限和浏览器 CORS。C0 探针的成功只证明持久化与桥接机制，不能替代这些业务契约验收。
+
+`/internal/c2/private-source-run`是隔离私有命令入口，传输门和当前Coach会话共同保护；内部经双向命名Service Binding复核原pin，非POST返回405。严格命令、secret配置和原操作恢复说明见[运行入口](../cloudflare/README.md#私有来源运行入口)。它支持固定目标、capture／显式capture-native、journal、原候选审核及显式confirm_private_backup的独立backup。capture-native不接收客户端proof，固定可信业务回调的首个原生观察及原checkpoint；v2 candidate绑定观察摘要，原pin／plan hash不变，旧候选不回填。summary显式返回原response_tab_link_evidence；未知请求不重取、已确认回放不刷新proof。Google journal core不含原生receipt，恢复依赖私有DO／完整私有backup。Google为传输模型，不提升来源或年度资格；尚无真实云验收或浏览器审核页面。
+
+`/internal/c2/restore-isolated-backup`仅在配置命名RecoveryRuntime、固定可信target／digest及当前Coach复核后恢复BUSINESS／PRIVATE包到新空封存namespace；默认无接线／允许配置即拒绝。schema14原47表只升级app_meta到16、新4表空，schema16保留51表，旧session不恢复。私有包上限16,000,000原字节／128条及23,000,000 encoded字节，整对象超额拒绝，不等于256,000,000运行时范围全部可备份。它没有在线激活语义。
+
+C1业务保护包用[备份CLI](../backend/backup/README.md)从固定c2test下载，显式create产生系统快照／请求／审计／finalize记录，不改训练业务。原actor／request／schema决定snapshot，未知创建回复不换ID；首次可信server_time下界持久固定，旧请求较早快照拒绝，resume保留原下界及captured_at。客户端独立核验原schema14／47或16／51完整表／列／ordinal／字节摘要，verify离线需要独立保管的预期digest；不因远端verified或包自报digest而采纳新信任。输出保留原包，不执行SQL或升级14，真实FK／CHECK／索引及事务恢复仍由RecoveryState验收；来源／年度授权不变。
+
+C1专用[Coach自轮换](../backend/coach/README.md)在当前session下prepare／rotate，不能传其他actor；服务HMAC指纹固定payload，交易重验全凭据census并CAS原version＋1、撤销自身全部旧sessions、保存无Code／token的原receipt／audit。确认原操作必须new Code登录后的当前session与同payload，读receipt不再次轮换；CLI UNKNOWN绝不自动重提交。只处理Cloudflare，不清理Apps Script或Git历史，不提升来源／年度资格。
+
+`/internal/c2/native-tab-proof`只接受request_id／season_id／session_token；官方Google原生关系通过独立签名域、servernonce／方向／action／时间和当前binding／pin核验。前后当前Coach复核，已固定pin不改写，独立观察接口不改变候选。新capture-native沿可信同名RPC消费首个观察，当前pin限原actor／request；其他Coach委派未实现。严格恢复包／资源门槛、受控单跳边界及配置见[当前使用指南](../cloudflare/ISOLATED-RECOVERY.md)。仍保持SOURCE_NOT_VERIFIED和annual_export_authorized=false。

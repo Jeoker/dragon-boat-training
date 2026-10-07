@@ -17,7 +17,7 @@ assert.equal(base.pathname, "/");
 const c1Key = process.env.C1_TEST_KEY;
 const c2Key = process.env.C2_TEST_KEY;
 assert.ok(c1Key && c2Key, "The isolated acceptance keys are required.");
-const privateRoot = new URL("../../.c2-form-test/", import.meta.url);
+const privateRoot = new URL("../.c2-form-test/", import.meta.url);
 const { coach_code: coachCode } = JSON.parse(readFileSync(new URL("review-private.json", privateRoot), "utf8"));
 const { GOOGLE_BRIDGE_URL: googleUrl, GOOGLE_BRIDGE_SECRET: googleSecret } = JSON.parse(
   readFileSync(new URL("worker-secrets.json", privateRoot), "utf8"));

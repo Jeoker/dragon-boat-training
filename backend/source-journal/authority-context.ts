@@ -41,7 +41,7 @@ export async function createAuthorizedSourceOperation(authorize: () => Promise<u
     });
     const context = await bindSourceAuthorityContext(original, await registeredTarget(original.source.source_operation_id), ports.hash);
     portsContext.value = context;
-    return new PrivateSourceOperation(() => portsContext.value, { ...ports, async checkAuthority(expected) {
+    return new PrivateSourceOperation(() => portsContext.value, { ...ports, nativeAuthorityDigest: original.authority_digest, async checkAuthority(expected) {
       const current = readSourceAuthorityPin(await authorize());
       journalAssert(sourceAuthorityText(current) === sourceAuthorityText(original), "SOURCE_PRIVATE_AUTHORITY_CHANGED");
       const target = await registeredTarget(current.source.source_operation_id);

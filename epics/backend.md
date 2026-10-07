@@ -25,9 +25,7 @@
 | BE-07 | 自动创建并复用年度归档文件；未取消训练的单场与整季私有归档、赛季完成、历史目录与只读投影、冻结后更正说明；归档及历史发布恢复 | BE-03、BE-04、BE-06 | 取消训练不归档、不进入公开历史且不阻塞赛季完成；赛季结束不截短末场更正期；任务延迟和重试不重开或重复归档、并发不创建多个有效年度文件；新季不影响旧快照，公开数据不含私人字段 |
 | BE-08 | 管理健康与分页日志读取、受控同步／分批归档重试、历史紧凑索引与只读缓存；部署、授权、触发器、负载参数、人工 Code 交接及恢复说明；综合验证 | 各业务包的日志与恢复能力逐步接入；最终验收依赖 BE-01 至 BE-07 | 单次读取和后台工作量有界且可续跑，不削弱锁、幂等或版本校验；管理员能定位失败并受控重试；部署更新不清空业务数据；真实 Google 集成、故障恢复和交接步骤可复现 |
 
-报名和排座共用[后端规格](../google-sheets-backend-spec.md#会话与写入一致性)中的确定计划、结果、恢复屏障和持锁提交顺序。BE-06 已把取消、换侧和递补后的草稿清理及系统正式 revision 纳入 BE-05 的同次可恢复写入，并加入角色冲突检查。P1 周生成已有专门的中断恢复回归，不代表其余 P1 写入路径的故障恢复已全部验收。
-
-P2.1 已由 BE-01 明确提交后视图、版本和重放语义，BE-03／BE-05 为队员维护和报名返回所需结果并消除重复读取；这些约束继续用于 P3，不移除一致性锁，也不使用易失缓存接收已确认报名。既有执行及验收见[阶段安排](README.md#p21-已采用的实现与验收顺序)。
+报名和排座共用[后端规格](../google-sheets-backend-spec.md#会话与写入一致性)中的确定计划、结果、恢复屏障和持锁提交顺序。BE-06 已把取消、换侧和递补后的草稿清理及系统正式 revision 纳入 BE-05 的同次可恢复写入，并加入角色冲突检查。周生成已有中断恢复回归；其他写入的现有验证边界见验证索引。
 
 ## Cloudflare 工作包
 
@@ -39,7 +37,7 @@ BE-01 至 BE-08 的业务结果与验证继续作为迁移基线；以下工作�
 | BE-10 | C2：签名桥接、Form 导入、三方比较、冲突和影响预览、最小字段导出、回执重试及年度归档 | BE-09 | 真实 Google 双向修改、部分写入及丢失回执可恢复；不重复业务事件；对无法保证捕获的人工覆盖窗口如实记录 |
 | BE-11 | C4：只读影子迁移、内容对账、旧写入关停与代次、触发器交接、回退及用量观测 | BE-10、FE-07、ADM-07 | 切换前核验完整数据与请求结果；旧页面不能误写；回退包含切换后已确认数据，Google 旧快照不能直接接管 |
 
-详细同步节奏、数据归属和测试门槛仅在 Cloudflare 计划维护。C2.6 的本地来源／人工映射模型及独立私有适配器不等于 BE-10 完成：真实隔离两遍读取、私有 journal 回读和本机持久恢复已有[实际验收](../tests/C2-SOURCE-JOURNAL-ISOLATED-ACCEPTANCE-2026-10-03.md)，完整 range 保存后的跨进程续读／零来源重放也已[实际验收](../tests/C2-SOURCE-READ-CHECKPOINT-ISOLATED-ACCEPTANCE-2026-10-03.md)。真实 C1 会话、服务器 binding／cutoff／完整数据库已知 census 的持久 pin、内部 HTTP 与私有 HTTPS 客户端、固定目标登记和强制 checkpoint 的 runtime 组合已[本地验收](../tests/C2-SOURCE-TRANSPORT-LOCAL-ACCEPTANCE-2026-10-03.md)；已认证原候选读取、当前journal核验及只追加审核CAS随后已有[本地验收](../tests/C2-PRIVATE-SOURCE-REVIEW-LOCAL-ACCEPTANCE-2026-10-03.md)。长期host／审核UI、其他Coach委派、可信响应Tab、实际服务器capture、全部逐块故障、年度业务receipt和公开发布接线仍需各自验收。[`api-v1.json`](../contracts/api-v1.json) 描述现行 Apps Script 生产接口；[`api-cloudflare-c0.json`](../contracts/api-cloudflare-c0.json)、[`api-cloudflare-c1.json`](../contracts/api-cloudflare-c1.json) 和 [`api-cloudflare-c2.json`](../contracts/api-cloudflare-c2.json) 描述各阶段已实现的隔离接口。C2 清单同时列有仅本地通过的动作；接口存在不代表 Pages 已接入、远端验收完成或生产写入归属已切换。
+详细协议和门槛仅在[迁移计划](../cloudflare-migration-plan.md)维护；实现、部署和缺项见当前进度。来源、私有运行与恢复的本地证据不能代替真实 Google／云端或年度输出验收。生产与 Cloudflare 接口分别由[契约清单](../contracts/README.md)维护，接口存在不表示 Pages 已接入。
 
 ## 与其他 Epic 的交接
 

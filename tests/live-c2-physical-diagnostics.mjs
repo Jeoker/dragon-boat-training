@@ -13,7 +13,7 @@ const semantic = process.argv.includes("--include-semantic-check");
 assert.ok(!semantic || phase === "diagnose", "Legacy semantic check is only part of diagnose.");
 if (phase === "backup") assert.ok(process.argv.includes("--capture-private-backup"),
   "A private backup requires an explicit flag.");
-const root = new URL("../../.c2-form-test/", import.meta.url);
+const root = new URL("../.c2-form-test/", import.meta.url);
 const fixture = JSON.parse(readFileSync(new URL("private-test-config.json", root), "utf8")).fixture;
 const identities = JSON.parse(readFileSync(new URL("isolated-identities.json", root), "utf8"));
 const { coach_code: coachCode } = JSON.parse(readFileSync(new URL("review-private.json", root), "utf8"));

@@ -1,5 +1,6 @@
 // Explicit isolated adapter acceptance only. No production/Worker/Coach access.
 // Private payloads and fixed command pins remain outside the repository.
+// The c2test fixture config is in the project's Git-ignored .c2-form-test directory.
 import assert from "node:assert/strict";
 import { randomUUID, randomInt } from "node:crypto";
 import { mkdir, readFile, open, rename, unlink } from "node:fs/promises";
@@ -47,7 +48,7 @@ try {
   const token = async () => { const result = await auth.getAccessToken(); assert.ok(result.token); return result.token; };
   const request = async (url, data) => (await auth.request({ url, method: data ? "POST" : "GET", data,
     timeout: 30_000, retry: false })).data;
-  const fixture = JSON.parse(await readFile(resolve(repository, "../.c2-form-test/private-test-config.json"), "utf8")).fixture;
+  const fixture = JSON.parse(await readFile(resolve(repository, ".c2-form-test/private-test-config.json"), "utf8")).fixture;
   assert.equal(fixture.seasonId, "season_c2_isolated_2026");
 
   if (mode.startsWith("checkpoint-")) {

@@ -5,6 +5,9 @@ import { C1_CONTRACT_VERSION } from "../../shared/c1-actions";
 import { C2_CONTRACT_VERSION } from "../../shared/c2-actions";
 import { FORM_NOTIFY_PATH, verifyFormNotification } from "./c2-form-notify";
 export { TeamState } from "./team-state";
+export { SourceAuthority } from "./source-private-entry";
+import { runPrivateSource, runNativeSourceTabProof } from "./source-private-entry";
+import { runIsolatedRecovery } from "./recovery-entry";
 
 function requireInternalAccess(request: Request, env: Env, generation: "C0" | "C1" | "C2"): void {
   if (env.ENVIRONMENT === "production") {
@@ -70,6 +73,21 @@ export default {
           }));
         }
         requireInternalAccess(request, env, "C2");
+        if (url.pathname === "/internal/c2/restore-isolated-backup") {
+          if (request.method !== "POST") throw new ApiError("METHOD_NOT_ALLOWED", "The HTTP method is not supported for this action.", 405);
+          const result = await runIsolatedRecovery(request, env);
+          return apiSuccess({ result: result.result }, env, result.requestId, C2_CONTRACT_VERSION);
+        }
+        if (url.pathname === "/internal/c2/native-tab-proof") {
+          if (request.method !== "POST") throw new ApiError("METHOD_NOT_ALLOWED", "The HTTP method is not supported for this action.", 405);
+          const result = await runNativeSourceTabProof(request, env);
+          return apiSuccess({ result: result.result }, env, result.requestId, C2_CONTRACT_VERSION);
+        }
+        if (url.pathname === "/internal/c2/private-source-run") {
+          if (request.method !== "POST") throw new ApiError("METHOD_NOT_ALLOWED", "The HTTP method is not supported for this action.", 405);
+          const result = await runPrivateSource(request, env);
+          return apiSuccess({ result: result.result }, env, result.requestId, C2_CONTRACT_VERSION);
+        }
         return await env.TEAM_STATE.getByName(env.TEAM_ID).fetch(request);
       }
       throw new ApiError("NOT_FOUND", "The requested resource does not exist.", 404);

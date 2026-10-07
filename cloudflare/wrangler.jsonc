@@ -39,6 +39,7 @@
   "env": {
     "c2test": {
       "name": "dragon-boat-training-api-c2-test",
+      "services": [{ "binding": "PRIVATE_SOURCE_RUNTIME", "service": "dragon-boat-training-source-private-test", "entrypoint": "SourceRuntime" }],
       "triggers": { "crons": [] },
       "vars": {
         "ENVIRONMENT": "staging",

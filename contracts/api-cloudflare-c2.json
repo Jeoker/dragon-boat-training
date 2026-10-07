@@ -1,7 +1,7 @@
 {
   "document_type": "api-contract-manifest",
   "conventions": "contracts/README.md",
-  "status": "Different-practice associated lanes passed isolated c2test 0.17/schema14 acceptance; evidence: tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md. Source authority pin and its authenticated internal HTTP route are implemented locally on schema16 only; no source authority remote deployment, SOURCE_VERIFIED or annual export acceptance. Random network/quota faults and restore drills remain unverified. Production and automatic export are disabled",
+  "status": "Current isolated remote evidence is c2test 0.17/schema14; see tests/CURRENT-VERIFICATION.md. Schema16 source runtime, bounded sealed SQLite recovery and explicit capture-native proof consumption have local evidence. Google is modeled in those tests; real Google, remote restore, online handoff, network/quota faults and annual qualification remain unverified. Production and automatic export are disabled",
   "contract_version": "2026-09-30.c2.5-associated-export",
   "service_version": "0.16.0-c2-associated-export",
   "transport_gate": "C2 routes are absent in production. Local or staging diagnostic routes require C2_TEST_KEY; the Form notification instead verifies a fresh Google bridge HMAC, team and writer epoch before reaching the DO. This gate is independent from the Coach session required by management reads.",
@@ -10,11 +10,27 @@
     "operation_result": "Existing business mutations return immutable operation receipts and results. Source authority pin returns its own durable metadata without a business receipt; it and sync metadata import do not call Google or consume outbox."
   },
   "actions": {
+    "/internal/c2/native-tab-proof": {
+      "method": "POST", "authentication": "session_token", "writes": true,
+      "request": ["request_id", "season_id", "session_token"], "response": ["result"],
+      "notes": "Staging C2 transport gate plus current Coach. Observes Google Sheet.getFormUrl, resolves Form identity and verifies destination and numeric Tab. Response HMAC binds action/direction, fresh server nonce, request, original pin and time; current Coach and pin are rechecked after Google. This independent route does not mutate candidates. Explicit capture-native consumes the trusted RPC observation into its first durable request checkpoint and v2 candidate. Original pin/plan hash and legacy candidates stay unchanged; no source or annual promotion. Native transport permits at most one302/303 GET redirect to script.googleusercontent.com/macros/echo under one20-second deadline; actual Google compatibility remains unverified. NATIVE_TAB_PROOF_UNCONFIRMED is the fixed failure."
+    },
+    "/internal/c2/restore-isolated-backup": {
+      "method": "POST", "authentication": "session_token", "writes": true,
+      "request": ["request_id", "season_id", "session_token", "kind", "target_name", "bundle"], "response": ["result"],
+      "notes": "Optional named RecoveryRuntime binding to separate RecoveryState namespace. Current Coach pin and configured source identity rechecked; server-configured target allowlist and trusted expected manifest digest required. Only never-initialized target accepted. BUSINESS restores exact schema14/47 or16/51 snapshot into reviewed SQLite constraints/indexes, upgrades14 additively to16 with old47 data preserved except schema version. PRIVATE snapshot is independently authorized and bounded to16MB/128 records, preserving exact revisions, digests and raw bytes. Each restore commits/seals atomically. No business, authority, session, Google, alarm or polling activation exists on this target; recovery is a sealed isolated drill, with online handoff gated separately. RECOVERY_UNCONFIRMED is the fixed failure."
+    },
+    "/internal/c2/private-source-run": {
+      "method": "POST", "authentication": "session_token", "writes": true,
+      "request": ["action", "request_id", "season_id", "session_token", "target for register", "confirm_private_journal=true for stage", "command_text for review-append", "confirm_private_backup=true for backup"],
+      "response": ["result"],
+      "notes": "Staging-only C2_TEST_KEY and current Coach through named SourceRuntime/SourceAuthority. Actions: pin, register, capture, capture-native, stage, resume, review-view, review-append, backup. Client proofs/actor/pins are rejected. Explicit capture-native persists STARTED before trusted native RPC and preserves the confirmed original proof in checkpoint and v2 candidate observation; actor/attempt/pin/context/evidence digest are bound by candidate digest. Confirmed replay is validated before later REST, using original times; unknown replies are not refetched. Legacy capture/candidates remain declaration-only and original pin/core/plan digest are unchanged; summary states original response_tab_link_evidence. Current pin requires original actor/request; other-Coach delegation is not implemented. Google journal has core only, so native receipt recovery requires private DO/full private backup. Backup requires confirm_private_backup=true, current authorization and whole-object16,000,000 raw-byte/128-record/23,000,000 encoded-byte limits. Capture starts at most32 source requests including native; its first native request reserves2 external slots before STARTED. OAuth, REST and native reserve total at most40 per command. Review may reuse this invocation's successful Google journal observation while current authority/candidate/receipt/CAS remain checked. Fixed failure: SOURCE_PRIVATE_RUNTIME_UNCONFIRMED. Real Google/deployment/Free remain gated; SOURCE_NOT_VERIFIED and annual_export_authorized=false remain fixed."
+    },
     "/internal/c2/pin-source-authority": {
       "method": "POST", "authentication": "session_token", "writes": true,
       "request": ["request_id", "session_token", "season_id"],
       "response": ["pin"],
-      "notes": "Locally implemented protected source authority metadata only, not deployed. C2 transport gate plus a current C1 Coach session are mandatory. Derives ended-season cutoff, actor, binding/generation/epoch and all database-known source IDs from SQLite; same season/request replays the original immutable pin and rechecks session and binding. It does not return source answers or tokens, accept a caller census, call Google, consume outbox, run business jobs or grant annual export. Census covers database-known IDs only; Tab binding remains a declaration."
+      "notes": "Protected source authority metadata only. C2 transport gate plus a current C1 Coach session are mandatory. Derives ended-season cutoff, actor, binding/generation/epoch and all database-known source IDs from SQLite; same season/request replays the original immutable pin and rechecks session and binding. It does not return source answers or tokens, accept a caller census, call Google, consume outbox, run business jobs or grant annual export. Census covers database-known IDs only; Tab binding remains a declaration."
     },
     "/internal/c2/import-sync-foundation": {
       "method": "POST",
@@ -42,7 +58,7 @@
       "method": "POST", "authentication": "session_token", "writes": true,
       "request": ["request_id", "session_token", "season_id", "outbox_id?"],
       "response_result": ["season_id", "rearmed", "previous_error", "unfinished_batch_id", "next_batch_requires_fresh_comparison"],
-      "notes": "Coach-only explicit re-arm after a non-retryable export failure. Does not itself write Google or erase a batch/outbox; the next poll reuses any unfinished batch, while a new batch performs a fresh B/C/G comparison. The existing global ACTION_REQUIRED, Google CAS rejection and Coach retry recovery passed isolated schema-v13 c2test acceptance on 2026-09-30. Outbox-scoped lane retry passed isolated c2test 0.17/schema14 acceptance; see tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md. Optional outbox_id rearms only that unchanged current pending local event; omitted ID retains global retry and never clears local blocks."
+      "notes": "Coach-only explicit re-arm after a non-retryable export failure. Does not itself write Google or erase a batch/outbox; the next poll reuses any unfinished batch, while a new batch performs a fresh B/C/G comparison. Optional outbox_id rearms only that unchanged current pending local event; omitted ID retains global retry and never clears local blocks."
     },
     "/internal/c2/list-sync-conflicts": {
       "method": "POST", "authentication": "session_token", "writes": false,
@@ -84,7 +100,7 @@
       "writes": true,
       "request": ["request_id", "season_id"],
       "response": ["season_id", "status", "optional batch_id", "optional outbox_id", "optional member_id", "optional cloud_version", "optional roster_version"],
-      "notes": "Isolated, feature-gated C2.4 member and associated season roster-version slice. Each call returns IDLE, BATCH_CONFIRMED for one member, or EVENT_CONFIRMED after the existing system Seasons row and its captured roster_version have been verified. Member targets are exported one at a time; the outbox remains pending after the last member until the season row, its SYSTEM_VERSION baseline, and event are confirmed together. New member events capture roster_version when enqueued; legacy events without it stop before any Google write if later roster events exist. The request ID binds an immutable response; replay never advances another target. Requires complete season baselines and blocks Google edits. The association passed isolated Google acceptance, including manual-edit conflict and same-request recovery; neither this nor other C2 writes run in production or original staging. This slice does not export unrelated season_version changes."
+      "notes": "Isolated, feature-gated C2.4 member and associated season roster-version slice. Each call returns IDLE, BATCH_CONFIRMED for one member, or EVENT_CONFIRMED after the existing system Seasons row and its captured roster_version have been verified. Member targets are exported one at a time; the outbox remains pending after the last member until the season row, its SYSTEM_VERSION baseline, and event are confirmed together. New member events capture roster_version when enqueued; legacy events without it stop before any Google write if later roster events exist. The request ID binds an immutable response; replay never advances another target. Requires complete season baselines and blocks Google edits. This slice does not export unrelated season_version changes."
     },
     "/internal/c2/export-next-schedule": {
       "method": "POST",
@@ -92,7 +108,7 @@
       "writes": true,
       "request": ["request_id", "season_id"],
       "response": ["season_id", "status", "optional batch_id", "optional outbox_id", "optional entity_type", "optional row_id", "optional cloud_version", "optional season_version"],
-      "notes": "Separately feature-gated C2.4 schedule exporter, enabled for explicit calls only in isolated c2test; original staging and production remain disabled. An expired SCHEDULE_CHANGED event must contain a complete transaction-captured snapshot; older events are rejected rather than reconstructed. One bounded row batch at a time exports templates, then the week, then practices, with durable before/target values, signed Google verification, same-batch retry, full mapped baselines, Coach and schedule reference checks. The existing system Seasons row receives that event's captured season_version as the last batch; only its verified receipt atomically confirms the event and season baseline. A final read detects edits to previously confirmed schedule rows. Google cross-tab writes are not atomic. Isolated Google acceptance covered sequential receipts, replay, out-of-band template conflict, partial practice write and lost season reply recovery; multirow batching and real quota exhaustion remain unverified."
+      "notes": "Separately feature-gated C2.4 schedule exporter, enabled for explicit calls only in isolated c2test; original staging and production remain disabled. An expired SCHEDULE_CHANGED event must contain a complete transaction-captured snapshot; older events are rejected rather than reconstructed. One bounded row batch at a time exports templates, then the week, then practices, with durable before/target values, signed Google verification, same-batch retry, full mapped baselines, Coach and schedule reference checks. The existing system Seasons row receives that event's captured season_version as the last batch; only its verified receipt atomically confirms the event and season baseline. A final read detects edits to previously confirmed schedule rows. Google cross-tab writes are not atomic. "
     },
     "/internal/c2/export-next-associated": {
       "method": "POST",
@@ -100,7 +116,7 @@
       "writes": true,
       "request": ["request_id", "season_id", "outbox_id?"],
       "response": ["season_id", "status", "optional batch_id", "optional outbox_id", "optional entity_type", "optional row_id", "optional row_ids", "optional cloud_version", "optional signup_version", "optional seat_plan_version", "optional published_revision"],
-      "notes": "C2.4 isolated signup and seating exporter. Strict immutable SIGNUPS_CHANGED or SEATING_CHANGED snapshots and per-practice cursor order. Each call sends one recoverable signed batch of up to four adjacent rows from one physical tab within the bridge payload budget, in signup, complete draft-seat, published-revision, then state order. An existing Google row must match its full physical B; first and final stages verify practice, member and actor references. The event stays pending through partial cross-tab writes. Only after final Google reread of every target and exact full-draft seat identity check do logical B, physical B, cursor and outbox advance in one SQLite transaction. A lost bridge reply retries the original batch. Old snapshots, version gaps, manual Google edits, and missing baselines stop before a new write. The core signup, full-draft and published-revision chain passed isolated c2test acceptance on service 0.16.1; the manifest service_version remains the default staging configuration 0.16.0. Waitlist promotion, controlled first-row PARTIAL interruption, committed-receipt reply loss and FAILED-batch pause/drain passed isolated c2test on 0.16.2/schema v13; see tests/C2-WAITLIST-FAULT-PAUSE-ISOLATED-ACCEPTANCE-2026-09-30.md (77579e1). Per-practice independent lanes, shared-reference conflicts and original-event recovery passed isolated c2test 0.17/schema14 acceptance; see tests/C2-ASSOCIATED-LANE-ISOLATED-ACCEPTANCE-2026-09-30.md. Random network/quota faults and restore drills remain unverified. Automatic export remains disabled; no production access."
+      "notes": "C2.4 isolated signup and seating exporter. Strict immutable SIGNUPS_CHANGED or SEATING_CHANGED snapshots and per-practice cursor order. Each call sends one recoverable signed batch of up to four adjacent rows from one physical tab within the bridge payload budget, in signup, complete draft-seat, published-revision, then state order. An existing Google row must match its full physical B; first and final stages verify practice, member and actor references. The event stays pending through partial cross-tab writes. Only after final Google reread of every target and exact full-draft seat identity check do logical B, physical B, cursor and outbox advance in one SQLite transaction. A lost bridge reply retries the original batch. Old snapshots, version gaps, manual Google edits, and missing baselines stop before a new write. Deployment and evidence are maintained in CURRENT-STATUS.md and tests/CURRENT-VERIFICATION.md; no production access."
     },
     "/internal/c2/poll-due-exports": {
       "method": "POST", "authentication": "transport_only", "writes": true,
@@ -147,7 +163,8 @@
     }
   },
   "errors": [
-    "INVALID_JSON", "INVALID_REQUEST", "INVALID_REQUEST_ID", "METHOD_NOT_ALLOWED", "NOT_FOUND",
+    "INVALID_JSON", "INVALID_REQUEST", "INVALID_REQUEST_ID", "METHOD_NOT_ALLOWED", "NOT_FOUND", "SOURCE_PRIVATE_RUNTIME_UNCONFIRMED",
+    "NATIVE_TAB_PROOF_UNCONFIRMED", "RECOVERY_UNCONFIRMED",
     "C2_ACCESS_DENIED", "CONFIGURATION_ERROR", "IDEMPOTENCY_CONFLICT", "SESSION_INVALID",
     "SESSION_EXPIRED", "SESSION_REVOKED", "SEASON_NOT_FOUND", "IMPORT_REFERENCE_MISSING",
     "IMPORT_VERSION_REGRESSION", "IMPORT_CONFLICT", "IMPORT_SNAPSHOT_CONFLICT",
@@ -170,7 +187,7 @@
     "SOURCE_AUTHORITY_OWNERSHIP_CHANGED", "SOURCE_AUTHORITY_CENSUS_CHANGED", "SOURCE_AUTHORITY_UNCONFIRMED"
   ],
   "not_yet_in_this_slice": [
-    "Frozen-history Sheet inspection", "random network or quota fault acceptance and backup restore drills", "production automatic export scheduling",
+    "Frozen-history Sheet inspection", "random network or quota fault acceptance, remote backup restore and online handoff", "production automatic export scheduling",
     "business conflict resolution or import", "remote source authority transport and private runtime deployment", "annual Google export",
     "production or Pages routing", "browser CORS"
   ]

@@ -16,7 +16,7 @@ export interface PrivateSourceReadRecord {
   entries: Entry[]; pending: { request_text: string; observed_start_at: string } | null;
 }
 /** Contains raw pages, ranges and private request URLs. The same privacy/CAS
- * requirements as operation storage apply; never connect it to Worker/DO. */
+ * requirements as operation storage apply; isolate it from business TeamState/public DTOs. */
 export interface PrivateSourceReadStore {
   read(key: string): Promise<unknown | null>;
   compareAndSet(key: string, revision: number | null, value: PrivateSourceReadRecord): Promise<boolean>;
@@ -33,7 +33,8 @@ const exact = (value: unknown, keys: string[]) => {
 export class PrivateSourceReadAttempt implements SourceReadCheckpointPort {
   constructor(private readonly contextPort: () => unknown, private readonly store: PrivateSourceReadStore,
     private readonly hashPort: (text: string) => Promise<string>,
-    private readonly now: () => string = () => new Date().toISOString()) {}
+    private readonly now: () => string = () => new Date().toISOString(),
+    private readonly beforeRequest?: (url: string) => Promise<void>) {}
 
   async open(readContext: SourceReadContext, start: string) {
     return this.guarded(async () => {
@@ -128,6 +129,9 @@ export class PrivateSourceReadAttempt implements SourceReadCheckpointPort {
             "SOURCE_CHECKPOINT_REQUEST_CHANGED");
           journalAssert(saved.pending === null, "SOURCE_CHECKPOINT_REQUEST_UNRESOLVED");
           journalAssert(index < LIMITS.requests, "SOURCE_CHECKPOINT_BUDGET_EXCEEDED");
+          // A host may yield before an unstarted request. Completed replies replay
+          // first; yielding never creates an unknown STARTED marker.
+          await this.beforeRequest?.(url); fresh();
           const began = this.now(); time(began);
           if (saved.entries.length) journalAssert(sourceInstant(began) >= sourceInstant(saved.entries.at(-1)!.observed_end_at), "SOURCE_CHECKPOINT_INVALID");
           await save({ ...saved, revision: saved.revision + 1, pending: { request_text: requestText, observed_start_at: began } }, saved.revision);

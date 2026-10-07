@@ -18,7 +18,7 @@ const c1Key = process.env.C1_TEST_KEY;
 const c2Key = process.env.C2_TEST_KEY;
 const spreadsheetId = process.env.C2_RUNTIME_SHEET_ID;
 assert.ok(c1Key && c2Key && spreadsheetId, "Isolated keys and Sheet identity are required.");
-const privateRoot = new URL("../../.c2-form-test/", import.meta.url);
+const privateRoot = new URL("../.c2-form-test/", import.meta.url);
 const { coach_code: coachCode } = JSON.parse(readFileSync(new URL("review-private.json", privateRoot), "utf8"));
 const { GOOGLE_BRIDGE_URL: bridgeUrlText, GOOGLE_BRIDGE_SECRET: bridgeSecret } = JSON.parse(
   readFileSync(new URL("worker-secrets.json", privateRoot), "utf8"));

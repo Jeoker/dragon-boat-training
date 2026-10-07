@@ -14,7 +14,7 @@ assert.equal(base.pathname, "/");
 const c1Key = process.env.C1_TEST_KEY;
 const c2Key = process.env.C2_TEST_KEY;
 assert.ok(c1Key && c2Key, "The isolated acceptance keys are missing.");
-const privateFile = fileURLToPath(new URL("../../.c2-form-test/review-private.json", import.meta.url));
+const privateFile = fileURLToPath(new URL("../.c2-form-test/review-private.json", import.meta.url));
 const { coach_code: coachCode } = JSON.parse(readFileSync(privateFile, "utf8"));
 assert.ok(coachCode, "The isolated Coach Code is missing.");
 const seasonId = "season_c2_isolated_2026";

@@ -1,14 +1,13 @@
 # Dragon Boat Training
 
 > 实现进度、部署版本、验收边界和接续位置统一见[当前进度](CURRENT-STATUS.md)。
-> 产品规则最后核对：2026-10-03
-> 仓库拆分：2026-09-13
+> 产品规则维护当前结论；状态与验证记录分别维护。
 
-为龙舟队提供按赛季入队、每周排期与训练报名、候补、排座和历史荣誉墙。网站部署于 GitHub Pages；已确认的目标架构使用 Cloudflare Workers + Durable Objects（SQLite）处理业务和保存在线主数据，Google Form 负责入队登记，Google Sheets 保存可核对的运营副本及私有归档。迁移完成前线上继续运行 Apps Script，实际状态见当前进度。
+为龙舟队提供按赛季入队、每周排期与训练报名、候补、排座和历史荣誉墙。网站部署于 GitHub Pages；已确认的目标架构使用 Cloudflare Workers + Durable Objects（SQLite）处理业务和保存在线主数据，独立私有Worker／DO保存完整来源、进度和审核证据，Google Form 负责入队登记，Google Sheets 保存可核对的运营副本及私有归档。迁移完成前线上继续运行 Apps Script，实际状态见当前进度。
 
 ## 仓库与本地运行
 
-本项目已从 Portfolio 仓库拆分为独立 Git 仓库，项目历史、源码、测试、部署流程和后端构建都在本目录维护。GitHub 仓库为 [Jeoker/dragon-boat-training](https://github.com/Jeoker/dragon-boat-training)，GitHub Pages 地址为 [Dragon Boat Training](https://jeoker.github.io/dragon-boat-training/)。
+本项目是独立 Git 仓库；源码、测试、文档、部署流程和后端构建在本目录维护。GitHub 仓库为 [Jeoker/dragon-boat-training](https://github.com/Jeoker/dragon-boat-training)，GitHub Pages 地址为 [Dragon Boat Training](https://jeoker.github.io/dragon-boat-training/)。
 
 ```bash
 npm install
@@ -24,6 +23,22 @@ npm run cf:dry-run
 
 Astro 使用 `/dragon-boat-training` 作为 Pages base path。Portfolio 仓库不再读取本目录源码，也不再负责本项目测试或部署。
 
+### 本地文件与缓存归属
+
+所有开发与验收命令从 `dragon-boat-training/` 运行。项目临时文件和缓存只放在本目录，不写入 `dev-master/` 根目录。
+
+| 本地目录 | 用途 | Git 处理 |
+|---|---|---|
+| `.c2-form-test/` | c2test 私有配置、环境变量、Apps Script 快照、故障状态和日志 | 整个目录忽略 |
+| `.npm-cache/` | `.npmrc` 指定的项目 npm 缓存 | 整个目录忽略 |
+| `.build/`、`backend/.build/`、`backend/.private-host/`、`backend/.backup-tool/` | 本地构建与工具输出 | 整个目录忽略 |
+| `.astro/`、`dist/`、`node_modules/` | 前端缓存、静态构建和依赖 | 整个目录忽略 |
+| `cloudflare/.acceptance-artifacts/`、各层 `.wrangler/` 与 dry-run 目录 | 隔离验收和 Worker 本地产物 | 对应目录忽略 |
+
+私有配置、状态、凭据、快照和生成缓存不提交；源码、测试、文档、`.gitignore` 和 `.npmrc` 正常追踪。验收脚本使用项目内 `.c2-form-test/`，具体验证结果见[验证索引](tests/CURRENT-VERIFICATION.md#本地检查)。
+
+OAuth、私有来源运行层和保护备份工具要求仓库外私有路径，这些经过权限校验的运行数据继续遵循各工具的存储规则；不使用项目内 `.c2-form-test/` 代替其运行配置。相关文件不放在 `dev-master/` 根目录。详见[私有运行说明](backend/PRIVATE-SOURCE-HOST.md)和[备份指南](backend/backup/README.md)。
+
 ## 文档分工
 
 | 文档 | 内容与维护范围 |
@@ -32,9 +47,9 @@ Astro 使用 `/dragon-boat-training` 作为 Pages base path。Portfolio 仓库�
 | 本文 | 产品规则、范围和唯一的待定事项清单 |
 | [当前进度与接续入口](CURRENT-STATUS.md) | 已验证基线、当前开发位置和重新开启任务时的检查顺序 |
 | [前端规格](frontend-spec.md) | 页面、交互、视觉资源和前端数据更新 |
-| [Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md) | 目标架构、Google 双向同步、人工修改冲突、C0–C4 实现路径及切换验收 |
+| [Cloudflare 数据服务与迁移计划](cloudflare-migration-plan.md) | 目标架构、Google 双向同步、人工修改冲突、架构、同步及切换验收 |
 | [Apps Script 实现规格](google-sheets-backend-spec.md) | 切换前的现行后端模型与恢复协议，以及迁移时可复用的 Google 集成细节 |
-| [Epic 总览与实现顺序](epics/README.md) | 三个 Epic 的职责、工作包、依赖与分阶段验收；分别链接后端、队员前端和管理员页面 |
+| [Epic 总览与实现顺序](epics/README.md) | 三个 Epic 的职责、工作包、依赖与验收条件；分别链接后端、队员前端和管理员页面 |
 
 未来 agent 先读项目总览，再按任务进入本文、当前进度或具体规格。业务规则只在本文维护；实现规格和 Epic 引用规则，不另建一份业务决策清单。Epic 只安排工作归属和验收，不代表功能已经实现或通过实测。
 
@@ -155,7 +170,7 @@ Coach、Steerer 和其他管理人员使用各自的个人 Coach Code 进入统�
 
 ## 范围与待定事项
 
-现行 P0–P5 基线和已经确认的 C0–C4 迁移不新增普通队员账号或跨季身份系统；这只是当前交付边界，不代表长期排除。当前范围也不包含签到统计、多船排座、自动通知、分级管理权限、供用户任意切换已运营赛季绑定的在线工具或自动改写 Form 响应目标。本次受控 Cloudflare 后端迁移属于已确认范围，按 C0–C4 实施。
+当前业务基线和 Cloudflare 迁移不新增普通队员账号或跨季身份系统；这只是当前交付边界，不代表长期排除。当前范围也不包含签到统计、多船排座、自动通知、分级管理权限、供用户任意切换已运营赛季绑定的在线工具或自动改写 Form 响应目标。本次受控 Cloudflare 后端迁移属于已确认范围，按 C0–C4 实施。
 
 以下事项尚未确定，相关功能实现前需要明确；其余章节不为它设定隐含答案。
 
@@ -163,3 +178,7 @@ Coach、Steerer 和其他管理人员使用各自的个人 Coach Code 进入统�
 |---|---|---|
 | D5 | 正式队名字样、高清 Logo 和页面语言 | 当前使用参考图配色、暂定 Pentasus 字样与占位 Logo |
 | D6 | 队员长期身份、账号及跨赛季历史关联 | 当前继续使用独立赛季记录和选名报名；未来可增加账号、同名处理、历史关联或资料复用，需另行确定隐私、匹配、迁移和交互规则 |
+
+## 文档维护规则
+
+只记录最新已确认的设计、当前实现、有效验收证据和现存技术债。设计变更时直接替换所有相关文档中的旧结论，不追加演变说明、废弃备选方案或旧状态，也不另建历史设计档案。被替代内容仅在仍约束现有代码、持久数据、部署或迁移时保留，并说明技术债与消除门槛。当前进度是唯一状态入口；规格维护协议，不复制阶段时间线。有效验收只说明实际所测范围，不转化为未完成的部署或来源证明。

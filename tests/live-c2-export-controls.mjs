@@ -15,7 +15,7 @@ const c1Key = process.env.C1_TEST_KEY;
 const c2Key = process.env.C2_TEST_KEY;
 assert.ok(c1Key && c2Key);
 const { coach_code: coachCode } = JSON.parse(readFileSync(
-  new URL("../../.c2-form-test/review-private.json", import.meta.url), "utf8"));
+  new URL("../.c2-form-test/review-private.json", import.meta.url), "utf8"));
 assert.ok(coachCode);
 const seasonId = "season_c2_isolated_2026";
 const requestId = (label) => `c2_controls_${label}_${randomUUID().replaceAll("-", "")}`;

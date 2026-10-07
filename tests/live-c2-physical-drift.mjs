@@ -18,7 +18,7 @@ if (["inspect-drift", "final"].includes(phase)) {
 if (phase === "final") assert.ok(process.argv.includes("--capture-private-backup"),
   "Final whole-table B comparison requires an explicit private backup flag.");
 
-const root = new URL("../../.c2-form-test/", import.meta.url);
+const root = new URL("../.c2-form-test/", import.meta.url);
 const artifactDir = new URL("../cloudflare/.acceptance-artifacts/", import.meta.url);
 const stateUrl = new URL("c2-physical-drift-state.json", artifactDir);
 const reference = JSON.parse(readFileSync(new URL("c2-physical-backup-reference.json", artifactDir), "utf8"));

@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 assert.ok(process.argv.includes("--build-isolated-overlay"));
-const privateRoot = new URL("../../.c2-form-test/", import.meta.url);
+const privateRoot = new URL("../.c2-form-test/", import.meta.url);
 const state = JSON.parse(readFileSync(new URL("schedule-fault-state.json", privateRoot), "utf8"));
 assert.equal(state.season_id, "season_c2_isolated_2026");
 assert.match(state.practice_id, /^practice_[A-Za-z0-9_-]+$/);

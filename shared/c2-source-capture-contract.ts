@@ -40,9 +40,16 @@ export function parseGeneratedSourceJson(text:unknown):SourceJson {
   return parseSourceJsonWithDepth(text, SOURCE_LIMITS.depth + 8);
 }
 
-function parseSourceJsonWithDepth(text:unknown,maxDepth:number):SourceJson {
+/** Separate bounded business-backup envelope. Raw source entry points retain
+ * their original2MB/depth32 constraints; this is never a source input parser. */
+export function parseBusinessBackupJson(text:unknown,maxBytes=30_000_000):SourceJson {
+  sourceAssert(Number.isSafeInteger(maxBytes)&&maxBytes>0&&maxBytes<=30_000_000,"INPUT_BYTES_EXCEEDED");
+  return parseSourceJsonWithDepth(text,SOURCE_LIMITS.depth+8,maxBytes);
+}
+
+function parseSourceJsonWithDepth(text:unknown,maxDepth:number,maxBytes:number=SOURCE_LIMITS.input_bytes):SourceJson {
   sourceAssert(typeof text==="string","RAW_JSON_REQUIRED");
-  sourceAssert(text.length<=SOURCE_LIMITS.input_bytes&&sourceBytes(text)<=SOURCE_LIMITS.input_bytes,"INPUT_BYTES_EXCEEDED");
+  sourceAssert(text.length<=maxBytes&&sourceBytes(text)<=maxBytes,"INPUT_BYTES_EXCEEDED");
   let at=0;
   const whitespace=()=>{while(at<text.length&&/[\t\r\n ]/u.test(text[at]))at++;};
   const tokenString=():string=>{

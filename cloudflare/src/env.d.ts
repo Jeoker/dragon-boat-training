@@ -11,4 +11,6 @@ interface Env {
   C2_SCHEDULE_EXPORT_ENABLED?: string;
   C2_ASSOCIATED_EXPORT_ENABLED?: string;
   C2_EXPORT_POLL_ENABLED?: string;
+  PRIVATE_SOURCE_RUNTIME?: import("../../shared/c2-private-source-command").PrivateSourceRuntimeRpc;
+  ISOLATED_RECOVERY_RUNTIME?: { restore(command: unknown): Promise<{ ok: boolean; data?: unknown; code?: string }> };
 }

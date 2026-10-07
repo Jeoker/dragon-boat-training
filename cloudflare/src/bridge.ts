@@ -4,7 +4,7 @@ import { ApiError } from "./http";
 export const BRIDGE_PROTOCOL = "2026-09-19.bridge.v1";
 export const BRIDGE_DIRECTION = "CLOUDFLARE_TO_GOOGLE";
 
-type BridgeAction = "cloudflareBridgeProbe" | "cloudflareReadFormResponses" | "cloudflareReadSheetRecords" |
+type BridgeAction = "cloudflareBridgeProbe" | "cloudflareReadNativeTabProof" | "cloudflareReadFormResponses" | "cloudflareReadSheetRecords" |
     "cloudflarePatchMemberSheet" | "cloudflarePatchSeasonSheet" |
     "cloudflarePatchScheduleTemplateSheet" | "cloudflarePatchTrainingWeekSheet" |
     "cloudflarePatchPracticeSheet" | "cloudflarePatchSignupSheet" |
@@ -106,15 +106,39 @@ export async function callGoogleBridge(env: Env, input: {
   });
   let response: Response;
   let body: unknown;
+  const native = input.action === "cloudflareReadNativeTabProof";
+  const controller = native ? new AbortController() : undefined;
+  const timer = controller ? setTimeout(() => controller.abort(), 20_000) : undefined;
   try {
     response = await fetch(url, {
       method: "POST", headers: { "content-type": "text/plain;charset=UTF-8" },
-      body: JSON.stringify(envelope), redirect: "follow", signal: AbortSignal.timeout(20_000)
+      body: JSON.stringify(envelope), redirect: native ? "manual" : "follow", signal: controller?.signal ?? AbortSignal.timeout(20_000)
     });
-    body = await response.json();
+    if (native && response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      await response.body?.cancel().catch(() => {});
+      if ((response.status !== 302 && response.status !== 303) || !location) throw Error();
+      const contentUrl = new URL(location);
+      if (contentUrl.protocol !== "https:" || contentUrl.hostname !== "script.googleusercontent.com" ||
+        contentUrl.port || contentUrl.username || contentUrl.password || contentUrl.pathname !== "/macros/echo") throw Error();
+      // ContentService's one-time content URL is a GET. Never resend signed
+      // bridge payload, session or secrets to it, and never follow a second hop.
+      response = await fetch(contentUrl, { method: "GET", redirect: "manual", signal: controller!.signal });
+    }
+    if (native) {
+      if (response.status >= 300 && response.status < 400) { await response.body?.cancel().catch(() => {}); throw Error(); }
+      if (!response.body) throw Error();
+      const reader = response.body.getReader(), parts: Uint8Array[] = []; let count = 0;
+      try { for (;;) { const next = await reader.read(); if (next.done) break;
+        count += next.value.byteLength; if (count > 16_000) throw Error(); parts.push(next.value); }
+      } finally { try { await reader.cancel().catch(() => {}); } finally { reader.releaseLock(); } }
+      const bytes = new Uint8Array(count); let offset = 0;
+      for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
+      body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+    } else body = await response.json();
   } catch {
     throw new ApiError("BRIDGE_UNAVAILABLE", "The Google bridge could not be reached.", 503, true);
-  }
+  } finally { if (timer !== undefined) clearTimeout(timer); }
   if (isRecord(body) && body.ok === false && isRecord(body.meta) &&
       body.meta.request_id === input.request_id && isRecord(body.error) &&
       typeof body.error.code === "string" && typeof body.error.message === "string" &&
