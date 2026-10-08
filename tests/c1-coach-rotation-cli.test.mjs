@@ -132,12 +132,16 @@ test("real 51-table protected backup authorizes a private child CLI self rotatio
     const result = await f.rotate(); assert.equal(result.code, 0, result.output); noSecrets(result);
     assert.deepEqual(JSON.parse(result.output), { status: "COACH_CODE_ROTATION_CONFIRMED", coach_id: f.rotationConfig.coach_id,
       request_id: f.rotationConfig.request_id, previous_credential_version: 1, credential_version: 2,
-      rotated_at: JSON.parse(result.output).rotated_at });
+      rotated_at: JSON.parse(result.output).rotated_at, old_session_verification: "DENIED" });
     const headerText = await readFile(join(f.store, "header.json"), "utf8"), receiptText = await readFile(join(f.store, "receipt.json"), "utf8");
     const receipt = JSON.parse(receiptText), header = JSON.parse(headerText), credentials = JSON.parse(await readFile(f.rotationConfig.output_credentials_file, "utf8"));
     assert.equal(receipt.result.coach_id, f.rotationConfig.coach_id); assert.equal(receipt.result.credential_version, 2);
     assert.equal(receipt.result.payload_digest, header.payload_digest);
     assert.equal(receipt.operation.request_id, f.rotationConfig.request_id);
+    assert.equal(header.format, "c1-self-coach-rotation-attempt-v2");
+    assert.equal(header.original_session_digest, "sha256_v1:" + createHash("sha256").update(f.session_token).digest("base64url"));
+    assert.ok(!headerText.includes(f.session_token));
+    assert.equal(f.state.calls.filter(call => call.path === "/internal/c1/coach-bootstrap" && call.body.session_token === f.session_token).length, 3);
     assert.equal(credentials.transport_key, "PRIVATE_BACKUP_KEY_SENTINEL"); assert.notEqual(credentials.session_token, f.session_token);
     await assertPrivatePath(f.rotationConfig.output_credentials_file);
     const rows = await f.rows();
@@ -156,6 +160,132 @@ test("real 51-table protected backup authorizes a private child CLI self rotatio
     assert.equal(await readFile(join(f.store, "header.json"), "utf8"), headerText);
     assert.equal(await readFile(join(f.store, "receipt.json"), "utf8"), receiptText);
     assert.equal(rotateCalls(f).length, 1);
+  } finally { await f.close(); }
+});
+
+test("old-session denial must have a specific 401 and the pinned service envelope before confirmation is published", async () => {
+  const f = await setup();
+  try {
+    let mode = "accepted", committed = false, oldChecks = 0;
+    f.state.hook = async ({ path, body, response, invoke }) => {
+      if (path === route) { const reply = await invoke(path, body); committed = true;
+        response.writeHead(reply.status, { "content-type": "application/json" }); response.end(JSON.stringify(reply.body)); return true; }
+      if (!committed || path !== "/internal/c1/coach-bootstrap" || body.session_token !== f.session_token) return false;
+      oldChecks++;
+      const reply = await invoke(path, body); assert.equal(reply.status, 401); assert.equal(reply.body.error.code, "SESSION_INVALID");
+      switch (mode) {
+        case "accepted": reply.status = 200; reply.body = { ok: true, data: { coach: { coach_id: f.rotationConfig.coach_id, credential_version: 1 } }, meta: reply.body.meta }; break;
+        case "transport-denied": reply.status = 403; break;
+        case "expired": reply.body.error.code = "SESSION_EXPIRED"; break;
+        case "revoked": reply.body.error.code = "SESSION_REVOKED"; break;
+        case "retryable": reply.body.error.retryable = true; break;
+        case "wrong-generation": reply.body.meta.backend_generation = "other_generation"; break;
+        case "wrong-service": reply.body.meta.service_version = "unexpected-service"; break;
+        case "wrong-request": reply.body.meta.request_id = "unrelated_request"; break;
+        case "extra-private-field": reply.body.error.session_token = "INJECTED-DENIAL-TOKEN-SENTINEL"; break;
+        case "missing-envelope": delete reply.body.meta; break;
+        case "oversized": reply.body.error.message = newCode + "x".repeat(100_001); break;
+      }
+      response.writeHead(reply.status, { "content-type": "application/json" }); response.end(JSON.stringify(reply.body)); return true;
+    };
+    const initial = await f.rotate(); assert.notEqual(initial.code, 0); noSecrets(initial); await noOutput(f);
+    const header = await readFile(join(f.store, "header.json")), rows = await f.rows();
+    for (mode of ["transport-denied", "expired", "retryable", "wrong-generation", "wrong-service", "wrong-request", "extra-private-field", "missing-envelope", "oversized"]) {
+      const refused = await f.resume(); assert.notEqual(refused.code, 0, mode); noSecrets(refused);
+      assert.ok(!refused.output.includes("INJECTED-DENIAL-TOKEN-SENTINEL")); await noOutput(f);
+      await assert.rejects(access(join(f.store, "receipt.json")));
+      assert.deepEqual(await readFile(join(f.store, "header.json")), header); assert.deepEqual(await f.rows(), rows);
+    }
+    assert.equal(oldChecks, 10); assert.equal(rotateCalls(f).length, 1);
+    mode = "revoked";
+    const resumed = await f.resume(); assert.equal(resumed.code, 0, resumed.output); noSecrets(resumed);
+    assert.equal(JSON.parse(resumed.output).old_session_verification, "DENIED");
+    assert.equal(rotateCalls(f).length, 1); assert.deepEqual(await f.rows(), rows);
+  } finally { await f.close(); }
+});
+
+test("lost old-session denial reply resumes the same rotation and fixed login without publishing premature credentials", async () => {
+  const f = await setup();
+  try {
+    let committed = false;
+    f.state.hook = async ({ path, body, response, invoke }) => {
+      if (path === route) { const reply = await invoke(path, body); committed = true;
+        response.writeHead(reply.status, { "content-type": "application/json" }); response.end(JSON.stringify(reply.body)); return true; }
+      if (committed && path === "/internal/c1/coach-bootstrap" && body.session_token === f.session_token) {
+        const denied = await invoke(path, body); assert.equal(denied.status, 401); response.destroy(); return true;
+      }
+      return false;
+    };
+    const unknown = await f.rotate(); assert.notEqual(unknown.code, 0); noSecrets(unknown); await noOutput(f);
+    await assert.rejects(access(join(f.store, "receipt.json")));
+    const header = await readFile(join(f.store, "header.json")), rows = await f.rows(); f.state.hook = null;
+    const recovered = await f.resume(); assert.equal(recovered.code, 0, recovered.output); noSecrets(recovered);
+    assert.equal(JSON.parse(recovered.output).old_session_verification, "DENIED");
+    assert.deepEqual(await f.rows(), rows); assert.deepEqual(await readFile(join(f.store, "header.json")), header);
+    assert.equal(rotateCalls(f).length, 1);
+    assert.equal(new Set(f.state.calls.filter(call => call.path === "/internal/c1/coach-login").map(call => call.body.request_id)).size, 1);
+  } finally { await f.close(); }
+});
+
+test("resume binds the original old session before HTTP and preserves already published confirmation bytes", async () => {
+  const f = await setup();
+  try {
+    const result = await f.rotate(); assert.equal(result.code, 0, result.output);
+    const original = await readFile(f.credentials), output = await readFile(f.rotationConfig.output_credentials_file);
+    const receipt = await readFile(join(f.store, "receipt.json")), rows = await f.rows(), count = f.state.calls.length;
+    for (const session_token of ["FORGED-ORIGINAL-SESSION-SENTINEL", JSON.parse(output.toString("utf8")).session_token]) {
+      await writeFile(f.credentials, JSON.stringify({ transport_key: "PRIVATE_BACKUP_KEY_SENTINEL", session_token }));
+      const denied = await f.resume(); assert.notEqual(denied.code, 0); noSecrets(denied);
+      assert.ok(!denied.output.includes(session_token)); assert.equal(f.state.calls.length, count);
+      assert.deepEqual(await readFile(f.rotationConfig.output_credentials_file), output);
+      assert.deepEqual(await readFile(join(f.store, "receipt.json")), receipt); assert.deepEqual(await f.rows(), rows);
+    }
+    await writeFile(f.credentials, original);
+    const resumed = await f.resume(); assert.equal(resumed.code, 0, resumed.output);
+    assert.equal(JSON.parse(resumed.output).old_session_verification, "DENIED"); assert.equal(rotateCalls(f).length, 1);
+  } finally { await f.close(); }
+});
+
+test("a new session revoked during the old-session check cannot publish confirmation or mint a replacement on resume", async () => {
+  const f = await setup();
+  try {
+    let currentToken;
+    f.state.hook = async ({ path, body, response, invoke }) => {
+      if (path === "/internal/c1/coach-login") {
+        const reply = await invoke(path, body); currentToken = reply.body.data.result.session_token;
+        response.writeHead(reply.status, { "content-type": "application/json" }); response.end(JSON.stringify(reply.body)); return true;
+      }
+      if (!currentToken || path !== "/internal/c1/coach-bootstrap" || body.session_token !== f.session_token) return false;
+      const reply = await invoke(path, body); assert.equal(reply.status, 401);
+      assert.equal((await invoke("/internal/c1/coach-logout", { request_id: "denial_race_new_logout", session_token: currentToken })).status, 200);
+      response.writeHead(reply.status, { "content-type": "application/json" }); response.end(JSON.stringify(reply.body)); return true;
+    };
+    const refused = await f.rotate(); assert.notEqual(refused.code, 0); noSecrets(refused); await noOutput(f);
+    await assert.rejects(access(join(f.store, "receipt.json")));
+    const rows = await f.rows(), header = await readFile(join(f.store, "header.json")); f.state.hook = null;
+    const resumed = await f.resume(); assert.notEqual(resumed.code, 0); noSecrets(resumed); await noOutput(f);
+    assert.deepEqual(await f.rows(), rows); assert.deepEqual(await readFile(join(f.store, "header.json")), header);
+    assert.equal(rotateCalls(f).length, 1);
+    assert.equal(new Set(f.state.calls.filter(call => call.path === "/internal/c1/coach-login").map(call => call.body.request_id)).size, 1);
+  } finally { await f.close(); }
+});
+
+test("legacy v1 unknown attempts recover only their original receipt without claiming an old-session verification", async () => {
+  const f = await setup();
+  try {
+    f.state.hook = async ({ path, body, response, invoke }) => {
+      if (path !== route) return false; await invoke(path, body); response.destroy(); return true;
+    };
+    assert.notEqual((await f.rotate()).code, 0); await noOutput(f);
+    // Model an existing attempt from the prior CLI, which never recorded a session fingerprint.
+    const headerPath = join(f.store, "header.json"), header = JSON.parse(await readFile(headerPath, "utf8"));
+    header.format = "c1-self-coach-rotation-attempt-v1"; delete header.original_session_digest;
+    const legacyBytes = JSON.stringify(header); await writeFile(headerPath, legacyBytes); f.state.hook = null;
+    const before = f.state.calls.length, resumed = await f.resume(); assert.equal(resumed.code, 0, resumed.output); noSecrets(resumed);
+    assert.equal(JSON.parse(resumed.output).old_session_verification, "NOT_RECORDED");
+    assert.ok(f.state.calls.slice(before).every(call => call.path !== "/internal/c1/coach-bootstrap" || call.body.session_token !== f.session_token));
+    assert.equal(await readFile(headerPath, "utf8"), legacyBytes); assert.equal(rotateCalls(f).length, 1);
+    assert.equal(rotations(await f.rows()).length, 1);
   } finally { await f.close(); }
 });
 

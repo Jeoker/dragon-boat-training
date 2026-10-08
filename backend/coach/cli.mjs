@@ -10,6 +10,7 @@ const runtime=()=>import(pathToFileURL(resolve(dirname(fileURLToPath(import.meta
 const samePath=(a,b)=>process.platform==="win32"?a.toLowerCase()===b.toLowerCase():a===b;
 const identity=v=>typeof v==="string" && /^[A-Za-z0-9_-]{8,128}$/u.test(v);
 const digest=v=>typeof v==="string" && /^sha256_v1:[A-Za-z0-9_-]{43}$/u.test(v);
+const sessionDigest=token=>"sha256_v1:"+createHash("sha256").update(token).digest("base64url");
 const loginRequestId=(c,payload)=>"rotation_login_"+createHash("sha256").update(`${c.coach_id}\n${c.request_id}\n${payload}`).digest("base64url");
 const exact=(v,keys)=>{
   if(!v || typeof v!=="object" || Array.isArray(v) || Object.keys(v).length!==keys.length || keys.some(k=>!Object.hasOwn(v,k)))throw fail();
@@ -43,8 +44,11 @@ export async function runCoachRotation(configPath,mode,ports={}){
     await lock.writeFile(JSON.stringify({pid:process.pid}));await lock.sync();await backupPrivatePath(lockPath);
     const headerPath=resolve(c.store_directory,"header.json");let header=await existingBackupPrivateJson(headerPath,64_000);
     if(header){
-      exact(header,["format","config_text","actor_id","credential_version","payload_digest","service_version","login_request_id"]);
-      if(mode!=="resume" || header.format!=="c1-self-coach-rotation-attempt-v1" || header.config_text!==configText || header.actor_id!==c.coach_id ||
+      const boundSession=header.format==="c1-self-coach-rotation-attempt-v2";
+      exact(header,["format","config_text","actor_id","credential_version","payload_digest","service_version","login_request_id",
+        ...(boundSession?["original_session_digest"]:[])]);
+      if(mode!=="resume" || !["c1-self-coach-rotation-attempt-v1","c1-self-coach-rotation-attempt-v2"].includes(header.format) ||
+        (boundSession && !digest(header.original_session_digest)) || header.config_text!==configText || header.actor_id!==c.coach_id ||
         header.credential_version!==c.expected_credential_version || !digest(header.payload_digest) || header.login_request_id!==loginRequestId(c,header.payload_digest) ||
         typeof header.service_version!=="string" || !header.service_version)throw fail();
     }else if(mode==="resume" || (await readdir(c.store_directory)).some(name=>name!=="rotation.lock") || await existingBackupPrivateJson(c.output_credentials_file,64_000)!==null)throw fail();
@@ -59,24 +63,31 @@ export async function runCoachRotation(configPath,mode,ports={}){
       const v=exact(await readBackupPrivateJson(c.credentials_file,64_000),["transport_key","session_token"]);
       if(Object.values(v).some(x=>typeof x!=="string" || !x || x.length>16_000 || /[\r\n\0]/u.test(x)))throw fail();return v;
     };
-    const fetchC1=async(action,body,secret,requestId=c.request_id)=>{
+    const fetchC1=async(action,body,secret,requestId=c.request_id,expectSessionDenied=false)=>{
       if(r.canonicalJson(await readCoachRotationConfig(configPath))!==configText)throw fail();await backupPrivatePath(c.store_directory,true);
       const url=`${c.server.origin}/internal/c1/${action}`,controller=new AbortController();
       const timer=setTimeout(()=>controller.abort(),30_000);let response;
       try{
         response=await (ports.fetchServer??fetch)(url,{method:"POST",redirect:"error",cache:"no-store",signal:controller.signal,
           headers:{authorization:`Bearer ${secret.transport_key}`,"content-type":"application/json"},body:JSON.stringify({request_id:requestId,...body})});
-        if(response.status!==200 || response.redirected || response.url && response.url!==url || !response.body ||
+        if(response.status!==(expectSessionDenied?401:200) || response.redirected || response.url && response.url!==url || !response.body ||
           !/^application\/json(?:\s*;|$)/iu.test(response.headers.get("content-type")??""))throw fail();
         const length=response.headers.get("content-length");if(length!==null && (!/^\d+$/u.test(length) || Number(length)>100_000))throw fail();
         const reader=response.body.getReader(),parts=[];let size=0;
         try{for(;;){const p=await reader.read();if(p.done)break;size+=p.value.byteLength;if(size>100_000)throw fail();parts.push(Buffer.from(p.value));}}
         finally{try{await reader.cancel().catch(()=>{});}finally{reader.releaseLock();}}
-        const v=exact(r.parseBusinessBackupJson(new TextDecoder("utf-8",{fatal:true}).decode(Buffer.concat(parts)),100_000),["ok","data","meta"]),m=v.meta;
-        if(v.ok!==true || !m || m.request_id!==requestId || m.contract_version!==r.C1_CONTRACT_VERSION || m.environment!=="staging" ||
+        const v=exact(r.parseBusinessBackupJson(new TextDecoder("utf-8",{fatal:true}).decode(Buffer.concat(parts)),100_000),["ok",expectSessionDenied?"error":"data","meta"]),m=v.meta;
+        if(v.ok!==(expectSessionDenied?false:true) || !m || m.request_id!==requestId || m.contract_version!==r.C1_CONTRACT_VERSION || m.environment!=="staging" ||
           m.backend_instance!==c.server.backend_instance || m.backend_generation!==c.server.backend_generation || m.writer_epoch!==c.server.writer_epoch ||
           typeof m.service_version!=="string" || !m.service_version)throw fail();
-        time(m.server_time);serviceVersion??=m.service_version;if(m.service_version!==serviceVersion)throw fail();return v.data;
+        time(m.server_time);serviceVersion??=m.service_version;if(m.service_version!==serviceVersion)throw fail();
+        if(expectSessionDenied){
+          const error=exact(v.error,["code","message","retryable"]);
+          // A version mismatch is SESSION_INVALID; a directly revoked row is SESSION_REVOKED.
+          if(!["SESSION_INVALID","SESSION_REVOKED"].includes(error.code) || error.retryable!==false || typeof error.message!=="string")throw fail();
+          return;
+        }
+        return v.data;
       }finally{clearTimeout(timer);await response?.body?.cancel().catch(()=>{});}
     };
     const bootstrap=async(secret,version)=>{
@@ -84,6 +95,7 @@ export async function runCoachRotation(configPath,mode,ports={}){
       if(v.coach?.coach_id!==c.coach_id || v.coach.credential_version!==version)throw fail();
     };
     const original=await credentials();
+    if(header?.format==="c1-self-coach-rotation-attempt-v2" && header.original_session_digest!==sessionDigest(original.session_token))throw fail();
     if(!header){
       await bootstrap(original,c.expected_credential_version);
       const operations=await fetchC1("get-operations",{session_token:original.session_token},original);
@@ -104,8 +116,8 @@ export async function runCoachRotation(configPath,mode,ports={}){
           verification:"PROTECTION_AND_CURRENT_COACH_ONLY"};
       }
       const loginId=loginRequestId(c,prepared.payload_digest);
-      header={format:"c1-self-coach-rotation-attempt-v1",config_text:configText,actor_id:c.coach_id,credential_version:c.expected_credential_version,
-        payload_digest:prepared.payload_digest,service_version:serviceVersion,login_request_id:loginId};
+      header={format:"c1-self-coach-rotation-attempt-v2",config_text:configText,actor_id:c.coach_id,credential_version:c.expected_credential_version,
+        payload_digest:prepared.payload_digest,service_version:serviceVersion,login_request_id:loginId,original_session_digest:sessionDigest(original.session_token)};
       // Even a failed transport attempt remains UNKNOWN. Never resubmit it.
       await writeBackupPrivateJson(headerPath,header,64_000);
       await fetchC1("rotate-coach-code",{session_token:original.session_token,expected_credential_version:c.expected_credential_version,
@@ -125,13 +137,18 @@ export async function runCoachRotation(configPath,mode,ports={}){
       receipt.payload_digest!==header.payload_digest || operation.committed_at!==receipt.rotated_at)throw fail();
     time(receipt.rotated_at);await bootstrap(current,c.expected_credential_version+1);
     if((await fetchC1("get-operations",{session_token:current.session_token},current)).schema_version!==c.schema_version)throw fail();
+    const boundSession=header.format==="c1-self-coach-rotation-attempt-v2";
+    if(boundSession){
+      await fetchC1("coach-bootstrap",{session_token:original.session_token},original,c.request_id,true);
+      await bootstrap(current,c.expected_credential_version+1);
+    }
     await newCode(); // Recheck private input before publishing confirmation.
     const receiptPath=resolve(c.store_directory,"receipt.json"),priorReceipt=await existingBackupPrivateJson(receiptPath,64_000);
     if(priorReceipt!==null){if(r.canonicalJson(priorReceipt)!==r.canonicalJson(confirmed))throw fail();}else await writeBackupPrivateJson(receiptPath,confirmed,64_000);
     const priorCredentials=await existingBackupPrivateJson(c.output_credentials_file,64_000);
     if(priorCredentials!==null){if(mode!=="resume" || r.canonicalJson(priorCredentials)!==r.canonicalJson(current))throw fail();}else await writeBackupPrivateJson(c.output_credentials_file,current,64_000);
     return{status:"COACH_CODE_ROTATION_CONFIRMED",coach_id:c.coach_id,request_id:c.request_id,previous_credential_version:c.expected_credential_version,
-      credential_version:c.expected_credential_version+1,rotated_at:receipt.rotated_at};
+      credential_version:c.expected_credential_version+1,rotated_at:receipt.rotated_at,old_session_verification:boundSession?"DENIED":"NOT_RECORDED"};
   }catch{throw fail();}
   finally{if(lock)try{await backupPrivatePath(lockPath);const owned=await lock.stat(),current=await lstat(lockPath);if(owned.dev!==current.dev || owned.ino!==current.ino)throw fail();
     await lock.close();lock=null;await unlink(lockPath);}catch{await lock?.close().catch(()=>{});}}
